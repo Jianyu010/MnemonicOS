@@ -13,6 +13,13 @@ from .graph import graph_expand
 from .models import RetrieveHit, RetrieveResult
 from .paths import VaultPaths
 from .semantics import cosine_similarity, encode_text, vector_from_json
+from .trust import (
+    freshness_multiplier,
+    load_note_freshness,
+    load_note_trust,
+    load_rerank_model,
+    query_temporality,
+)
 
 
 TOKEN_PATTERN = re.compile(r"[\w/-]+", re.UNICODE)
@@ -79,6 +86,10 @@ class _Candidate:
     semantic_score: float | None = None
     graph_score: float | None = None
     graph_relations: list[str] | None = None
+    freshness_score: float | None = None
+    freshness_state: str | None = None
+    trust_score: float | None = None
+    type_prior_score: float | None = None
     updated_at: str | None = None
     created_at: str | None = None
     last_verified_at: str | None = None
@@ -251,23 +262,6 @@ def _freshness_score(candidate: _Candidate) -> float:
     return max(0.0, 1.0 - min(delta, 365) / 365.0)
 
 
-def _memory_strength(connection: sqlite3.Connection, note_ids: list[str]) -> dict[str, float]:
-    if not note_ids:
-        return {}
-    placeholders = ",".join("?" for _ in note_ids)
-    rows = connection.execute(
-        f"""
-        SELECT note_id, COUNT(*) AS hit_count
-        FROM retrieval_hits
-        WHERE note_id IN ({placeholders}) AND selected = 1
-        GROUP BY note_id
-        """,
-        note_ids,
-    ).fetchall()
-    counts = {str(row["note_id"]): int(row["hit_count"]) for row in rows}
-    return {note_id: min(1.0, counts.get(note_id, 0) / 5.0) for note_id in note_ids}
-
-
 def _type_prior(query_type: str | None, note_type: str) -> float:
     if query_type is None:
         return 0.0
@@ -296,6 +290,7 @@ def retrieve(
 
     requested_top_k = top_k or config.retrieval.top_k
     query_type, classifier_confidence = _classify_query(query, query_type_hint)
+    temporality = query_temporality(query)
     candidates: dict[str, _Candidate] = {}
 
     exact_rows = _exact_hits(connection, query)
@@ -395,11 +390,28 @@ def retrieve(
                 last_verified_at=graph_hit.last_verified_at,
             )
 
-    memory_strengths = _memory_strength(connection, list(candidates))
+    trust_signals = load_note_trust(connection, list(candidates))
+    freshness_signals = load_note_freshness(connection, list(candidates))
+    rerank_model = load_rerank_model(connection)
     ranked_hits: list[RetrieveHit] = []
     bm25_max_rank = max(((candidate.bm25_rank or 0) for candidate in candidates.values()), default=0) or 1
     graph_max_score = max(((candidate.graph_score or 0.0) for candidate in candidates.values()), default=0.0) or 1.0
     for candidate in candidates.values():
+        trust_signal = trust_signals.get(candidate.id)
+        freshness_signal = freshness_signals.get(candidate.id)
+        trust_score = trust_signal.usefulness_score if trust_signal is not None else 0.0
+        freshness_score = _freshness_score(candidate)
+        type_prior_score = _type_prior(query_type, candidate.type)
+        if freshness_signal is not None:
+            freshness_state = freshness_signal.freshness_state
+            freshness_score = max(0.0, 1.0 - freshness_signal.staleness_score)
+        else:
+            freshness_state = "fresh"
+        candidate.trust_score = trust_score
+        candidate.freshness_score = freshness_score
+        candidate.freshness_state = freshness_state
+        candidate.type_prior_score = type_prior_score
+
         if candidate.exact_rank is not None:
             final_score = 1_000_000.0 - candidate.exact_rank
             raw_score = 1.0
@@ -409,30 +421,39 @@ def retrieve(
                 bm25_norm = 1.0 - ((candidate.bm25_rank - 1) / bm25_max_rank)
             semantic_norm = max(candidate.semantic_score or 0.0, 0.0)
             graph_norm = max(candidate.graph_score or 0.0, 0.0) / graph_max_score
+            freshness_weight = rerank_model.weights.get("freshness_weight", config.retrieval.freshness_weight)
+            bm25_weight = rerank_model.weights.get("bm25_weight", config.retrieval.bm25_weight)
+            semantic_weight = rerank_model.weights.get("semantic_weight", config.retrieval.semantic_weight)
+            graph_weight = rerank_model.weights.get("graph_weight", config.graph.graph_weight)
+            type_prior_weight = rerank_model.weights.get("type_prior_weight", config.retrieval.type_prior_weight)
+            trust_weight = rerank_model.weights.get("trust_weight", config.retrieval.memory_strength_weight)
             if query_type == "what_changed":
-                freshness_weight = 0.25
-                remainder = 1.0 - freshness_weight - config.retrieval.exact_alias_weight - config.graph.graph_weight
-                bm25_weight = max(0.0, remainder * 0.45)
-                semantic_weight = max(0.0, remainder * 0.35)
-                type_prior_weight = max(0.0, remainder * 0.10)
-                memory_weight = max(0.0, remainder * 0.10)
-            else:
-                freshness_weight = config.retrieval.freshness_weight
-                bm25_weight = config.retrieval.bm25_weight
-                semantic_weight = config.retrieval.semantic_weight
-                type_prior_weight = config.retrieval.type_prior_weight
-                memory_weight = config.retrieval.memory_strength_weight
+                freshness_weight = max(freshness_weight, 0.25)
 
             exact_bonus = 1.0 if "exact" in candidate.channels else 0.0
+            freshness_multiplier_value = freshness_multiplier(
+                config,
+                state=freshness_state,
+                temporality=temporality,
+            )
+            historical_bonus = 0.0
+            if temporality == "historical":
+                if freshness_state == "stale":
+                    historical_bonus = 0.20
+                elif freshness_state == "suspect":
+                    historical_bonus = 0.12
+                elif freshness_state == "aging":
+                    historical_bonus = 0.06
             final_score = (
                 bm25_weight * bm25_norm
                 + semantic_weight * semantic_norm
-                + config.graph.graph_weight * graph_norm
-                + type_prior_weight * _type_prior(query_type, candidate.type)
-                + freshness_weight * _freshness_score(candidate)
-                + memory_weight * memory_strengths.get(candidate.id, 0.0)
+                + graph_weight * graph_norm
+                + type_prior_weight * type_prior_score
+                + freshness_weight * freshness_score
+                + trust_weight * trust_score
                 + config.retrieval.exact_alias_weight * exact_bonus
-            )
+                + historical_bonus
+            ) * freshness_multiplier_value
             if candidate.graph_score is not None and candidate.semantic_score is None and candidate.bm25_score is None:
                 raw_score = candidate.graph_score
             else:
@@ -443,6 +464,8 @@ def retrieve(
             relation_summary = ", ".join(candidate.graph_relations[:3])
             if relation_summary:
                 excerpt = f"{excerpt} | graph: {relation_summary}".strip(" |")
+        if freshness_state not in {"fresh", ""}:
+            excerpt = f"{excerpt} | freshness: {freshness_state}".strip(" |")
         ranked_hits.append(
             RetrieveHit(
                 id=candidate.id,
@@ -535,6 +558,38 @@ def retrieve(
                 """,
                 (query_id, hit.id, rank, primary_channel, hit.raw_score, hit.final_score),
             )
+            original = candidates.get(hit.id)
+            if original is not None:
+                connection.execute(
+                    """
+                    INSERT INTO retrieval_hit_features(
+                        query_id, note_id, exact_hit, bm25_rank, bm25_score, semantic_score,
+                        graph_score, freshness_score, type_prior_score, trust_score
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(query_id, note_id) DO UPDATE SET
+                        exact_hit = excluded.exact_hit,
+                        bm25_rank = excluded.bm25_rank,
+                        bm25_score = excluded.bm25_score,
+                        semantic_score = excluded.semantic_score,
+                        graph_score = excluded.graph_score,
+                        freshness_score = excluded.freshness_score,
+                        type_prior_score = excluded.type_prior_score,
+                        trust_score = excluded.trust_score
+                    """,
+                    (
+                        query_id,
+                        hit.id,
+                        1 if original.exact_rank is not None else 0,
+                        original.bm25_rank,
+                        original.bm25_score,
+                        original.semantic_score,
+                        original.graph_score,
+                        original.freshness_score,
+                        original.type_prior_score,
+                        original.trust_score,
+                    ),
+                )
 
     connection.close()
     return RetrieveResult(

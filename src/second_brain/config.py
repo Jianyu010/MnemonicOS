@@ -55,6 +55,15 @@ class GraphConfig:
 
 
 @dataclass(slots=True)
+class TrustConfig:
+    min_training_samples: int = 8
+    current_query_stale_penalty: float = 0.30
+    current_query_contested_penalty: float = 0.65
+    historical_query_relief: float = 0.20
+    section_limit: int = 5
+
+
+@dataclass(slots=True)
 class AgentConfig:
     session_prefix: str
     can_promote: bool
@@ -67,6 +76,7 @@ class AppConfig:
     ingest: IngestConfig = field(default_factory=IngestConfig)
     embeddings: EmbeddingsConfig = field(default_factory=EmbeddingsConfig)
     graph: GraphConfig = field(default_factory=GraphConfig)
+    trust: TrustConfig = field(default_factory=TrustConfig)
     agents: dict[str, AgentConfig] = field(default_factory=dict)
     config_path: Path | None = None
 
@@ -132,6 +142,15 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
         graph_weight=float(graph_data.get("graph_weight", 0.20)),
     )
 
+    trust_data = data.get("trust", {})
+    trust = TrustConfig(
+        min_training_samples=int(trust_data.get("min_training_samples", 8)),
+        current_query_stale_penalty=float(trust_data.get("current_query_stale_penalty", 0.30)),
+        current_query_contested_penalty=float(trust_data.get("current_query_contested_penalty", 0.65)),
+        historical_query_relief=float(trust_data.get("historical_query_relief", 0.20)),
+        section_limit=int(trust_data.get("section_limit", 5)),
+    )
+
     agents: dict[str, AgentConfig] = {}
     for agent_name, agent_data in data.get("agents", {}).items():
         agents[agent_name] = AgentConfig(
@@ -145,6 +164,7 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
         ingest=ingest,
         embeddings=embeddings,
         graph=graph,
+        trust=trust,
         agents=agents,
         config_path=resolved_config,
     )

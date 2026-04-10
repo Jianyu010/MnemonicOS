@@ -1,10 +1,10 @@
 # Implementation Plan
 
-Current status: Phase 3 is implemented locally in this repo. The system now has
-an initial SQLite-backed note graph for explicit note relationships, plus
-graph-aware retrieval alongside the earlier ingest, sync, and maintenance
-loops. The remaining work is refinement, stronger embeddings, and richer
-contradiction logic rather than basic scaffolding.
+Current status: Phase 4 is implemented locally in this repo. The system now has
+trust/usefulness scoring, freshness states, contradiction reviews, relearn
+tasks, and operator-facing maintenance summaries on top of the existing graph,
+retrieval, and ingest layers. The remaining work is refinement rather than
+major missing architecture.
 
 ## Goal
 
@@ -103,7 +103,7 @@ Responsibility:
 - BM25 retrieval
 - optional semantic retrieval
 - graph expansion from top focal notes
-- reranking
+- reranking with trust and freshness signals
 - context assembly
 - retrieval logging
 
@@ -111,6 +111,7 @@ Degradation:
 
 - if embeddings are unavailable, return exact + BM25
 - if the graph cache is unavailable, return exact + BM25 + semantic
+- if rerank training data is sparse, fall back to heuristic weights
 - if classifier confidence is low, widen rather than narrow
 - if no canonical notes score well, fall back to archive chunks
 
@@ -142,6 +143,7 @@ src/second_brain/
   summaries.py
   semantics.py
   graph.py
+  trust.py
   review.py
   sync.py
   ingest.py
@@ -160,6 +162,7 @@ Minimal responsibilities:
 - `summaries.py`: extractive summaries for notes and archive chunks
 - `semantics.py`: local hash-vector semantic channel
 - `graph.py`: SQLite-backed note graph materialization and expansion
+- `trust.py`: note trust/usefulness, freshness scoring, and rerank weight training
 - `review.py`: inspectable review item writer
 - `sync.py`: scan changed files and refresh DB caches
 - `ingest.py`: raw write, chunking, promotion, upsert
@@ -239,10 +242,12 @@ Steps:
 3. alias suggestion mining from recent archive chunks
 4. wikilink repair proposals
 5. stale note detection
-6. incremental vector refresh
-7. mine retrieval misses into `evals/candidates.jsonl`
-8. refresh `brain/system/ACTIVE.md` with review and stale-note surfaces
-9. append one daily summary line to `brain/wiki/log.md`
+6. recompute note trust and freshness
+7. create reverify/crosscheck relearn tasks
+8. incremental vector refresh
+9. mine retrieval misses into `evals/candidates.jsonl`
+10. refresh `brain/system/ACTIVE.md` with review, contradiction, stale, and relearn surfaces
+11. append one daily summary line to `brain/wiki/log.md`
 
 ### Job: `weekly_hygiene`
 
@@ -255,8 +260,9 @@ Steps:
 1. drain high-confidence review items
 2. contradiction checks
 3. procedure audit
-4. run retrieval evals
-5. refresh synthesis pages in `brain/wiki/overviews`
+4. train/update rerank weights
+5. run retrieval evals
+6. refresh synthesis pages in `brain/wiki/overviews`
 
 ## SQLite Write Discipline
 
@@ -382,6 +388,21 @@ Status:
 - weekly hygiene implemented
 - graph cache implemented for explicit note links such as `owners`, `repo`,
   and `linked_*`
+
+### Milestone 4
+
+- trust/usefulness scoring
+- freshness state computation
+- contradiction review generation
+- relearn task queue
+- maintenance overview generation
+
+Definition of done:
+
+- stale current-truth notes are demoted without losing historical recall
+- contradiction backlog and relearn queue are visible in generated operator files
+- rerank weights train locally when labeled samples are sufficient
+- the system remains responsive and does not autonomously rewrite truth
 
 ## Minimal Runtime API
 

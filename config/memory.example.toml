@@ -36,6 +36,13 @@ focal_limit = 3
 expand_limit = 8
 graph_weight = 0.20
 
+[trust]
+min_training_samples = 8
+current_query_stale_penalty = 0.30
+current_query_contested_penalty = 0.65
+historical_query_relief = 0.20
+section_limit = 5
+
 [jobs]
 sync_on_startup = true
 sync_after_ingest = true

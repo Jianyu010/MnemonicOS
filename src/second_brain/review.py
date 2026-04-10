@@ -35,6 +35,7 @@ def create_review_item(
     context: str = "",
     candidates: list[str] | None = None,
     slug_seed: str | None = None,
+    extra_metadata: dict[str, object] | None = None,
 ) -> Path:
     timestamp = datetime.now().replace(microsecond=0).isoformat()
     slug = slugify(slug_seed or f"{review_type}-{reason}")
@@ -73,6 +74,8 @@ def create_review_item(
         "agent": agent,
         "resolution": resolution,
     }
+    if extra_metadata:
+        metadata.update(extra_metadata)
 
     frontmatter = yaml.safe_dump(metadata, sort_keys=False, allow_unicode=False).strip()
     body = "## Context\n\n"

@@ -1,8 +1,8 @@
 # MnemonicOS
 
 MnemonicOS is a local-first memory system for Codex and Claude. The markdown
-vault is the source of truth; SQLite search tables, semantic vectors, and the
-note graph are rebuildable caches.
+vault is the source of truth; SQLite search tables, semantic vectors, the note
+graph, and trust/freshness state are rebuildable caches.
 
 ## Design
 
@@ -12,9 +12,11 @@ flowchart TD
     B --> C["SQLite cache<br/>notes + FTS5 + archive"]
     B --> D["Semantic cache<br/>local hash vectors"]
     B --> H["Graph cache<br/>explicit note links"]
+    B --> T["Trust/Freshness cache<br/>staleness + usefulness"]
     C --> E["Retriever"]
     D --> E
     H --> E
+    T --> E
     B --> F["Pinned memory<br/>MEMORY.md USER.md ACTIVE.md"]
     F --> E
     E --> G["LLM context"]
@@ -24,7 +26,7 @@ Why it is structured this way:
 
 - Inspectable: every durable memory lives as markdown in `brain/`.
 - Portable: git can move the whole system without a hosted backend.
-- Recoverable: `archive.db`, vectors, and graph indexes can be rebuilt.
+- Recoverable: `archive.db`, vectors, graph indexes, and freshness/trust state can be rebuilt.
 - Conservative: promotion rules matter more than fancy ranking.
 
 ## Memory Layout
@@ -50,7 +52,7 @@ flowchart TD
 
 ## What Ships Today
 
-Phase 3 is implemented.
+Phase 4 is implemented.
 
 ```mermaid
 flowchart LR
@@ -58,12 +60,14 @@ flowchart LR
     B --> C["FTS5 + metadata index"]
     B --> D["Semantic note vectors"]
     B --> J["Graph edges from explicit links"]
+    B --> K["Trust + freshness signals"]
     E["ingest-session"] --> F["raw session file"]
     E --> G["archive chunks + summaries"]
     E --> H["promoted notes or review items"]
     C --> I["hybrid retrieval"]
     D --> I
     J --> I
+    K --> I
     G --> I
     H --> I
 ```
@@ -72,13 +76,36 @@ flowchart LR
 - note summaries generated during sync
 - local semantic retrieval channel using deterministic hashed vectors
 - graph retrieval layer from explicit note relationships like `owners`, `repo`, and `linked_*`
+- trust/usefulness scoring from retrieval history
+- freshness states that demote stale current-truth notes without deleting history
 - raw session ingest with archive chunking and chunk summaries
 - explicit memory promotion into canonical notes
-- review item generation for medium-confidence promotions
-- maintenance jobs for duplicate aliases and stale active notes
-- `ACTIVE.md` refresh from maintenance jobs, with review, stale, and eval backlog sections
+- review item generation for medium-confidence promotions and contradictions
+- maintenance jobs for duplicate aliases, freshness, contradiction, and relearn queues
+- `ACTIVE.md` refresh from maintenance jobs, with review, contradiction, stale, relearn, and eval sections
+- `wiki/overviews/maintenance.md` generation during weekly hygiene
 - retrieval-miss mining into `evals/candidates.jsonl` for future labeling
-- test coverage for Phase 1, Phase 2, Phase 2.5, and Phase 3 flows
+- test coverage for Phase 1, Phase 2, Phase 2.5, Phase 3, and Phase 4 flows
+
+## Trust And Freshness
+
+Phase 4 adds a trust-and-freshness layer so old knowledge does not silently
+fossilize the system.
+
+```mermaid
+flowchart LR
+    U["Retrieval usage"] --> T["note_trust"]
+    R["Reviews + incidents + age"] --> F["note_freshness"]
+    T --> X["rerank"]
+    F --> X
+    X --> Q["Current vs historical query handling"]
+```
+
+- trust is learned from retrieval success, usefulness labels, and failures
+- freshness states are `fresh`, `aging`, `suspect`, `stale`, and `contested`
+- stale notes are demoted for current-state questions
+- historical queries can still pull older knowledge back when history is what you want
+- MnemonicOS creates relearn tasks instead of autonomously rewriting truth
 
 ## Graph Memory
 
@@ -106,16 +133,21 @@ The system now closes the loop between retrieval quality and operator review.
 flowchart LR
     Q["retrieve"] --> L["retrieval logs"]
     L --> J["daily_consolidation"]
+    L --> T["trust scores"]
     J --> A["ACTIVE.md refresh"]
     J --> R["wiki/review/*.md"]
+    J --> K["relearn_tasks"]
     J --> E["evals/candidates.jsonl"]
+    J --> M["maintenance.md"]
     A --> H["human review"]
     R --> H
     E --> H
+    K --> H
 ```
 
 - unresolved review items are summarized into `brain/system/ACTIVE.md`
-- stale active decisions and procedures are surfaced with last verification dates
+- stale and contested notes are surfaced with freshness state and verification dates
+- contradiction reviews and relearn tasks are generated as explicit artifacts
 - zero-hit or archive-only retrievals become eval candidates automatically
 - dry runs report predicted backlog without mutating the vault
 
@@ -130,7 +162,7 @@ flowchart LR
     X --> G["Graph expansion from focal notes"]
     B --> G
     S --> G
-    X --> R["Merge + rerank"]
+    X --> R["Merge + rerank<br/>trust + freshness aware"]
     B --> R
     S --> R
     G --> R
@@ -143,6 +175,7 @@ Current retrieval behavior:
 - BM25 remains the primary retrieval backbone
 - semantic retrieval is a second channel, not a replacement
 - graph expansion pulls in related notes from explicit links
+- reranking uses trust and freshness to separate current truth from historical memory
 - archive chunk fallback is used when canonical notes are not enough
 
 The built-in semantic encoder is intentionally simple and local. It gives
@@ -217,7 +250,7 @@ PYTHONPATH=src python3 -m second_brain run-job daily_consolidation
 PYTHONPATH=src python3 -m second_brain run-job weekly_hygiene
 ```
 
-`run-job daily_consolidation` now refreshes `brain/system/ACTIVE.md` and appends retrieval misses to `evals/candidates.jsonl` on live runs.
+`run-job daily_consolidation` now refreshes `brain/system/ACTIVE.md`, updates trust/freshness state, creates relearn tasks, and appends retrieval misses to `evals/candidates.jsonl` on live runs.
 
 ## Repo Map
 
@@ -225,9 +258,11 @@ PYTHONPATH=src python3 -m second_brain run-job weekly_hygiene
 - [migrations/001_initial_schema.sql](/Users/jianyulong/ai_memory/migrations/001_initial_schema.sql): Phase 1 schema
 - [migrations/002_phase2_semantic_and_ingest.sql](/Users/jianyulong/ai_memory/migrations/002_phase2_semantic_and_ingest.sql): Phase 2 schema
 - [migrations/003_phase3_graph_cache.sql](/Users/jianyulong/ai_memory/migrations/003_phase3_graph_cache.sql): Phase 3 graph schema
+- [migrations/004_phase4_trust_freshness.sql](/Users/jianyulong/ai_memory/migrations/004_phase4_trust_freshness.sql): Phase 4 trust, freshness, and relearn schema
 - [src/second_brain/cli.py](/Users/jianyulong/ai_memory/src/second_brain/cli.py): entry points
 - [src/second_brain/ingest.py](/Users/jianyulong/ai_memory/src/second_brain/ingest.py): raw session ingest and promotion
 - [src/second_brain/retrieval.py](/Users/jianyulong/ai_memory/src/second_brain/retrieval.py): hybrid retrieval
 - [src/second_brain/graph.py](/Users/jianyulong/ai_memory/src/second_brain/graph.py): note graph materialization and expansion
+- [src/second_brain/trust.py](/Users/jianyulong/ai_memory/src/second_brain/trust.py): trust scoring, freshness, and rerank training
 - [src/second_brain/jobs.py](/Users/jianyulong/ai_memory/src/second_brain/jobs.py): maintenance jobs
-- [src/second_brain/ops.py](/Users/jianyulong/ai_memory/src/second_brain/ops.py): `ACTIVE.md` refresh and eval candidate ops
+- [src/second_brain/ops.py](/Users/jianyulong/ai_memory/src/second_brain/ops.py): `ACTIVE.md`, maintenance overview, and eval candidate ops

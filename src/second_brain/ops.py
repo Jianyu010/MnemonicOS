@@ -19,11 +19,14 @@ DEFAULT_OPEN_LOOPS = "- [ ] Add manual open loops here."
 @dataclass(slots=True)
 class ReviewItemSummary:
     id: str
+    review_type: str
     reason: str
     suggested_action: str
     confidence: str | None
+    severity: int
     check_count: int
     created_at: str | None
+    context_excerpt: str
 
 
 @dataclass(slots=True)
@@ -38,6 +41,16 @@ class EvalCandidateSummary:
 
 
 @dataclass(slots=True)
+class RelearnTaskSummary:
+    task_id: str
+    note_id: str
+    stage: str
+    reason: str
+    status: str
+    created_at: str | None
+
+
+@dataclass(slots=True)
 class EvalCandidateSyncResult:
     added: int
     open_candidates: list[EvalCandidateSummary]
@@ -45,6 +58,10 @@ class EvalCandidateSyncResult:
 
 def _eval_candidates_path(config: AppConfig) -> Path:
     return config.paths.eval_queries.parent / "candidates.jsonl"
+
+
+def _maintenance_overview_path(config: AppConfig) -> Path:
+    return config.paths.vault_root / "wiki" / "overviews" / "maintenance.md"
 
 
 def _split_sections(text: str) -> dict[str, str]:
@@ -83,13 +100,17 @@ def _load_review_item(path: Path) -> ReviewItemSummary | None:
     metadata = parsed.metadata
     if str(metadata.get("status", "open")).strip().casefold() != "open":
         return None
+    context_excerpt = parsed.body.strip().splitlines()
     return ReviewItemSummary(
         id=str(metadata.get("id", f"review/{path.stem}")).strip(),
+        review_type=str(metadata.get("type", "review")).strip(),
         reason=str(metadata.get("reason", "")).strip(),
         suggested_action=str(metadata.get("suggested_action", "")).strip(),
         confidence=str(metadata.get("confidence", "")).strip() or None,
+        severity=int(metadata.get("severity", 1) or 1),
         check_count=int(metadata.get("check_count", 0) or 0),
         created_at=str(metadata.get("created_at", "")).strip() or None,
+        context_excerpt=context_excerpt[1].strip() if len(context_excerpt) > 1 else (context_excerpt[0].strip() if context_excerpt else ""),
     )
 
 
@@ -100,8 +121,37 @@ def load_open_review_items(config: AppConfig) -> list[ReviewItemSummary]:
         item = _load_review_item(path)
         if item is not None:
             items.append(item)
-    items.sort(key=lambda item: (-item.check_count, item.created_at or "", item.id))
+    items.sort(key=lambda item: (-item.severity, -item.check_count, item.created_at or "", item.id))
     return items
+
+
+def load_open_relearn_tasks(connection) -> list[RelearnTaskSummary]:
+    rows = connection.execute(
+        """
+        SELECT task_id, note_id, stage, reason, status, created_at
+        FROM relearn_tasks
+        WHERE status = 'open'
+        ORDER BY
+            CASE stage
+                WHEN 'full_relearn_task' THEN 4
+                WHEN 'targeted_relearn_task' THEN 3
+                WHEN 'crosscheck' THEN 2
+                ELSE 1
+            END DESC,
+            created_at ASC
+        """
+    ).fetchall()
+    return [
+        RelearnTaskSummary(
+            task_id=str(row["task_id"]),
+            note_id=str(row["note_id"]),
+            stage=str(row["stage"]),
+            reason=str(row["reason"]),
+            status=str(row["status"]),
+            created_at=str(row["created_at"] or "") or None,
+        )
+        for row in rows
+    ]
 
 
 def sync_eval_candidates(config: AppConfig, rows: list[dict[str, object]], *, dry_run: bool) -> EvalCandidateSyncResult:
@@ -184,63 +234,75 @@ def sync_eval_candidates(config: AppConfig, rows: list[dict[str, object]], *, dr
     return EvalCandidateSyncResult(added=len(additions), open_candidates=open_candidates)
 
 
-def _bullet_list(items: list[str], empty_message: str) -> str:
-    filtered = [item for item in items if item.strip()]
+def _render_limited_list(lines: list[str], *, limit: int, empty_message: str) -> str:
+    filtered = [line for line in lines if line.strip()]
     if not filtered:
         return f"- {empty_message}"
-    return "\n".join(filtered)
+    visible = filtered[:limit]
+    if len(filtered) > limit:
+        visible.append(f"- ... {len(filtered) - limit} more item(s) not shown.")
+    return "\n".join(visible)
 
 
-def _render_auto_loops(review_count: int, stale_count: int, eval_count: int) -> str:
+def _render_auto_loops(
+    *,
+    review_count: int,
+    contradiction_count: int,
+    stale_count: int,
+    relearn_count: int,
+    eval_count: int,
+) -> str:
     lines: list[str] = []
     if review_count:
         lines.append(f"- [ ] Resolve {review_count} open review item(s).")
+    if contradiction_count:
+        lines.append(f"- [ ] Resolve {contradiction_count} contradiction item(s).")
     if stale_count:
-        lines.append(f"- [ ] Re-verify {stale_count} stale decision/procedure note(s).")
+        lines.append(f"- [ ] Re-verify {stale_count} stale note(s).")
+    if relearn_count:
+        lines.append(f"- [ ] Triage {relearn_count} relearn task(s).")
     if eval_count:
         lines.append(f"- [ ] Label {eval_count} retrieval miss candidate(s) in `evals/candidates.jsonl`.")
-    return _bullet_list(lines, "No system-generated action items right now.")
+    return _render_limited_list(lines, limit=6, empty_message="No system-generated action items right now.")
 
 
-def _render_review_items(items: list[ReviewItemSummary], limit: int = 5) -> str:
-    if not items:
-        return "- No open review items."
+def _render_review_items(items: list[ReviewItemSummary], *, limit: int) -> str:
     lines = [
-        f"- `{item.id}`: {item.reason or 'No reason recorded.'} Suggested action: {item.suggested_action or 'review manually'}."
-        + (
-            f" confidence={item.confidence} checks={item.check_count}"
-            if item.confidence
-            else f" checks={item.check_count}"
-        )
-        for item in items[:limit]
+        f"- `{item.id}` [{item.review_type}]: {item.reason or 'No reason recorded.'} Suggested action: {item.suggested_action or 'review manually'}."
+        + (f" severity={item.severity}" if item.severity else "")
+        + (f" excerpt: {item.context_excerpt}" if item.context_excerpt else "")
+        for item in items
     ]
-    if len(items) > limit:
-        lines.append(f"- ... {len(items) - limit} more open review item(s) not shown.")
-    return "\n".join(lines)
+    return _render_limited_list(lines, limit=limit, empty_message="No open review items.")
 
 
-def _render_stale_rows(rows: list[dict[str, str]], limit: int = 5) -> str:
-    if not rows:
-        return "- No stale decision or procedure notes detected."
+def _render_filtered_review_items(items: list[ReviewItemSummary], *, review_type: str, limit: int, empty_message: str) -> str:
+    filtered = [item for item in items if item.review_type == review_type]
+    return _render_review_items(filtered, limit=limit) if filtered else f"- {empty_message}"
+
+
+def _render_stale_rows(rows: list[dict[str, str]], *, limit: int) -> str:
     lines = [
-        f"- `{row['id']}`: {row['title']} (last verified: {row['last_verified_at']})."
-        for row in rows[:limit]
+        f"- `{row['id']}`: {row['title']} (state: {row.get('freshness_state', 'unknown')}, last verified: {row['last_verified_at']})."
+        for row in rows
     ]
-    if len(rows) > limit:
-        lines.append(f"- ... {len(rows) - limit} more stale note(s) not shown.")
-    return "\n".join(lines)
+    return _render_limited_list(lines, limit=limit, empty_message="No stale notes detected.")
 
 
-def _render_eval_candidates(items: list[EvalCandidateSummary], limit: int = 5) -> str:
-    if not items:
-        return "- No open retrieval miss candidates."
+def _render_eval_candidates(items: list[EvalCandidateSummary], *, limit: int) -> str:
     lines = [
         f"- `{item.id}`: \"{item.query}\" ({item.reason}{', ' + item.query_type if item.query_type else ''})."
-        for item in items[:limit]
+        for item in items
     ]
-    if len(items) > limit:
-        lines.append(f"- ... {len(items) - limit} more eval candidate(s) not shown.")
-    return "\n".join(lines)
+    return _render_limited_list(lines, limit=limit, empty_message="No open retrieval miss candidates.")
+
+
+def _render_relearn_tasks(items: list[RelearnTaskSummary], *, limit: int) -> str:
+    lines = [
+        f"- `{item.task_id}` [{item.stage}] on `{item.note_id}`: {item.reason}."
+        for item in items
+    ]
+    return _render_limited_list(lines, limit=limit, empty_message="No open relearn tasks.")
 
 
 def refresh_active_file(
@@ -248,6 +310,8 @@ def refresh_active_file(
     *,
     review_items: list[ReviewItemSummary],
     stale_rows: list[dict[str, str]],
+    contradiction_rows: list[ReviewItemSummary],
+    relearn_tasks: list[RelearnTaskSummary],
     eval_candidates: list[EvalCandidateSummary],
 ) -> Path:
     active_path = config.paths.vault_root / "system" / "ACTIVE.md"
@@ -256,6 +320,7 @@ def refresh_active_file(
     existing_sections = _read_existing_sections(active_path)
     current_focus = existing_sections.get("Current Focus", DEFAULT_CURRENT_FOCUS).strip() or DEFAULT_CURRENT_FOCUS
     open_loops = existing_sections.get("Open Loops", DEFAULT_OPEN_LOOPS).strip() or DEFAULT_OPEN_LOOPS
+    limit = config.trust.section_limit
 
     today = datetime.now().strftime("%Y-%m-%d")
     content = "\n".join(
@@ -270,18 +335,93 @@ def refresh_active_file(
             open_loops,
             "",
             "## Auto Loops",
-            _render_auto_loops(len(review_items), len(stale_rows), len(eval_candidates)),
+            _render_auto_loops(
+                review_count=len(review_items),
+                contradiction_count=len(contradiction_rows),
+                stale_count=len(stale_rows),
+                relearn_count=len(relearn_tasks),
+                eval_count=len(eval_candidates),
+            ),
             "",
             "## Needs Human Review",
-            _render_review_items(review_items),
+            _render_review_items(review_items, limit=limit),
+            "",
+            "## Contradictions",
+            _render_review_items(contradiction_rows, limit=limit),
             "",
             "## Stale Facts",
-            _render_stale_rows(stale_rows),
+            _render_stale_rows(stale_rows, limit=limit),
+            "",
+            "## Relearn Queue",
+            _render_relearn_tasks(relearn_tasks, limit=limit),
             "",
             "## Eval Backlog",
-            _render_eval_candidates(eval_candidates),
+            _render_eval_candidates(eval_candidates, limit=limit),
             "",
         ]
     )
     active_path.write_text(content, encoding="utf-8")
     return active_path
+
+
+def write_maintenance_overview(
+    config: AppConfig,
+    *,
+    stats: dict[str, int | float],
+    review_items: list[ReviewItemSummary],
+    contradiction_rows: list[ReviewItemSummary],
+    stale_rows: list[dict[str, str]],
+    relearn_tasks: list[RelearnTaskSummary],
+    eval_candidates: list[EvalCandidateSummary],
+) -> Path:
+    path = _maintenance_overview_path(config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    stage_counts: dict[str, int] = {}
+    for task in relearn_tasks:
+        stage_counts[task.stage] = stage_counts.get(task.stage, 0) + 1
+
+    lines = [
+        "---",
+        "id: overview/maintenance",
+        "type: overview",
+        "title: Maintenance Overview",
+        f"updated_at: {today}",
+        f"created_at: {today}",
+        "source_refs: []",
+        "confidence: high",
+        "---",
+        "",
+        "# Maintenance Overview",
+        "",
+        "## Retrieval Snapshot",
+        "",
+        f"- Open review items: {len(review_items)}",
+        f"- Contradiction items: {len(contradiction_rows)}",
+        f"- Stale notes: {len(stale_rows)}",
+        f"- Open relearn tasks: {len(relearn_tasks)}",
+        f"- Eval backlog: {len(eval_candidates)}",
+    ]
+    if "rerank_training_samples" in stats:
+        lines.append(f"- Rerank training samples: {stats['rerank_training_samples']}")
+    if "rerank_fallback" in stats:
+        lines.append(f"- Rerank fallback active: {stats['rerank_fallback']}")
+    lines.extend(
+        [
+            "",
+            "## Relearn Queue by Stage",
+            "",
+            f"- reverify: {stage_counts.get('reverify', 0)}",
+            f"- crosscheck: {stage_counts.get('crosscheck', 0)}",
+            f"- targeted_relearn_task: {stage_counts.get('targeted_relearn_task', 0)}",
+            f"- full_relearn_task: {stage_counts.get('full_relearn_task', 0)}",
+            "",
+            "## Hotspots",
+            "",
+            _render_review_items(review_items, limit=config.trust.section_limit),
+            "",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
