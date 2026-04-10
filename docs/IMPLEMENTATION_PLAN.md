@@ -1,8 +1,10 @@
 # Implementation Plan
 
-Current status: Phase 2.5 is implemented locally in this repo. The remaining
-work is refinement, stronger embeddings, and deeper consolidation logic rather
-than basic scaffolding.
+Current status: Phase 3 is implemented locally in this repo. The system now has
+an initial SQLite-backed note graph for explicit note relationships, plus
+graph-aware retrieval alongside the earlier ingest, sync, and maintenance
+loops. The remaining work is refinement, stronger embeddings, and richer
+contradiction logic rather than basic scaffolding.
 
 ## Goal
 
@@ -84,6 +86,8 @@ Responsibility:
 - refresh `notes_search` rows after note or alias changes
 - keep `notes_fts` and `chunks_fts` synchronized through triggers
 - re-embed only summaries that changed
+- rebuild graph edges for explicit note relationships such as owners, repo
+  links, and linked decisions/procedures
 
 Important rule:
 
@@ -98,6 +102,7 @@ Responsibility:
 - exact lookup
 - BM25 retrieval
 - optional semantic retrieval
+- graph expansion from top focal notes
 - reranking
 - context assembly
 - retrieval logging
@@ -105,6 +110,7 @@ Responsibility:
 Degradation:
 
 - if embeddings are unavailable, return exact + BM25
+- if the graph cache is unavailable, return exact + BM25 + semantic
 - if classifier confidence is low, widen rather than narrow
 - if no canonical notes score well, fall back to archive chunks
 
@@ -135,6 +141,7 @@ src/second_brain/
   parser.py
   summaries.py
   semantics.py
+  graph.py
   review.py
   sync.py
   ingest.py
@@ -152,6 +159,7 @@ Minimal responsibilities:
 - `parser.py`: frontmatter parsing and note validation
 - `summaries.py`: extractive summaries for notes and archive chunks
 - `semantics.py`: local hash-vector semantic channel
+- `graph.py`: SQLite-backed note graph materialization and expansion
 - `review.py`: inspectable review item writer
 - `sync.py`: scan changed files and refresh DB caches
 - `ingest.py`: raw write, chunking, promotion, upsert
@@ -181,9 +189,10 @@ Steps:
 3. upsert `notes`
 4. replace aliases for each touched note
 5. rebuild that note's `notes_search` row
-6. let FTS triggers update `notes_fts`
-7. mark deleted notes as removed from SQLite caches
-8. update `sync_state`
+6. rebuild graph edges for explicit note relationships
+7. let FTS triggers update `notes_fts`
+8. mark deleted notes as removed from SQLite caches
+9. update `sync_state`
 
 Failure behavior:
 
@@ -296,8 +305,9 @@ Always write these in one transaction for a touched note:
 2. exact alias or ID hits
 3. BM25 over canonical notes
 4. semantic retrieval over summaries
-5. rerank merged candidates
-6. archive fallback
+5. graph expansion from the strongest focal notes
+6. rerank merged candidates
+7. archive fallback
 
 ### Live query budget
 
@@ -356,16 +366,22 @@ Status:
 - semantic retrieval
 - retrieval logs and eval runner
 - weekly hygiene
+- graph cache for explicit note relationships
 
 Definition of done:
 
 - top-1 and top-5 metrics are tracked weekly
 - semantic search helps paraphrase recall without breaking exact recall
+- graph expansion surfaces related notes that lexical and semantic channels miss
 
-### Milestone 4
+Status:
 
-- graph cache if and only if eval misses justify it
-- learned reranking if retrieval logs are dense enough
+- embedding index implemented
+- semantic retrieval implemented
+- retrieval logs and eval runner implemented
+- weekly hygiene implemented
+- graph cache implemented for explicit note links such as `owners`, `repo`,
+  and `linked_*`
 
 ## Minimal Runtime API
 

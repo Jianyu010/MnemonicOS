@@ -7,6 +7,7 @@ import sqlite3
 
 from .config import AppConfig
 from .db import connect_db, run_migrations
+from .graph import demote_or_delete_note_node, rebuild_note_graph
 from .models import NoteRecord, SyncResult
 from .parser import NoteParseError, parse_note
 from .paths import VaultPaths
@@ -54,6 +55,7 @@ def _delete_note_by_path(connection: sqlite3.Connection, path: Path) -> int:
 
     note_id = row["note_id"]
     connection.execute("DELETE FROM notes WHERE id = ?", (note_id,))
+    demote_or_delete_note_node(connection, str(note_id))
     connection.execute("DELETE FROM sync_state WHERE path = ?", (str(path.resolve()),))
     return 1
 
@@ -174,6 +176,16 @@ def _load_previous_sync_state(connection: sqlite3.Connection, kind: str) -> dict
     return {str(row["path"]): row for row in rows}
 
 
+def _graph_note_missing(connection: sqlite3.Connection, note_id: str | None) -> bool:
+    if not note_id:
+        return True
+    row = connection.execute(
+        "SELECT 1 FROM graph_nodes WHERE id = ? AND node_type = 'note'",
+        (note_id,),
+    ).fetchone()
+    return row is None
+
+
 def sync_vault(config: AppConfig, mode: str = "incremental", selected_paths: list[str] | None = None) -> SyncResult:
     paths = VaultPaths(workspace_root=config.paths.workspace_root, vault_root=config.paths.vault_root)
     connection = connect_db(config.paths.db_path)
@@ -210,7 +222,8 @@ def sync_vault(config: AppConfig, mode: str = "incremental", selected_paths: lis
             current_hash = _file_hash(path)
             previous = previous_notes.get(resolved_path)
             if mode == "incremental" and previous is not None and previous["content_hash"] == current_hash:
-                continue
+                if not config.graph.enabled or not _graph_note_missing(connection, str(previous["note_id"] or "")):
+                    continue
 
             scanned_paths += 1
             try:
@@ -226,6 +239,8 @@ def sync_vault(config: AppConfig, mode: str = "incremental", selected_paths: lis
                         vector=vector,
                         source_hash=note.content_hash,
                     )
+                if config.graph.enabled:
+                    rebuild_note_graph(connection, note)
                 _upsert_sync_state(
                     connection,
                     path=path,

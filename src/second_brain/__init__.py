@@ -1,4 +1,4 @@
-"""MnemonicOS Phase 2.5 implementation."""
+"""MnemonicOS Phase 3 implementation."""
 
 from .config import AppConfig, load_config
 from .db import connect_db, run_migrations

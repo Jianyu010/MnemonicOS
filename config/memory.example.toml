@@ -30,6 +30,12 @@ model = "hash-256-v1"
 dimensions = 256
 reembed_on_summary_change_only = true
 
+[graph]
+enabled = true
+focal_limit = 3
+expand_limit = 8
+graph_weight = 0.20
+
 [jobs]
 sync_on_startup = true
 sync_after_ingest = true

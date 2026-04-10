@@ -34,7 +34,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ingest_parser.add_argument("--tag", action="append", default=[])
     ingest_parser.add_argument("--source-ref", action="append", default=[])
 
-    retrieve_parser = subparsers.add_parser("retrieve", help="Run hybrid retrieval across exact, BM25, semantic, and archive channels.")
+    retrieve_parser = subparsers.add_parser("retrieve", help="Run hybrid retrieval across exact, BM25, semantic, graph, and archive channels.")
     retrieve_parser.add_argument("query", help="Query text.")
     retrieve_parser.add_argument("--top-k", type=int, default=None)
     retrieve_parser.add_argument("--query-type-hint", default=None)

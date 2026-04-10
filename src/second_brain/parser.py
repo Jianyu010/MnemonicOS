@@ -34,6 +34,17 @@ ENTITY_FIELDS = (
     "owners",
 )
 
+ENTITY_RELATION_MAP = {
+    "entities": "entity",
+    "linked_projects": "linked_project",
+    "linked_notes": "linked_note",
+    "linked_procedures": "linked_procedure",
+    "linked_decisions": "linked_decision",
+    "active_decisions": "active_decision",
+    "owners": "owner",
+    "repo": "repo",
+}
+
 FRONTMATTER_PATTERN = re.compile(r"^---\s*\r?\n(.*?)\r?\n---\s*\r?\n?(.*)$", re.DOTALL)
 
 
@@ -56,13 +67,26 @@ def _ensure_list(value: object) -> list[str]:
     return [text] if text else []
 
 
-def _collect_entities(metadata: dict[str, object]) -> list[str]:
-    values: list[str] = []
-    for field_name in ENTITY_FIELDS:
-        values.extend(_ensure_list(metadata.get(field_name)))
-    repo_value = metadata.get("repo")
-    if repo_value:
-        values.extend(_ensure_list(repo_value))
+def _collect_entity_relations(metadata: dict[str, object]) -> list[tuple[str, str]]:
+    relations: list[tuple[str, str]] = []
+    for field_name, relation_type in ENTITY_RELATION_MAP.items():
+        values = _ensure_list(metadata.get(field_name))
+        for value in values:
+            relations.append((value, relation_type))
+
+    seen: set[tuple[str, str]] = set()
+    ordered: list[tuple[str, str]] = []
+    for entity_id, relation_type in relations:
+        key = (entity_id, relation_type)
+        if key in seen:
+            continue
+        ordered.append(key)
+        seen.add(key)
+    return ordered
+
+
+def _collect_entities(relations: list[tuple[str, str]]) -> list[str]:
+    values = [entity_id for entity_id, _ in relations]
     seen: set[str] = set()
     ordered: list[str] = []
     for value in values:
@@ -122,7 +146,8 @@ def parse_note(path: Path) -> NoteRecord:
     aliases = _ensure_list(metadata.get("aliases"))
     tags = _ensure_list(metadata.get("tags"))
     source_refs = _ensure_list(metadata.get("source_refs"))
-    entities = _collect_entities(metadata)
+    entity_relations = _collect_entity_relations(metadata)
+    entities = _collect_entities(entity_relations)
     summary = _extract_summary(metadata, parsed.body)
     content_hash = sha256(text.encode("utf-8")).hexdigest()
 
@@ -134,6 +159,7 @@ def parse_note(path: Path) -> NoteRecord:
         confidence=str(metadata.get("confidence", "")).strip() or None,
         tags=tags,
         entities=entities,
+        entity_relations=entity_relations,
         source_refs=source_refs,
         valid_from=str(metadata.get("valid_from", "")).strip() or None,
         valid_to=str(metadata.get("valid_to", "")).strip() or None,

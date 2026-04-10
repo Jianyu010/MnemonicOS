@@ -9,12 +9,40 @@ import sqlite3
 
 from .config import AppConfig
 from .db import connect_db, run_migrations
+from .graph import graph_expand
 from .models import RetrieveHit, RetrieveResult
 from .paths import VaultPaths
 from .semantics import cosine_similarity, encode_text, vector_from_json
 
 
 TOKEN_PATTERN = re.compile(r"[\w/-]+", re.UNICODE)
+STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "by",
+    "for",
+    "from",
+    "how",
+    "i",
+    "in",
+    "is",
+    "it",
+    "of",
+    "on",
+    "or",
+    "that",
+    "the",
+    "to",
+    "we",
+    "what",
+    "which",
+    "who",
+}
 
 QUERY_HINTS = {
     "preference_identity": {"preference", "prefer", "style", "identity", "user"},
@@ -49,13 +77,19 @@ class _Candidate:
     bm25_rank: int | None = None
     bm25_score: float | None = None
     semantic_score: float | None = None
+    graph_score: float | None = None
+    graph_relations: list[str] | None = None
     updated_at: str | None = None
     created_at: str | None = None
     last_verified_at: str | None = None
 
 
 def _query_terms(query: str) -> str:
-    terms = TOKEN_PATTERN.findall(query)
+    terms = [
+        token
+        for token in TOKEN_PATTERN.findall(query)
+        if len(token) > 2 and token.casefold() not in STOPWORDS
+    ]
     if not terms:
         escaped = query.replace('"', ' ')
         return f'"{escaped}"'
@@ -240,6 +274,16 @@ def _type_prior(query_type: str | None, note_type: str) -> float:
     return TYPE_PRIORS.get(query_type, {}).get(note_type, 0.0)
 
 
+def _seed_score(candidate: _Candidate) -> float:
+    if candidate.exact_rank is not None:
+        return 1_000_000.0 - candidate.exact_rank
+    bm25_component = 0.0
+    if candidate.bm25_rank is not None:
+        bm25_component = 1.0 / candidate.bm25_rank
+    semantic_component = max(candidate.semantic_score or 0.0, 0.0)
+    return bm25_component + semantic_component
+
+
 def retrieve(
     config: AppConfig,
     query: str,
@@ -322,9 +366,39 @@ def retrieve(
             last_verified_at=str(row["last_verified_at"] or ""),
         )
 
+    if config.graph.enabled and candidates:
+        focal_ids = [
+            candidate.id
+            for candidate in sorted(candidates.values(), key=_seed_score, reverse=True)[: config.graph.focal_limit]
+        ]
+        graph_rows = graph_expand(connection, focal_ids=focal_ids, limit=config.graph.expand_limit)
+        for graph_hit in graph_rows:
+            if graph_hit.id in candidates:
+                candidate = candidates[graph_hit.id]
+                candidate.channels.add("graph")
+                candidate.graph_score = graph_hit.graph_score
+                candidate.graph_relations = graph_hit.relation_types
+                continue
+            candidates[graph_hit.id] = _Candidate(
+                id=graph_hit.id,
+                title=graph_hit.title,
+                type=graph_hit.type,
+                status=graph_hit.status,
+                body_path=graph_hit.body_path,
+                summary=graph_hit.summary,
+                body=graph_hit.body,
+                channels={"graph"},
+                graph_score=graph_hit.graph_score,
+                graph_relations=graph_hit.relation_types,
+                updated_at=graph_hit.updated_at,
+                created_at=graph_hit.created_at,
+                last_verified_at=graph_hit.last_verified_at,
+            )
+
     memory_strengths = _memory_strength(connection, list(candidates))
     ranked_hits: list[RetrieveHit] = []
     bm25_max_rank = max(((candidate.bm25_rank or 0) for candidate in candidates.values()), default=0) or 1
+    graph_max_score = max(((candidate.graph_score or 0.0) for candidate in candidates.values()), default=0.0) or 1.0
     for candidate in candidates.values():
         if candidate.exact_rank is not None:
             final_score = 1_000_000.0 - candidate.exact_rank
@@ -334,9 +408,10 @@ def retrieve(
             if candidate.bm25_rank is not None:
                 bm25_norm = 1.0 - ((candidate.bm25_rank - 1) / bm25_max_rank)
             semantic_norm = max(candidate.semantic_score or 0.0, 0.0)
+            graph_norm = max(candidate.graph_score or 0.0, 0.0) / graph_max_score
             if query_type == "what_changed":
                 freshness_weight = 0.25
-                remainder = 1.0 - freshness_weight - config.retrieval.exact_alias_weight
+                remainder = 1.0 - freshness_weight - config.retrieval.exact_alias_weight - config.graph.graph_weight
                 bm25_weight = max(0.0, remainder * 0.45)
                 semantic_weight = max(0.0, remainder * 0.35)
                 type_prior_weight = max(0.0, remainder * 0.10)
@@ -352,14 +427,22 @@ def retrieve(
             final_score = (
                 bm25_weight * bm25_norm
                 + semantic_weight * semantic_norm
+                + config.graph.graph_weight * graph_norm
                 + type_prior_weight * _type_prior(query_type, candidate.type)
                 + freshness_weight * _freshness_score(candidate)
                 + memory_weight * memory_strengths.get(candidate.id, 0.0)
                 + config.retrieval.exact_alias_weight * exact_bonus
             )
-            raw_score = candidate.semantic_score if candidate.semantic_score is not None else candidate.bm25_score
+            if candidate.graph_score is not None and candidate.semantic_score is None and candidate.bm25_score is None:
+                raw_score = candidate.graph_score
+            else:
+                raw_score = candidate.semantic_score if candidate.semantic_score is not None else candidate.bm25_score
 
         excerpt = candidate.summary or candidate.body[:240]
+        if candidate.graph_relations:
+            relation_summary = ", ".join(candidate.graph_relations[:3])
+            if relation_summary:
+                excerpt = f"{excerpt} | graph: {relation_summary}".strip(" |")
         ranked_hits.append(
             RetrieveHit(
                 id=candidate.id,
@@ -436,7 +519,15 @@ def retrieve(
                             (query_id, int(chunk_row["id"]), rank, hit.raw_score, hit.final_score),
                         )
                 continue
-            primary_channel = "exact" if "exact" in hit.channels else "semantic" if "semantic" in hit.channels else "bm25"
+            primary_channel = (
+                "exact"
+                if "exact" in hit.channels
+                else "semantic"
+                if "semantic" in hit.channels
+                else "graph"
+                if "graph" in hit.channels
+                else "bm25"
+            )
             connection.execute(
                 """
                 INSERT INTO retrieval_hits(query_id, note_id, rank, channel, raw_score, final_score, selected)

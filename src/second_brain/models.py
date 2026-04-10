@@ -13,6 +13,7 @@ class NoteRecord:
     confidence: str | None
     tags: list[str]
     entities: list[str]
+    entity_relations: list[tuple[str, str]]
     source_refs: list[str]
     valid_from: str | None
     valid_to: str | None

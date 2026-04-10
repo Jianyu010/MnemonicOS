@@ -1,8 +1,8 @@
 # MnemonicOS
 
 MnemonicOS is a local-first memory system for Codex and Claude. The markdown
-vault is the source of truth; SQLite, semantic vectors, and future graph
-indexes are rebuildable caches.
+vault is the source of truth; SQLite search tables, semantic vectors, and the
+note graph are rebuildable caches.
 
 ## Design
 
@@ -11,8 +11,10 @@ flowchart TD
     A["Humans / Agents"] --> B["Vault<br/>brain/"]
     B --> C["SQLite cache<br/>notes + FTS5 + archive"]
     B --> D["Semantic cache<br/>local hash vectors"]
+    B --> H["Graph cache<br/>explicit note links"]
     C --> E["Retriever"]
     D --> E
+    H --> E
     B --> F["Pinned memory<br/>MEMORY.md USER.md ACTIVE.md"]
     F --> E
     E --> G["LLM context"]
@@ -22,7 +24,7 @@ Why it is structured this way:
 
 - Inspectable: every durable memory lives as markdown in `brain/`.
 - Portable: git can move the whole system without a hosted backend.
-- Recoverable: `archive.db`, vectors, and later graph indexes can be rebuilt.
+- Recoverable: `archive.db`, vectors, and graph indexes can be rebuilt.
 - Conservative: promotion rules matter more than fancy ranking.
 
 ## Memory Layout
@@ -32,7 +34,7 @@ flowchart LR
     L1["Pinned core<br/>system/*.md"] --> L2["Canonical wiki<br/>wiki/*"]
     L2 --> L3["Procedures<br/>drafts active retired"]
     L3 --> L4["Archive<br/>raw sessions + chunk store"]
-    L4 --> L5["Derived caches<br/>FTS5 + vectors"]
+    L4 --> L5["Derived caches<br/>FTS5 + vectors + graph"]
 ```
 
 ```mermaid
@@ -48,18 +50,20 @@ flowchart TD
 
 ## What Ships Today
 
-Phase 2.5 is implemented.
+Phase 3 is implemented.
 
 ```mermaid
 flowchart LR
     A["sync"] --> B["Parse notes"]
     B --> C["FTS5 + metadata index"]
     B --> D["Semantic note vectors"]
+    B --> J["Graph edges from explicit links"]
     E["ingest-session"] --> F["raw session file"]
     E --> G["archive chunks + summaries"]
     E --> H["promoted notes or review items"]
     C --> I["hybrid retrieval"]
     D --> I
+    J --> I
     G --> I
     H --> I
 ```
@@ -67,13 +71,32 @@ flowchart LR
 - incremental vault sync into SQLite
 - note summaries generated during sync
 - local semantic retrieval channel using deterministic hashed vectors
+- graph retrieval layer from explicit note relationships like `owners`, `repo`, and `linked_*`
 - raw session ingest with archive chunking and chunk summaries
 - explicit memory promotion into canonical notes
 - review item generation for medium-confidence promotions
 - maintenance jobs for duplicate aliases and stale active notes
 - `ACTIVE.md` refresh from maintenance jobs, with review, stale, and eval backlog sections
 - retrieval-miss mining into `evals/candidates.jsonl` for future labeling
-- test coverage for Phase 1, Phase 2, and Phase 2.5 flows
+- test coverage for Phase 1, Phase 2, Phase 2.5, and Phase 3 flows
+
+## Graph Memory
+
+Phase 3 adds a small, SQLite-backed note graph derived only from explicit
+relationships already present in canonical note frontmatter.
+
+```mermaid
+flowchart LR
+    N["Canonical note"] --> R["owners / repo / linked_* / entities"]
+    R --> G["graph_edges"]
+    G --> X["graph-aware retrieval"]
+```
+
+- the graph is a cache, not a source of truth
+- it is rebuilt during note sync, so direct vault edits stay authoritative
+- it expands from the strongest focal notes instead of replacing BM25
+- it helps with questions like “which decision does Sarah Chen own?” where the
+  target note may not mention the owner in its body text
 
 ## Maintenance Loop
 
@@ -104,9 +127,13 @@ flowchart LR
     Q --> X["Exact id / alias / title"]
     Q --> B["BM25 over notes"]
     Q --> S["Semantic note search"]
+    X --> G["Graph expansion from focal notes"]
+    B --> G
+    S --> G
     X --> R["Merge + rerank"]
     B --> R
     S --> R
+    G --> R
     R --> A["Archive fallback<br/>when notes are weak"]
 ```
 
@@ -115,6 +142,7 @@ Current retrieval behavior:
 - exact matches win immediately
 - BM25 remains the primary retrieval backbone
 - semantic retrieval is a second channel, not a replacement
+- graph expansion pulls in related notes from explicit links
 - archive chunk fallback is used when canonical notes are not enough
 
 The built-in semantic encoder is intentionally simple and local. It gives
@@ -175,6 +203,7 @@ mnemonicos sync --mode full
 mnemonicos ingest-session --agent codex --slug pairing --file ./notes/session.md
 mnemonicos retrieve "how do we release the auth service?"
 mnemonicos run-job daily_consolidation
+mnemonicos run-job weekly_hygiene
 ```
 
 Without installation:
@@ -185,6 +214,7 @@ PYTHONPATH=src python3 -m second_brain sync --mode full
 PYTHONPATH=src python3 -m second_brain ingest-session --agent codex --slug pairing --file ./notes/session.md
 PYTHONPATH=src python3 -m second_brain retrieve "how do we release the auth service?"
 PYTHONPATH=src python3 -m second_brain run-job daily_consolidation
+PYTHONPATH=src python3 -m second_brain run-job weekly_hygiene
 ```
 
 `run-job daily_consolidation` now refreshes `brain/system/ACTIVE.md` and appends retrieval misses to `evals/candidates.jsonl` on live runs.
@@ -194,8 +224,10 @@ PYTHONPATH=src python3 -m second_brain run-job daily_consolidation
 - [docs/IMPLEMENTATION_PLAN.md](/Users/jianyulong/ai_memory/docs/IMPLEMENTATION_PLAN.md): build notes and architecture details
 - [migrations/001_initial_schema.sql](/Users/jianyulong/ai_memory/migrations/001_initial_schema.sql): Phase 1 schema
 - [migrations/002_phase2_semantic_and_ingest.sql](/Users/jianyulong/ai_memory/migrations/002_phase2_semantic_and_ingest.sql): Phase 2 schema
+- [migrations/003_phase3_graph_cache.sql](/Users/jianyulong/ai_memory/migrations/003_phase3_graph_cache.sql): Phase 3 graph schema
 - [src/second_brain/cli.py](/Users/jianyulong/ai_memory/src/second_brain/cli.py): entry points
 - [src/second_brain/ingest.py](/Users/jianyulong/ai_memory/src/second_brain/ingest.py): raw session ingest and promotion
 - [src/second_brain/retrieval.py](/Users/jianyulong/ai_memory/src/second_brain/retrieval.py): hybrid retrieval
+- [src/second_brain/graph.py](/Users/jianyulong/ai_memory/src/second_brain/graph.py): note graph materialization and expansion
 - [src/second_brain/jobs.py](/Users/jianyulong/ai_memory/src/second_brain/jobs.py): maintenance jobs
 - [src/second_brain/ops.py](/Users/jianyulong/ai_memory/src/second_brain/ops.py): `ACTIVE.md` refresh and eval candidate ops

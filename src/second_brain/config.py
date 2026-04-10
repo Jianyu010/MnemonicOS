@@ -47,6 +47,14 @@ class EmbeddingsConfig:
 
 
 @dataclass(slots=True)
+class GraphConfig:
+    enabled: bool = True
+    focal_limit: int = 3
+    expand_limit: int = 8
+    graph_weight: float = 0.20
+
+
+@dataclass(slots=True)
 class AgentConfig:
     session_prefix: str
     can_promote: bool
@@ -58,6 +66,7 @@ class AppConfig:
     retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
     ingest: IngestConfig = field(default_factory=IngestConfig)
     embeddings: EmbeddingsConfig = field(default_factory=EmbeddingsConfig)
+    graph: GraphConfig = field(default_factory=GraphConfig)
     agents: dict[str, AgentConfig] = field(default_factory=dict)
     config_path: Path | None = None
 
@@ -115,6 +124,14 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
         reembed_on_summary_change_only=bool(embeddings_data.get("reembed_on_summary_change_only", True)),
     )
 
+    graph_data = data.get("graph", {})
+    graph = GraphConfig(
+        enabled=bool(graph_data.get("enabled", True)),
+        focal_limit=int(graph_data.get("focal_limit", 3)),
+        expand_limit=int(graph_data.get("expand_limit", 8)),
+        graph_weight=float(graph_data.get("graph_weight", 0.20)),
+    )
+
     agents: dict[str, AgentConfig] = {}
     for agent_name, agent_data in data.get("agents", {}).items():
         agents[agent_name] = AgentConfig(
@@ -127,6 +144,7 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
         retrieval=retrieval,
         ingest=ingest,
         embeddings=embeddings,
+        graph=graph,
         agents=agents,
         config_path=resolved_config,
     )

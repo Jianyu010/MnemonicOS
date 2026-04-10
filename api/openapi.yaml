@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: MnemonicOS Local API
-  version: 0.2.5
-  description: Minimal local API for ingest, sync, retrieval, and maintenance jobs.
+  version: 0.3.0
+  description: Minimal local API for ingest, sync, retrieval, graph expansion, and maintenance jobs.
 servers:
   - url: http://127.0.0.1:8000
 paths:
