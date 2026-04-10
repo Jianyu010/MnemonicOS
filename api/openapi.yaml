@@ -1,0 +1,240 @@
+openapi: 3.1.0
+info:
+  title: MnemonicOS Local API
+  version: 0.1.0
+  description: Minimal local API for ingest, sync, retrieval, and jobs.
+servers:
+  - url: http://127.0.0.1:8000
+paths:
+  /v1/health:
+    get:
+      operationId: health
+      responses:
+        '200':
+          description: Service health
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    const: ok
+                  db_ready:
+                    type: boolean
+                required: [status, db_ready]
+
+  /v1/ingest/session:
+    post:
+      operationId: ingestSession
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestSessionRequest'
+      responses:
+        '200':
+          description: Session ingested
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestSessionResponse'
+
+  /v1/sync/vault:
+    post:
+      operationId: syncVault
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SyncVaultRequest'
+      responses:
+        '200':
+          description: Vault synchronized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncVaultResponse'
+
+  /v1/retrieve:
+    post:
+      operationId: retrieve
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetrieveRequest'
+      responses:
+        '200':
+          description: Retrieval results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetrieveResponse'
+
+  /v1/jobs/run:
+    post:
+      operationId: runJob
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunJobRequest'
+      responses:
+        '200':
+          description: Job executed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunJobResponse'
+
+components:
+  schemas:
+    IngestSessionRequest:
+      type: object
+      properties:
+        agent:
+          type: string
+        slug:
+          type: string
+        content:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        source_refs:
+          type: array
+          items:
+            type: string
+      required: [agent, slug, content]
+
+    IngestSessionResponse:
+      type: object
+      properties:
+        archive_id:
+          type: string
+        promoted_notes:
+          type: array
+          items:
+            type: string
+        review_items:
+          type: array
+          items:
+            type: string
+        sync_mode:
+          type: string
+      required: [archive_id, promoted_notes, review_items, sync_mode]
+
+    SyncVaultRequest:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum: [incremental, full]
+        paths:
+          type: array
+          items:
+            type: string
+      required: [mode]
+
+    SyncVaultResponse:
+      type: object
+      properties:
+        scanned_paths:
+          type: integer
+        synced_notes:
+          type: integer
+        deleted_notes:
+          type: integer
+        parse_errors:
+          type: integer
+      required: [scanned_paths, synced_notes, deleted_notes, parse_errors]
+
+    RetrieveRequest:
+      type: object
+      properties:
+        query:
+          type: string
+        top_k:
+          type: integer
+          default: 5
+        query_type_hint:
+          type: string
+        include_archive_fallback:
+          type: boolean
+          default: true
+      required: [query]
+
+    RetrieveResponse:
+      type: object
+      properties:
+        query_id:
+          type: integer
+        query_type:
+          type: string
+        classifier_confidence:
+          type: number
+        hits:
+          type: array
+          items:
+            $ref: '#/components/schemas/NoteHit'
+      required: [query_id, hits]
+
+    NoteHit:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        type:
+          type: string
+        status:
+          type: string
+        body_path:
+          type: string
+        summary:
+          type: string
+        channels:
+          type: array
+          items:
+            type: string
+        raw_score:
+          type: number
+        final_score:
+          type: number
+        excerpt:
+          type: string
+      required: [id, title, type, body_path, channels, final_score]
+
+    RunJobRequest:
+      type: object
+      properties:
+        job_name:
+          type: string
+          enum: [daily_consolidation, weekly_hygiene, sync_vault_incremental]
+        dry_run:
+          type: boolean
+          default: false
+      required: [job_name]
+
+    RunJobResponse:
+      type: object
+      properties:
+        job_name:
+          type: string
+        status:
+          type: string
+        stats:
+          type: object
+          additionalProperties: true
+        review_items_created:
+          type: array
+          items:
+            type: string
+      required: [job_name, status, stats, review_items_created]

@@ -1,0 +1,2 @@
+{"id":"q001","query":"How do we deploy the auth service?","query_type":"how_to","expected_top1":"procedure/deploy-auth-service","expected_in_top5":["procedure/deploy-auth-service","project/auth-service"],"source":"manual"}
+{"id":"q002","query":"Why did we pick Postgres for auth?","query_type":"decision","expected_top1":"decision/auth-postgres","expected_in_top5":["decision/auth-postgres","project/auth-service"],"source":"manual"}

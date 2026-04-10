@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+brain/data/archive.db
+brain/data/archive.db-shm
+brain/data/archive.db-wal

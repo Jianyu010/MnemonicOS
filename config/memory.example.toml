@@ -1,0 +1,44 @@
+[paths]
+vault_root = "brain"
+db_path = "brain/data/archive.db"
+vectors_dir = "brain/data/vectors"
+graph_dir = "brain/data/graph"
+eval_queries = "evals/queries.jsonl"
+
+[retrieval]
+top_k = 5
+include_archive_fallback = true
+pinned_token_budget = 2000
+total_context_budget = 6000
+bm25_weight = 0.30
+semantic_weight = 0.25
+type_prior_weight = 0.15
+freshness_weight = 0.10
+memory_strength_weight = 0.10
+exact_alias_weight = 0.10
+
+[ingest]
+chunk_tokens = 400
+chunk_overlap_tokens = 50
+default_archive_type = "session"
+
+[embeddings]
+enabled = false
+provider = "local"
+model = "nomic-embed-text"
+dimensions = 768
+reembed_on_summary_change_only = true
+
+[jobs]
+sync_on_startup = true
+sync_after_ingest = true
+daily_consolidation = "0 3 * * *"
+weekly_hygiene = "0 4 * * 0"
+
+[agents.codex]
+session_prefix = "codex"
+can_promote = false
+
+[agents.claude]
+session_prefix = "claude"
+can_promote = true
