@@ -8,6 +8,7 @@ import re
 import yaml
 
 from .models import NoteRecord
+from .summaries import summarize_text
 
 
 SUPPORTED_NOTE_TYPES = {
@@ -75,27 +76,7 @@ def _extract_summary(metadata: dict[str, object], body: str) -> str:
     explicit = str(metadata.get("summary", "")).strip()
     if explicit:
         return explicit[:400]
-
-    paragraphs: list[str] = []
-    current: list[str] = []
-    for raw_line in body.splitlines():
-        line = raw_line.strip()
-        if not line:
-            if current:
-                paragraphs.append(" ".join(current))
-                current = []
-            continue
-        if line.startswith("#"):
-            continue
-        if line.startswith("- ") or line.startswith("* ") or re.match(r"^\d+\.\s+", line):
-            continue
-        current.append(line)
-    if current:
-        paragraphs.append(" ".join(current))
-
-    if paragraphs:
-        return paragraphs[0][:400]
-    return ""
+    return summarize_text(body, max_sentences=2, max_chars=400)
 
 
 def split_frontmatter(text: str) -> ParsedFrontmatter:

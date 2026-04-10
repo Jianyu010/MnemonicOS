@@ -10,6 +10,7 @@ from .db import connect_db, run_migrations
 from .models import NoteRecord, SyncResult
 from .parser import NoteParseError, parse_note
 from .paths import VaultPaths
+from .semantics import encode_text, upsert_note_vector
 
 
 def _file_hash(path: Path) -> str:
@@ -73,7 +74,7 @@ def _build_aliases(note: NoteRecord) -> list[str]:
     return ordered
 
 
-def _upsert_note(connection: sqlite3.Connection, note: NoteRecord) -> None:
+def _upsert_note(connection: sqlite3.Connection, note: NoteRecord) -> tuple[list[str], str]:
     connection.execute(
         "DELETE FROM notes WHERE body_path = ? AND id != ?",
         (str(note.body_path), note.id),
@@ -149,6 +150,9 @@ def _upsert_note(connection: sqlite3.Connection, note: NoteRecord) -> None:
         (note.id, note.title, " ".join(aliases), note.summary, note.body),
     )
 
+    semantic_source = "\n".join([note.title, " ".join(aliases), note.summary]).strip()
+    return aliases, semantic_source
+
 
 def _sync_system_file(connection: sqlite3.Connection, path: Path) -> None:
     _upsert_sync_state(
@@ -211,7 +215,17 @@ def sync_vault(config: AppConfig, mode: str = "incremental", selected_paths: lis
             scanned_paths += 1
             try:
                 note = parse_note(path)
-                _upsert_note(connection, note)
+                aliases, semantic_source = _upsert_note(connection, note)
+                if config.embeddings.enabled:
+                    vector = encode_text(semantic_source, dimensions=config.embeddings.dimensions)
+                    upsert_note_vector(
+                        connection,
+                        note_id=note.id,
+                        model=config.embeddings.model,
+                        dimensions=config.embeddings.dimensions,
+                        vector=vector,
+                        source_hash=note.content_hash,
+                    )
                 _upsert_sync_state(
                     connection,
                     path=path,

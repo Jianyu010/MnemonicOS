@@ -1,5 +1,9 @@
 # Implementation Plan
 
+Current status: Phase 2.5 is implemented locally in this repo. The remaining
+work is refinement, stronger embeddings, and deeper consolidation logic rather
+than basic scaffolding.
+
 ## Goal
 
 Turn the spec into a small local service that can:
@@ -129,11 +133,14 @@ src/second_brain/
   db.py
   models.py
   parser.py
+  summaries.py
+  semantics.py
+  review.py
   sync.py
   ingest.py
   retrieval.py
-  consolidate.py
-  api.py
+  jobs.py
+  ops.py
 ```
 
 Minimal responsibilities:
@@ -143,11 +150,14 @@ Minimal responsibilities:
 - `db.py`: open SQLite, run migrations, transaction helpers
 - `models.py`: request and response models
 - `parser.py`: frontmatter parsing and note validation
+- `summaries.py`: extractive summaries for notes and archive chunks
+- `semantics.py`: local hash-vector semantic channel
+- `review.py`: inspectable review item writer
 - `sync.py`: scan changed files and refresh DB caches
 - `ingest.py`: raw write, chunking, promotion, upsert
 - `retrieval.py`: exact, BM25, semantic, rerank, log
-- `consolidate.py`: daily and weekly jobs
-- `api.py`: HTTP endpoints from `api/openapi.yaml`
+- `jobs.py`: daily and weekly maintenance jobs
+- `ops.py`: `ACTIVE.md` refresh and retrieval-miss eval candidate mining
 
 ## Sync Jobs
 
@@ -221,7 +231,9 @@ Steps:
 4. wikilink repair proposals
 5. stale note detection
 6. incremental vector refresh
-7. append one daily summary line to `brain/wiki/log.md`
+7. mine retrieval misses into `evals/candidates.jsonl`
+8. refresh `brain/system/ACTIVE.md` with review and stale-note surfaces
+9. append one daily summary line to `brain/wiki/log.md`
 
 ### Job: `weekly_hygiene`
 
@@ -329,6 +341,14 @@ Definition of done:
 - a session can be ingested end to end
 - review items are created for medium-confidence merges
 - stale notes surface in `ACTIVE.md`
+
+Status:
+
+- ingest pipeline implemented
+- archive chunking implemented
+- review item creation implemented
+- daily consolidation implemented as a maintenance job
+- `ACTIVE.md` surfacing is still a follow-up refinement
 
 ### Milestone 3
 

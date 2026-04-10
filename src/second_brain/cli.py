@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 
 from .config import load_config
 from .db import connect_db, run_migrations
+from .ingest import ingest_session
+from .jobs import run_job
 from .retrieval import result_to_json, retrieve
 from .sync import sync_vault
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="MnemonicOS Phase 1 CLI")
+    parser = argparse.ArgumentParser(description="MnemonicOS local memory system CLI")
     parser.add_argument(
         "--config",
         default="config/memory.example.toml",
@@ -25,11 +26,23 @@ def _build_parser() -> argparse.ArgumentParser:
     sync_parser.add_argument("--mode", choices=("incremental", "full"), default="incremental")
     sync_parser.add_argument("paths", nargs="*", help="Optional subset of files to sync.")
 
-    retrieve_parser = subparsers.add_parser("retrieve", help="Run exact and BM25 retrieval.")
+    ingest_parser = subparsers.add_parser("ingest-session", help="Ingest a raw session and promote explicit memory items.")
+    ingest_parser.add_argument("--agent", required=True)
+    ingest_parser.add_argument("--slug", required=True)
+    ingest_parser.add_argument("--file", help="Path to a markdown file with session content.")
+    ingest_parser.add_argument("--content", help="Inline session content.")
+    ingest_parser.add_argument("--tag", action="append", default=[])
+    ingest_parser.add_argument("--source-ref", action="append", default=[])
+
+    retrieve_parser = subparsers.add_parser("retrieve", help="Run hybrid retrieval across exact, BM25, semantic, and archive channels.")
     retrieve_parser.add_argument("query", help="Query text.")
     retrieve_parser.add_argument("--top-k", type=int, default=None)
     retrieve_parser.add_argument("--query-type-hint", default=None)
     retrieve_parser.add_argument("--json", action="store_true", help="Emit JSON output.")
+
+    jobs_parser = subparsers.add_parser("run-job", help="Run a maintenance job.")
+    jobs_parser.add_argument("job_name", choices=("daily_consolidation", "weekly_hygiene", "sync_vault_incremental"))
+    jobs_parser.add_argument("--dry-run", action="store_true")
 
     return parser
 
@@ -84,6 +97,45 @@ def _retrieve(config_path: str, query: str, top_k: int | None, query_type_hint: 
     return 0
 
 
+def _ingest_session(config_path: str, agent: str, slug: str, file_path: str | None, content: str | None, tags: list[str], source_refs: list[str]) -> int:
+    if bool(file_path) == bool(content):
+        raise SystemExit("provide exactly one of --file or --content")
+    payload = content
+    if file_path is not None:
+        payload = open(file_path, encoding="utf-8").read()
+    config = load_config(config_path)
+    result = ingest_session(
+        config,
+        agent=agent,
+        slug=slug,
+        content=payload or "",
+        tags=tags,
+        source_refs=source_refs,
+    )
+    print(f"archive_id={result.archive_id}")
+    print(f"raw_path={result.raw_path}")
+    print(f"chunk_count={result.chunk_count}")
+    print(f"promoted_notes={len(result.promoted_notes)}")
+    for note_id in result.promoted_notes:
+        print(f"  note={note_id}")
+    print(f"review_items={len(result.review_items)}")
+    for review_id in result.review_items:
+        print(f"  review={review_id}")
+    return 0
+
+
+def _run_job(config_path: str, job_name: str, dry_run: bool) -> int:
+    config = load_config(config_path)
+    result = run_job(config, job_name=job_name, dry_run=dry_run)
+    print(f"job_name={result.job_name}")
+    print(f"status={result.status}")
+    for key, value in sorted(result.stats.items()):
+        print(f"{key}={value}")
+    for review_id in result.review_items_created:
+        print(f"review={review_id}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -92,8 +144,12 @@ def main(argv: list[str] | None = None) -> int:
         return _init_db(args.config)
     if args.command == "sync":
         return _sync(args.config, args.mode, args.paths)
+    if args.command == "ingest-session":
+        return _ingest_session(args.config, args.agent, args.slug, args.file, args.content, args.tag, args.source_ref)
     if args.command == "retrieve":
         return _retrieve(args.config, args.query, args.top_k, args.query_type_hint, args.json)
+    if args.command == "run-job":
+        return _run_job(args.config, args.job_name, args.dry_run)
 
     parser.error(f"unknown command: {args.command}")
     return 2

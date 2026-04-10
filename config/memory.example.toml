@@ -21,12 +21,13 @@ exact_alias_weight = 0.10
 chunk_tokens = 400
 chunk_overlap_tokens = 50
 default_archive_type = "session"
+explicit_markers_only = false
 
 [embeddings]
-enabled = false
-provider = "local"
-model = "nomic-embed-text"
-dimensions = 768
+enabled = true
+provider = "hash"
+model = "hash-256-v1"
+dimensions = 256
 reembed_on_summary_change_only = true
 
 [jobs]

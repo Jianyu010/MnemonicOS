@@ -62,3 +62,20 @@ class RetrieveResult:
     classifier_confidence: float | None
     hits: list[RetrieveHit]
     pinned_paths: list[str]
+
+
+@dataclass(slots=True)
+class IngestSessionResult:
+    archive_id: str
+    raw_path: str
+    chunk_count: int
+    promoted_notes: list[str]
+    review_items: list[str]
+
+
+@dataclass(slots=True)
+class JobRunResult:
+    job_name: str
+    status: str
+    stats: dict[str, int]
+    review_items_created: list[str]
