@@ -1,292 +1,262 @@
 # MnemonicOS
 
-MnemonicOS is a local-first memory system for agentic runtimes and automation
-clients. The markdown
-vault is the source of truth; SQLite search tables, semantic vectors, the note
-graph, and trust/freshness state are rebuildable caches.
+MnemonicOS is a standalone memory system for LLM workflows.
 
-## Design
+It is not an agent plugin pretending to be a product. It is a local, model-agnostic memory runtime with its own storage model, retrieval path, maintenance path, and runtime protocol. Agents may call it, but they do not define it.
+
+What makes it special:
+
+- standalone and agent-independent: the memory system is canonical; adapters are secondary
+- two-speed architecture: fast path for request-time context, slow path for consolidation and self-organization
+- graph and state aware: memories carry links, freshness, lifecycle, and trust signals
+- self-evolving: outcomes, maintenance jobs, and review queues improve memory quality over time
+- Obsidian-friendly: markdown remains the source of truth, with built-in support for Obsidian-compatible links and properties
+
+## System Shape
 
 ```mermaid
 flowchart TD
-    A["Humans / Agents"] --> B["Vault<br/>brain/"]
-    B --> C["SQLite cache<br/>notes + FTS5 + archive"]
-    B --> D["Semantic cache<br/>local hash vectors"]
-    B --> H["Graph cache<br/>explicit note links"]
-    B --> T["Trust/Freshness cache<br/>staleness + usefulness"]
-    C --> E["Retriever"]
+    A["Caller<br/>CLI / API / future adapters"] --> B["Runtime Protocol<br/>resolve_task_context<br/>record_outcome<br/>decide_writeback<br/>run_maintenance"]
+    B --> C["Fast Path<br/>retrieve + packet assembly"]
+    B --> D["Slow Path<br/>maintenance + consolidation"]
+    C --> E["Vault<br/>brain/ markdown"]
+    C --> F["SQLite caches<br/>FTS + vectors + graph + state"]
     D --> E
-    H --> E
-    T --> E
-    B --> F["Pinned memory<br/>MEMORY.md USER.md ACTIVE.md"]
-    F --> E
-    E --> G["LLM context"]
+    D --> F
 ```
-
-Why it is structured this way:
-
-- Inspectable: every durable memory lives as markdown in `brain/`.
-- Portable: git can move the whole system without a hosted backend.
-- Recoverable: `archive.db`, vectors, graph indexes, and freshness/trust state can be rebuilt.
-- Conservative: promotion rules matter more than fancy ranking.
-
-## Memory Layout
 
 ```mermaid
 flowchart LR
-    L1["Pinned core<br/>system/*.md"] --> L2["Canonical wiki<br/>wiki/*"]
-    L2 --> L3["Procedures<br/>drafts active retired"]
-    L3 --> L4["Archive<br/>raw sessions + chunk store"]
-    L4 --> L5["Derived caches<br/>FTS5 + vectors + graph"]
-```
-
-```mermaid
-flowchart TD
-    brain["brain/"]
-    brain --> system["system/<br/>MEMORY.md<br/>USER.md<br/>ACTIVE.md<br/>AGENTS.md"]
-    brain --> raw["raw/<br/>sessions docs web_clips assets"]
-    brain --> wiki["wiki/<br/>people projects repos decisions concepts incidents procedures journals overviews sources review"]
-    brain --> data["data/<br/>archive.db"]
-    brain --> locks["locks/"]
-    brain --> templates["templates/"]
-```
-
-## What Ships Today
-
-Phase 4 is implemented.
-
-```mermaid
-flowchart LR
-    A["sync"] --> B["Parse notes"]
-    B --> C["FTS5 + metadata index"]
-    B --> D["Semantic note vectors"]
-    B --> J["Graph edges from explicit links"]
-    B --> K["Trust + freshness signals"]
-    E["ingest-session"] --> F["raw session file"]
-    E --> G["archive chunks + summaries"]
-    E --> H["promoted notes or review items"]
-    C --> I["hybrid retrieval"]
-    D --> I
-    J --> I
-    K --> I
-    G --> I
-    H --> I
-```
-
-- incremental vault sync into SQLite
-- note summaries generated during sync
-- local semantic retrieval channel using deterministic hashed vectors
-- graph retrieval layer from explicit note relationships like `owners`, `repo`, and `linked_*`
-- trust/usefulness scoring from retrieval history
-- freshness states that demote stale current-truth notes without deleting history
-- raw session ingest with archive chunking and chunk summaries
-- explicit memory promotion into canonical notes
-- review item generation for medium-confidence promotions and contradictions
-- maintenance jobs for duplicate aliases, freshness, contradiction, and relearn queues
-- `ACTIVE.md` refresh from maintenance jobs, with review, contradiction, stale, relearn, and eval sections
-- `wiki/overviews/maintenance.md` generation during weekly hygiene
-- retrieval-miss mining into `evals/candidates.jsonl` for future labeling
-- test coverage for Phase 1, Phase 2, Phase 2.5, Phase 3, and Phase 4 flows
-
-## Trust And Freshness
-
-Phase 4 adds a trust-and-freshness layer so old knowledge does not silently
-fossilize the system.
-
-```mermaid
-flowchart LR
-    U["Retrieval usage"] --> T["note_trust"]
-    R["Reviews + incidents + age"] --> F["note_freshness"]
-    T --> X["rerank"]
-    F --> X
-    X --> Q["Current vs historical query handling"]
-```
-
-- trust is learned from retrieval success, usefulness labels, and failures
-- freshness states are `fresh`, `aging`, `suspect`, `stale`, and `contested`
-- stale notes are demoted for current-state questions
-- historical queries can still pull older knowledge back when history is what you want
-- MnemonicOS creates relearn tasks instead of autonomously rewriting truth
-
-## Graph Memory
-
-Phase 3 adds a small, SQLite-backed note graph derived only from explicit
-relationships already present in canonical note frontmatter.
-
-```mermaid
-flowchart LR
-    N["Canonical note"] --> R["owners / repo / linked_* / entities"]
-    R --> G["graph_edges"]
-    G --> X["graph-aware retrieval"]
-```
-
-- the graph is a cache, not a source of truth
-- it is rebuilt during note sync, so direct vault edits stay authoritative
-- it expands from the strongest focal notes instead of replacing BM25
-- it helps with questions like “which decision does Sarah Chen own?” where the
-  target note may not mention the owner in its body text
-
-## Maintenance Loop
-
-The system now closes the loop between retrieval quality and operator review.
-
-```mermaid
-flowchart LR
-    Q["retrieve"] --> L["retrieval logs"]
-    L --> J["daily_consolidation"]
-    L --> T["trust scores"]
-    J --> A["ACTIVE.md refresh"]
-    J --> R["wiki/review/*.md"]
-    J --> K["relearn_tasks"]
-    J --> E["evals/candidates.jsonl"]
-    J --> M["maintenance.md"]
-    A --> H["human review"]
-    R --> H
-    E --> H
-    K --> H
-```
-
-- unresolved review items are summarized into `brain/system/ACTIVE.md`
-- stale and contested notes are surfaced with freshness state and verification dates
-- contradiction reviews and relearn tasks are generated as explicit artifacts
-- zero-hit or archive-only retrievals become eval candidates automatically
-- dry runs report predicted backlog without mutating the vault
-
-## Retrieval
-
-```mermaid
-flowchart LR
-    Q["Query"] --> P["Pinned memory"]
-    Q --> X["Exact id / alias / title"]
-    Q --> B["BM25 over notes"]
-    Q --> S["Semantic note search"]
-    X --> G["Graph expansion from focal notes"]
-    B --> G
-    S --> G
-    X --> R["Merge + rerank<br/>trust + freshness aware"]
-    B --> R
-    S --> R
+    V["Vault markdown"] --> S["Sync / Parse"]
+    S --> I["Indexes"]
+    S --> G["Graph cache"]
+    S --> T["Trust + Freshness + Lifecycle"]
+    I --> R["Hybrid retrieval"]
     G --> R
-    R --> A["Archive fallback<br/>when notes are weak"]
+    T --> R
+    R --> P["Bounded memory packet"]
 ```
 
-Current retrieval behavior:
+## How To Use
 
-- exact matches win immediately
-- BM25 remains the primary retrieval backbone
-- semantic retrieval is a second channel, not a replacement
-- graph expansion pulls in related notes from explicit links
-- reranking uses trust and freshness to separate current truth from historical memory
-- archive chunk fallback is used when canonical notes are not enough
+Current canonical usage is local and direct. Adapter workflows are not yet the primary UX.
 
-The built-in semantic encoder is intentionally simple and local. It gives
-hybrid retrieval out of the box today and can later be replaced with a stronger
-local embedding model without changing the vault format.
+1. Initialize the database.
+2. Sync the vault.
+3. Ingest durable session summaries or notes.
+4. Resolve task context or run retrieval directly.
+5. Record outcomes and decide writeback explicitly when appropriate.
+6. Run maintenance jobs to refresh and organize memory.
 
-## Ingest
-
-MnemonicOS ingests raw sessions first, then promotes only explicit or
-high-confidence memories.
-
-```mermaid
-flowchart LR
-    A["Session markdown"] --> B["Write raw/sessions file"]
-    B --> C["Chunk + summarize"]
-    C --> D["Parse memory markers"]
-    D --> E{"confidence"}
-    E -->|high| F["write canonical note<br/>or system memory"]
-    E -->|medium| G["write review item"]
-    F --> H["sync indexes"]
-```
-
-Supported Phase 2 memory markers:
-
-````markdown
-```memory
-items:
-  - type: decision
-    title: Use PgBouncer for auth connection pooling
-    body: PgBouncer will sit in front of Postgres to absorb spikes.
-    tags: [auth, database]
-    confidence: high
-  - type: procedure
-    title: Rotate auth deploy checklist
-    steps:
-      - Run smoke tests
-      - Approve rollout
-    confidence: medium
-  - type: preference
-    title: Prefer async PR reviews for infra changes
-    confidence: high
-```
-````
-
-- `high` confidence note items are written into `wiki/`
-- `medium` confidence items become inspectable files in `wiki/review/`
-- `preference` updates `USER.md`
-- `convention` updates `MEMORY.md`
-- procedures stay `draft` unless review metadata is present
-
-## Quick Start
-
-If installed as a package:
-
-```bash
-mnemonicos init-db
-mnemonicos sync --mode full
-mnemonicos ingest-session --bridge-id local-cli --session-id pairing --file ./notes/session.md
-mnemonicos retrieve "how do we release the auth service?"
-mnemonicos run-job daily_consolidation
-mnemonicos run-job weekly_hygiene
-```
-
-Without installation:
+### CLI
 
 ```bash
 PYTHONPATH=src python3 -m second_brain init-db
 PYTHONPATH=src python3 -m second_brain sync --mode full
-PYTHONPATH=src python3 -m second_brain ingest-session --bridge-id local-cli --session-id pairing --file ./notes/session.md
-PYTHONPATH=src python3 -m second_brain retrieve "how do we release the auth service?"
+PYTHONPATH=src python3 -m second_brain ingest-session --bridge-id local-cli --session-id session-001 --file ./notes/session.md
+PYTHONPATH=src python3 -m second_brain resolve-task-context "how do we deploy auth service" \
+  --bridge-id local-cli \
+  --session-id session-001 \
+  --task-id task-001 \
+  --task-kind coding \
+  --temporality current \
+  --json
+PYTHONPATH=src python3 -m second_brain record-outcome \
+  --bridge-id local-cli \
+  --session-id session-001 \
+  --task-id task-001 \
+  --outcome-type task_result \
+  --status success \
+  --summary "Used existing deploy memory successfully." \
+  --json
+PYTHONPATH=src python3 -m second_brain decide-writeback \
+  --bridge-id local-cli \
+  --session-id session-001 \
+  --task-id task-001 \
+  --note-type procedure \
+  --title "Deploy Auth Service" \
+  --summary-text "Refined deploy checklist after successful run." \
+  --json
 PYTHONPATH=src python3 -m second_brain run-job daily_consolidation
 PYTHONPATH=src python3 -m second_brain run-job weekly_hygiene
 ```
 
-`run-job daily_consolidation` now refreshes `brain/system/ACTIVE.md`, updates trust/freshness state, creates relearn tasks, and appends retrieval misses to `evals/candidates.jsonl` on live runs.
+## Memory Model
 
-## Bridge Adapters
+MnemonicOS keeps markdown as the source of truth and treats all derived structures as rebuildable caches.
 
-MnemonicOS exposes a reuse-first bridge protocol for external adapters. The
-core product stays model- and client-independent; vendor-specific adapters can
-layer on top of the shared bridge scripts and runtime API.
+```mermaid
+flowchart LR
+    A["Pinned system memory<br/>MEMORY.md USER.md ACTIVE.md"] --> B["Canonical notes<br/>wiki/*"]
+    B --> C["Raw archive<br/>sessions docs clips"]
+    C --> D["Derived caches<br/>FTS vectors graph state"]
+```
 
-Shared bridge scripts:
+Durable note kinds:
 
-- `scripts/mnemonic_context.sh`
-- `scripts/mnemonic_should_retrieve.sh`
-- `scripts/mnemonic_should_writeback.sh`
-- `scripts/mnemonic_should_upsert.sh`
-- `scripts/mnemonic_postflight.sh`
+- `person`
+- `project`
+- `repo`
+- `decision`
+- `procedure`
+- `concept`
+- `incident`
+- `source`
+- `journal`
+- `overview`
 
-The bridge policy is:
+Additional semantic layers:
 
-- query MnemonicOS first for coding, project, and knowledge tasks
-- reuse existing current memory when sufficient
-- treat stale or contested memory as background context, then research fresh
-- retrieve again after the first meaningful failure
-- write back failures, reusable successes, and durable knowledge sessions
-- prefer `confirm` or `update` over creating duplicate notes
+- overlay class: `fact`, `episode`
+- lifecycle state: `draft`, `review`, `verified`, `canonical`, `contested`, `archived`
+- freshness state: `fresh`, `aging`, `suspect`, `stale`, `contested`
 
-## Repo Map
+Key rule:
 
-- [docs/IMPLEMENTATION_PLAN.md](/Users/jianyulong/ai_memory/docs/IMPLEMENTATION_PLAN.md): build notes and architecture details
-- [migrations/001_initial_schema.sql](/Users/jianyulong/ai_memory/migrations/001_initial_schema.sql): Phase 1 schema
-- [migrations/002_phase2_semantic_and_ingest.sql](/Users/jianyulong/ai_memory/migrations/002_phase2_semantic_and_ingest.sql): Phase 2 schema
-- [migrations/003_phase3_graph_cache.sql](/Users/jianyulong/ai_memory/migrations/003_phase3_graph_cache.sql): Phase 3 graph schema
-- [migrations/004_phase4_trust_freshness.sql](/Users/jianyulong/ai_memory/migrations/004_phase4_trust_freshness.sql): Phase 4 trust, freshness, and relearn schema
-- [src/second_brain/cli.py](/Users/jianyulong/ai_memory/src/second_brain/cli.py): entry points
-- [src/second_brain/ingest.py](/Users/jianyulong/ai_memory/src/second_brain/ingest.py): raw session ingest and promotion
-- [src/second_brain/retrieval.py](/Users/jianyulong/ai_memory/src/second_brain/retrieval.py): hybrid retrieval
-- [src/second_brain/graph.py](/Users/jianyulong/ai_memory/src/second_brain/graph.py): note graph materialization and expansion
-- [src/second_brain/trust.py](/Users/jianyulong/ai_memory/src/second_brain/trust.py): trust scoring, freshness, and rerank training
-- [src/second_brain/jobs.py](/Users/jianyulong/ai_memory/src/second_brain/jobs.py): maintenance jobs
-- [src/second_brain/ops.py](/Users/jianyulong/ai_memory/src/second_brain/ops.py): `ACTIVE.md`, maintenance overview, and eval candidate ops
+- lifecycle answers authority
+- freshness answers temporal safety
+
+## Fast Path
+
+The fast path is what a caller uses while doing work.
+
+```mermaid
+flowchart LR
+    Q["Task"] --> R["resolve_task_context"]
+    R --> E["Exact / BM25 / semantic / graph"]
+    E --> W["Warnings<br/>freshness + lifecycle"]
+    W --> P["Memory packet"]
+```
+
+The packet is bounded and policy-aware, not just a ranked list.
+
+Packet shape:
+
+- `primary_memories`
+- `related_by_topic`
+- `related_by_timeline`
+- `related_by_similarity`
+- `related_by_contrast`
+- `warnings`
+- `verification_needed`
+
+Recommendations:
+
+- `reuse`
+- `reuse_with_verification`
+- `research_fresh`
+
+## Slow Path
+
+The slow path improves the system over time.
+
+```mermaid
+flowchart LR
+    O["record_outcome"] --> L["Outcome + retrieval logs"]
+    L --> M["Maintenance jobs"]
+    M --> T["Trust / freshness / lifecycle refresh"]
+    M --> R["Review items + relearn tasks"]
+    M --> A["ACTIVE.md + maintenance surfaces"]
+```
+
+This path is responsible for:
+
+- duplicate control
+- contradiction surfacing
+- trust and usefulness updates
+- freshness recomputation
+- review and relearn generation
+- longer-horizon memory refinement
+
+## Runtime Protocol
+
+MnemonicOS exposes a unified runtime protocol independent of any specific agent.
+
+```mermaid
+flowchart TD
+    A["resolve_task_context"] --> B["bounded memory packet"]
+    C["record_outcome"] --> D["task outcomes + retrieval feedback"]
+    E["decide_writeback"] --> F["explicit writeback decision"]
+    G["run_maintenance"] --> H["slow-path organization"]
+```
+
+Canonical operations:
+
+- `resolve_task_context`
+- `record_outcome`
+- `decide_writeback`
+- `run_maintenance`
+
+The protocol is documented in [docs/RUNTIME_PROTOCOL.md](/Users/jianyulong/ai_memory/docs/RUNTIME_PROTOCOL.md:1).
+
+## Memory Linking And Obsidian
+
+MnemonicOS treats memory as a multi-relational graph.
+
+```mermaid
+flowchart LR
+    N["Note metadata"] --> R["Typed relations"]
+    R --> G["Graph cache"]
+    R --> O["Obsidian-compatible links"]
+    G --> X["Relation-aware retrieval"]
+```
+
+Important rules:
+
+- MnemonicOS semantic relations are canonical
+- graph edges are rebuildable caches
+- Obsidian links and properties are compatibility and visualization layers
+- if a relation should appear in Obsidian-native graph or link views, it should also be represented in an Obsidian-compatible form
+
+This means the system can stay semantically richer than Obsidian while still remaining pleasant to inspect and navigate inside an Obsidian vault.
+
+## Key Components
+
+```mermaid
+flowchart TD
+    A["parser.py"] --> B["sync.py"]
+    C["ingest.py"] --> B
+    B --> D["graph.py"]
+    B --> E["retrieval.py"]
+    F["trust.py"] --> E
+    G["runtime.py"] --> E
+    G --> C
+    G --> H["jobs.py"]
+```
+
+Component roles:
+
+- `runtime.py`: unified runtime operations and packet assembly
+- `parser.py`: note parsing, lifecycle/overlay/typed-relation extraction
+- `sync.py`: markdown to SQLite/cache materialization
+- `ingest.py`: raw-first ingest and durable note projection
+- `graph.py`: rebuildable typed-link graph
+- `retrieval.py`: hybrid retrieval and reranking
+- `trust.py`: trust, freshness, and lifecycle-aware caution signals
+- `jobs.py`: slow-path maintenance and consolidation
+
+## Current State
+
+Implemented now:
+
+- unified runtime protocol in code
+- bounded memory packets
+- shared outcome recording and writeback decisioning
+- typed relations and lifecycle fields in durable notes
+- Obsidian-compatible relation projection
+- lifecycle-aware and freshness-aware runtime warnings
+- maintenance-driven trust and freshness updates
+
+Verified by the current test suite:
+
+```bash
+python3 -m unittest discover -s tests
+```
+
+## Where To Look Next
+
+- [docs/RUNTIME_PROTOCOL.md](/Users/jianyulong/ai_memory/docs/RUNTIME_PROTOCOL.md:1)
+- [plan-mnemonicOSImprovement.prompt.md](/Users/jianyulong/ai_memory/plan-mnemonicOSImprovement.prompt.md:1)
+- [src/second_brain/runtime.py](/Users/jianyulong/ai_memory/src/second_brain/runtime.py:1)
+- [src/second_brain/ingest.py](/Users/jianyulong/ai_memory/src/second_brain/ingest.py:1)
+- [src/second_brain/retrieval.py](/Users/jianyulong/ai_memory/src/second_brain/retrieval.py:1)

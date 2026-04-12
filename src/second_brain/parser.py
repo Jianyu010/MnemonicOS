@@ -24,6 +24,20 @@ SUPPORTED_NOTE_TYPES = {
     "overview",
 }
 
+LIFECYCLE_STATES = {
+    "draft",
+    "review",
+    "verified",
+    "canonical",
+    "contested",
+    "archived",
+}
+
+OVERLAY_CLASSES = {
+    "fact",
+    "episode",
+}
+
 ENTITY_FIELDS = (
     "entities",
     "linked_projects",
@@ -44,6 +58,14 @@ ENTITY_RELATION_MAP = {
     "owners": "owner",
     "repo": "repo",
 }
+
+OBSIDIAN_LINK_FIELDS = (
+    "obsidian_links",
+    "obsidian_topic_links",
+    "obsidian_timeline_links",
+    "obsidian_similarity_links",
+    "obsidian_contrast_links",
+)
 
 FRONTMATTER_PATTERN = re.compile(r"^---\s*\r?\n(.*?)\r?\n---\s*\r?\n?(.*)$", re.DOTALL)
 
@@ -74,6 +96,16 @@ def _collect_entity_relations(metadata: dict[str, object]) -> list[tuple[str, st
         for value in values:
             relations.append((value, relation_type))
 
+    raw_relations = metadata.get("relations")
+    if isinstance(raw_relations, list):
+        for entry in raw_relations:
+            if not isinstance(entry, dict):
+                continue
+            target = str(entry.get("target", "")).strip()
+            relation_type = str(entry.get("type", "")).strip()
+            if target and relation_type:
+                relations.append((target, relation_type))
+
     seen: set[tuple[str, str]] = set()
     ordered: list[tuple[str, str]] = []
     for entity_id, relation_type in relations:
@@ -101,6 +133,20 @@ def _extract_summary(metadata: dict[str, object], body: str) -> str:
     if explicit:
         return explicit[:400]
     return summarize_text(body, max_sentences=2, max_chars=400)
+
+
+def _collect_obsidian_links(metadata: dict[str, object]) -> list[str]:
+    links: list[str] = []
+    for field_name in OBSIDIAN_LINK_FIELDS:
+        links.extend(_ensure_list(metadata.get(field_name)))
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in links:
+        if value in seen:
+            continue
+        ordered.append(value)
+        seen.add(value)
+    return ordered
 
 
 def split_frontmatter(text: str) -> ParsedFrontmatter:
@@ -142,12 +188,21 @@ def parse_note(path: Path) -> NoteRecord:
         raise NoteParseError(f"unsupported note type: {note_type}")
     if not note_id.startswith(f"{note_type}/"):
         raise NoteParseError(f"note id must start with '{note_type}/'")
+    raw_lifecycle_state = metadata.get("lifecycle_state")
+    lifecycle_state = None if raw_lifecycle_state is None else str(raw_lifecycle_state).strip() or None
+    if lifecycle_state is not None and lifecycle_state not in LIFECYCLE_STATES:
+        raise NoteParseError(f"unsupported lifecycle_state: {lifecycle_state}")
+    raw_overlay_class = metadata.get("overlay_class")
+    overlay_class = None if raw_overlay_class is None else str(raw_overlay_class).strip() or None
+    if overlay_class is not None and overlay_class not in OVERLAY_CLASSES:
+        raise NoteParseError(f"unsupported overlay_class: {overlay_class}")
 
     aliases = _ensure_list(metadata.get("aliases"))
     tags = _ensure_list(metadata.get("tags"))
     source_refs = _ensure_list(metadata.get("source_refs"))
     entity_relations = _collect_entity_relations(metadata)
     entities = _collect_entities(entity_relations)
+    obsidian_links = _collect_obsidian_links(metadata)
     summary = _extract_summary(metadata, parsed.body)
     content_hash = sha256(text.encode("utf-8")).hexdigest()
 
@@ -156,6 +211,8 @@ def parse_note(path: Path) -> NoteRecord:
         type=note_type,
         title=title,
         status=str(metadata.get("status", "")).strip() or None,
+        lifecycle_state=lifecycle_state,
+        overlay_class=overlay_class,
         confidence=str(metadata.get("confidence", "")).strip() or None,
         tags=tags,
         entities=entities,
@@ -170,6 +227,7 @@ def parse_note(path: Path) -> NoteRecord:
         last_observed_at=str(metadata.get("last_observed_at", "")).strip() or None,
         summary=summary,
         aliases=aliases,
+        obsidian_links=obsidian_links,
         body=parsed.body,
         body_path=path.resolve(),
         content_hash=content_hash,

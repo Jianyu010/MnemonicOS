@@ -28,6 +28,19 @@ RELATION_WEIGHTS = {
     "linked_project": 0.7,
     "linked_note": 0.7,
     "entity": 0.6,
+    "about": 0.7,
+    "part_of": 0.8,
+    "depends_on": 0.8,
+    "before": 0.7,
+    "after": 0.7,
+    "caused_by": 0.8,
+    "similar_to": 0.6,
+    "contrasts_with": 0.6,
+    "derived_from": 0.7,
+    "refines": 0.8,
+    "supersedes": 0.9,
+    "evidence_for": 0.8,
+    "related_to": 0.5,
 }
 
 

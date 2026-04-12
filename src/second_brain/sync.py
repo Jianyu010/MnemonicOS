@@ -86,9 +86,10 @@ def _upsert_note(connection: sqlite3.Connection, note: NoteRecord) -> tuple[list
         INSERT INTO notes(
             id, type, title, status, confidence, tags, entities, source_refs,
             valid_from, valid_to, updated_at, created_at, last_verified_at,
-            verified_by, last_observed_at, body_path, summary, content_hash, revision
+            verified_by, last_observed_at, overlay_class, lifecycle_state,
+            body_path, summary, content_hash, revision
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
         ON CONFLICT(id) DO UPDATE SET
             type = excluded.type,
             title = excluded.title,
@@ -104,6 +105,8 @@ def _upsert_note(connection: sqlite3.Connection, note: NoteRecord) -> tuple[list
             last_verified_at = excluded.last_verified_at,
             verified_by = excluded.verified_by,
             last_observed_at = excluded.last_observed_at,
+            overlay_class = excluded.overlay_class,
+            lifecycle_state = excluded.lifecycle_state,
             body_path = excluded.body_path,
             summary = excluded.summary,
             content_hash = excluded.content_hash,
@@ -125,6 +128,8 @@ def _upsert_note(connection: sqlite3.Connection, note: NoteRecord) -> tuple[list
             note.last_verified_at,
             note.verified_by,
             note.last_observed_at,
+            note.overlay_class,
+            note.lifecycle_state,
             str(note.body_path),
             note.summary,
             note.content_hash,
@@ -139,6 +144,7 @@ def _upsert_note(connection: sqlite3.Connection, note: NoteRecord) -> tuple[list
             (alias, note.id, 1 if index == 0 else 0),
         )
 
+    search_terms = " ".join([*aliases, *note.tags]).strip()
     connection.execute(
         """
         INSERT INTO notes_search(note_id, title, aliases_flat, summary, body)
@@ -149,10 +155,10 @@ def _upsert_note(connection: sqlite3.Connection, note: NoteRecord) -> tuple[list
             summary = excluded.summary,
             body = excluded.body
         """,
-        (note.id, note.title, " ".join(aliases), note.summary, note.body),
+        (note.id, note.title, search_terms, note.summary, note.body),
     )
 
-    semantic_source = "\n".join([note.title, " ".join(aliases), note.summary]).strip()
+    semantic_source = "\n".join([note.title, search_terms, note.summary]).strip()
     return aliases, semantic_source
 
 

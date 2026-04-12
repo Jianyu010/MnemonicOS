@@ -39,6 +39,27 @@ TYPE_TO_DIRECTORY = {
     "journal": "journals",
 }
 
+LIFECYCLE_DEFAULTS = {
+    "decision": "canonical",
+    "concept": "canonical",
+    "source": "verified",
+    "procedure": "draft",
+    "incident": "review",
+    "project": "canonical",
+    "repo": "canonical",
+    "person": "verified",
+    "overview": "canonical",
+    "journal": "archived",
+}
+
+RELATION_BUCKETS = {
+    "before": "timeline",
+    "after": "timeline",
+    "supersedes": "timeline",
+    "similar_to": "similarity",
+    "contrasts_with": "contrast",
+}
+
 
 def _merge_unique(left: list[str], right: list[str]) -> list[str]:
     ordered: list[str] = []
@@ -122,6 +143,91 @@ def _upsert_archive_sync_state(connection: sqlite3.Connection, path: Path, archi
 def _render_note(metadata: dict[str, Any], body: str) -> str:
     frontmatter = yaml.safe_dump(metadata, sort_keys=False, allow_unicode=False).strip()
     return f"---\n{frontmatter}\n---\n\n{body.strip()}\n"
+
+
+def _all_relation_targets(metadata: dict[str, Any]) -> list[tuple[str, str]]:
+    relation_targets: list[tuple[str, str]] = []
+    for field_name, relation_type in (
+        ("entities", "entity"),
+        ("linked_projects", "linked_project"),
+        ("linked_notes", "linked_note"),
+        ("linked_procedures", "linked_procedure"),
+        ("linked_decisions", "linked_decision"),
+        ("active_decisions", "active_decision"),
+        ("owners", "owner"),
+        ("repo", "repo"),
+    ):
+        values = metadata.get(field_name) or []
+        if not isinstance(values, list):
+            values = [values]
+        for value in values:
+            normalized = str(value).strip()
+            if normalized:
+                relation_targets.append((normalized, relation_type))
+    relations = metadata.get("relations") or []
+    if isinstance(relations, list):
+        for entry in relations:
+            if not isinstance(entry, dict):
+                continue
+            relation_type = str(entry.get("type", "")).strip()
+            target = str(entry.get("target", "")).strip()
+            if relation_type and target:
+                relation_targets.append((target, relation_type))
+    return relation_targets
+
+
+def _relative_note_link(config: AppConfig, target_id: str) -> str | None:
+    if "/" not in target_id:
+        return None
+    target_type, slug = target_id.split("/", 1)
+    if target_type == "procedure":
+        procedure_root = config.paths.vault_root / "wiki" / "procedures"
+        for directory in ("active", "drafts", "retired"):
+            candidate = procedure_root / directory / f"{slug}.md"
+            if candidate.exists():
+                relative = candidate.relative_to(config.paths.vault_root)
+                return f"[[{relative.as_posix()[:-3]}]]"
+        return f"[[wiki/procedures/active/{slug}]]"
+    if target_type not in TYPE_TO_DIRECTORY:
+        return None
+    relative_path = Path("wiki") / TYPE_TO_DIRECTORY[target_type] / f"{slug}.md"
+    return f"[[{relative_path.as_posix()[:-3]}]]"
+
+
+def _project_obsidian_links(config: AppConfig, metadata: dict[str, Any]) -> dict[str, Any]:
+    projected = dict(metadata)
+    topic_links: list[str] = []
+    timeline_links: list[str] = []
+    similarity_links: list[str] = []
+    contrast_links: list[str] = []
+    all_links: list[str] = []
+
+    for target_id, relation_type in _all_relation_targets(projected):
+        link = _relative_note_link(config, target_id)
+        if not link:
+            continue
+        all_links = _merge_unique(all_links, [link])
+        bucket = RELATION_BUCKETS.get(relation_type, "topic")
+        if bucket == "timeline":
+            timeline_links = _merge_unique(timeline_links, [link])
+        elif bucket == "similarity":
+            similarity_links = _merge_unique(similarity_links, [link])
+        elif bucket == "contrast":
+            contrast_links = _merge_unique(contrast_links, [link])
+        else:
+            topic_links = _merge_unique(topic_links, [link])
+
+    if all_links:
+        projected["obsidian_links"] = all_links
+    if topic_links:
+        projected["obsidian_topic_links"] = topic_links
+    if timeline_links:
+        projected["obsidian_timeline_links"] = timeline_links
+    if similarity_links:
+        projected["obsidian_similarity_links"] = similarity_links
+    if contrast_links:
+        projected["obsidian_contrast_links"] = contrast_links
+    return projected
 
 
 def _render_note_body(item_type: str, item: dict[str, Any]) -> str:
@@ -220,6 +326,8 @@ def _normalize_item(
             "confidence": confidence,
             "updated_at": str(item.get("updated_at", now_date)),
             "created_at": str(item.get("created_at", now_date)),
+            "overlay_class": str(item.get("overlay_class", "")).strip() or None,
+            "lifecycle_state": str(item.get("lifecycle_state", "")).strip() or LIFECYCLE_DEFAULTS.get(item_type),
         }
         for field in (
             "status",
@@ -257,6 +365,7 @@ def _normalize_item(
             "prevention",
             "origin",
             "ingested_at",
+            "relations",
         ):
             if field in item:
                 normalized[field] = item[field]
@@ -319,6 +428,7 @@ def _merge_note_metadata(existing_metadata: dict[str, Any], item: dict[str, Any]
     )
     metadata["confidence"] = item.get("confidence") or existing_metadata.get("confidence", "medium")
     metadata["updated_at"] = now_date
+    metadata["last_observed_at"] = now_date
     metadata["created_at"] = str(existing_metadata.get("created_at", item.get("created_at", now_date)))
     for key, value in item.items():
         if key in {"aliases", "tags", "source_refs", "updated_at", "created_at", "title", "summary", "body"}:
@@ -343,6 +453,22 @@ def _touch_existing_note(path: Path, source_refs: list[str], now_date: str) -> b
     rendered = _render_note(metadata, parsed.body)
     path.write_text(rendered)
     return True
+
+
+def _apply_note_defaults(metadata: dict[str, Any], normalized_type: str) -> dict[str, Any]:
+    if normalized_type == "procedure":
+        metadata.setdefault("status", "active" if metadata.get("reviewed_by") and metadata.get("reviewed_at") else "draft")
+        if metadata["status"] == "active" and not (metadata.get("reviewed_by") and metadata.get("reviewed_at")):
+            metadata["status"] = "draft"
+    elif normalized_type == "decision":
+        metadata.setdefault("status", "active")
+        metadata.setdefault("valid_from", metadata.get("created_at"))
+    elif normalized_type == "incident":
+        metadata.setdefault("status", "open")
+    elif normalized_type in {"project", "repo"}:
+        metadata.setdefault("status", "active")
+    metadata.setdefault("lifecycle_state", LIFECYCLE_DEFAULTS.get(normalized_type))
+    return metadata
 
 
 def _append_system_memory(path: Path, heading: str, bullet: str) -> bool:
@@ -551,17 +677,7 @@ def ingest_session(
             )
             if upsert_decision.decision == "update_existing":
                 metadata["source_refs"] = _merge_unique(list(metadata.get("source_refs") or []), list(upsert_decision.targets))
-        if normalized["type"] == "procedure":
-            metadata.setdefault("status", "active" if normalized.get("reviewed_by") and normalized.get("reviewed_at") else "draft")
-            if metadata["status"] == "active" and not (metadata.get("reviewed_by") and metadata.get("reviewed_at")):
-                metadata["status"] = "draft"
-        elif normalized["type"] == "decision":
-            metadata.setdefault("status", "active")
-            metadata.setdefault("valid_from", normalized["created_at"])
-        elif normalized["type"] == "incident":
-            metadata.setdefault("status", "open")
-        elif normalized["type"] in {"project", "repo"}:
-            metadata.setdefault("status", "active")
+        metadata = _apply_note_defaults(metadata, normalized["type"])
 
         if upsert_decision.decision in {"update_existing", "confirm_existing"} and upsert_decision.targets:
             existing_id = upsert_decision.targets[0]
@@ -588,10 +704,12 @@ def ingest_session(
 
             parsed = split_frontmatter(target_path.read_text())
             metadata = _merge_note_metadata(parsed.metadata, metadata, now_date=now.strftime("%Y-%m-%d"))
+            metadata = _apply_note_defaults(metadata, normalized["type"])
             existing_body = parsed.body.strip()
             if len(existing_body) > len(body):
                 body = existing_body
 
+        metadata = _project_obsidian_links(config, metadata)
         target_path.write_text(_render_note(metadata, body))
         changed_paths.append(str(target_path.resolve()))
         promoted_notes.append(normalized["id"])

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 import re
 import sqlite3
@@ -9,184 +8,16 @@ from typing import Any
 import yaml
 
 from .config import AppConfig
-from .models import RetrieveResult
+from .models import CandidateMatch, SummaryEnvelope, UpsertDecision
 from .review import slugify
+from .runtime import assess_retrieval, assess_retrieval_payload
 from .semantics import cosine_similarity, encode_text, vector_from_json
-from .trust import query_temporality
 
 
 SECTION_PATTERN = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
 LIST_ITEM_PATTERN = re.compile(r"^\s*[-*]\s+(.+?)\s*$")
 FIELD_PATTERN = re.compile(r"^([a-z_]+):\s*(.+?)\s*$")
 MEMORY_BLOCK_PATTERN = re.compile(r"```(?:memory|mnemonic)\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
-
-
-@dataclass(slots=True)
-class RetrievalAssessment:
-    state: str
-    recommendation: str
-    hit_ids: list[str]
-    stale_ids: list[str]
-    contested_ids: list[str]
-    current_ids: list[str]
-    partial_ids: list[str]
-
-
-@dataclass(slots=True)
-class SummaryEnvelope:
-    metadata: dict[str, str]
-    sections: dict[str, str]
-    memory_items: list[dict[str, Any]]
-
-
-@dataclass(slots=True)
-class CandidateMatch:
-    note_id: str
-    title: str
-    note_type: str
-    score: float
-    reason: str
-
-
-@dataclass(slots=True)
-class UpsertDecision:
-    decision: str
-    targets: list[str]
-    candidates: list[str]
-    reason: str
-
-
-def assess_retrieval(result: RetrieveResult, query: str) -> RetrievalAssessment:
-    temporality = query_temporality(query)
-    if not result.hits:
-        return RetrievalAssessment(
-            state="insufficient_no_hit",
-            recommendation="research_fresh",
-            hit_ids=[],
-            stale_ids=[],
-            contested_ids=[],
-            current_ids=[],
-            partial_ids=[],
-        )
-
-    stale_ids: list[str] = []
-    contested_ids: list[str] = []
-    current_ids: list[str] = []
-    partial_ids: list[str] = []
-    note_hits = [hit for hit in result.hits if hit.type != "archive_chunk"]
-    hit_ids = [hit.id for hit in note_hits]
-
-    if not note_hits:
-        return RetrievalAssessment(
-            state="insufficient_no_hit",
-            recommendation="research_fresh",
-            hit_ids=[],
-            stale_ids=[],
-            contested_ids=[],
-            current_ids=[],
-            partial_ids=[],
-        )
-
-    for hit in note_hits:
-        freshness = hit.freshness_state or "fresh"
-        if freshness == "contested":
-            contested_ids.append(hit.id)
-        elif freshness == "stale":
-            stale_ids.append(hit.id)
-        elif freshness == "suspect":
-            partial_ids.append(hit.id)
-        else:
-            current_ids.append(hit.id)
-
-    if temporality == "historical":
-        return RetrievalAssessment(
-            state="sufficient_historical",
-            recommendation="reuse",
-            hit_ids=hit_ids,
-            stale_ids=stale_ids,
-            contested_ids=contested_ids,
-            current_ids=current_ids,
-            partial_ids=partial_ids,
-        )
-
-    top_hit = note_hits[0]
-    top_freshness = top_hit.freshness_state or "fresh"
-    if top_freshness == "contested" and not current_ids:
-        state = "insufficient_contested"
-        recommendation = "research_fresh"
-    elif top_freshness == "stale" and not current_ids:
-        state = "insufficient_stale"
-        recommendation = "research_fresh"
-    elif current_ids and not partial_ids:
-        state = "sufficient_current"
-        recommendation = "reuse"
-    elif current_ids or partial_ids:
-        state = "partial"
-        recommendation = "reuse_with_verification"
-    elif contested_ids:
-        state = "insufficient_contested"
-        recommendation = "research_fresh"
-    else:
-        state = "insufficient_stale"
-        recommendation = "research_fresh"
-
-    return RetrievalAssessment(
-        state=state,
-        recommendation=recommendation,
-        hit_ids=hit_ids,
-        stale_ids=stale_ids,
-        contested_ids=contested_ids,
-        current_ids=current_ids,
-        partial_ids=partial_ids,
-    )
-
-
-def assess_retrieval_payload(payload: dict[str, Any], query: str) -> RetrievalAssessment:
-    note_hits = [hit for hit in payload.get("hits", []) if hit.get("type") != "archive_chunk"]
-    stale_ids: list[str] = []
-    contested_ids: list[str] = []
-    current_ids: list[str] = []
-    partial_ids: list[str] = []
-    hit_ids = [str(hit.get("id")) for hit in note_hits]
-    temporality = query_temporality(query)
-
-    if not note_hits:
-        return RetrievalAssessment(
-            state="insufficient_no_hit",
-            recommendation="research_fresh",
-            hit_ids=[],
-            stale_ids=[],
-            contested_ids=[],
-            current_ids=[],
-            partial_ids=[],
-        )
-
-    for hit in note_hits:
-        freshness = str(hit.get("freshness_state") or "fresh")
-        if freshness == "contested":
-            contested_ids.append(str(hit["id"]))
-        elif freshness == "stale":
-            stale_ids.append(str(hit["id"]))
-        elif freshness == "suspect":
-            partial_ids.append(str(hit["id"]))
-        else:
-            current_ids.append(str(hit["id"]))
-
-    if temporality == "historical":
-        return RetrievalAssessment("sufficient_historical", "reuse", hit_ids, stale_ids, contested_ids, current_ids, partial_ids)
-
-    top_freshness = str(note_hits[0].get("freshness_state") or "fresh")
-    if top_freshness == "contested" and not current_ids:
-        return RetrievalAssessment("insufficient_contested", "research_fresh", hit_ids, stale_ids, contested_ids, current_ids, partial_ids)
-    if top_freshness == "stale" and not current_ids:
-        return RetrievalAssessment("insufficient_stale", "research_fresh", hit_ids, stale_ids, contested_ids, current_ids, partial_ids)
-    if current_ids and not partial_ids:
-        return RetrievalAssessment("sufficient_current", "reuse", hit_ids, stale_ids, contested_ids, current_ids, partial_ids)
-    if current_ids or partial_ids:
-        return RetrievalAssessment("partial", "reuse_with_verification", hit_ids, stale_ids, contested_ids, current_ids, partial_ids)
-    if contested_ids:
-        return RetrievalAssessment("insufficient_contested", "research_fresh", hit_ids, stale_ids, contested_ids, current_ids, partial_ids)
-    return RetrievalAssessment("insufficient_stale", "research_fresh", hit_ids, stale_ids, contested_ids, current_ids, partial_ids)
 
 
 def parse_summary(text: str) -> SummaryEnvelope:

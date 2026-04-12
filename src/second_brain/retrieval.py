@@ -54,7 +54,7 @@ STOPWORDS = {
 QUERY_HINTS = {
     "preference_identity": {"preference", "prefer", "style", "identity", "user"},
     "how_to": {"how", "steps", "deploy", "run", "procedure", "release"},
-    "decision": {"why", "decision", "decide", "choose", "picked", "rationale"},
+    "decision": {"why", "decision", "decide", "choose", "picked", "rationale", "should"},
     "who_where_relation": {"who", "owner", "owns", "responsible", "maintainer"},
     "what_changed": {"changed", "recent", "latest", "new", "update"},
     "broad_synthesis": {"state", "summary", "overview", "status"},
@@ -76,6 +76,7 @@ class _Candidate:
     title: str
     type: str
     status: str | None
+    lifecycle_state: str | None
     body_path: str
     summary: str
     body: str
@@ -140,7 +141,7 @@ def _classify_query(query: str, hint: str | None) -> tuple[str | None, float | N
 def _exact_hits(connection: sqlite3.Connection, query: str) -> list[sqlite3.Row]:
     rows = connection.execute(
         """
-        SELECT DISTINCT n.id, n.title, n.type, n.status, n.body_path, n.summary, ns.body,
+        SELECT DISTINCT n.id, n.title, n.type, n.status, n.lifecycle_state, n.body_path, n.summary, ns.body,
                n.updated_at, n.created_at, n.last_verified_at
         FROM notes n
         JOIN notes_search ns ON ns.note_id = n.id
@@ -168,6 +169,7 @@ def _bm25_hits(connection: sqlite3.Connection, query: str, limit: int) -> list[s
             n.title,
             n.type,
             n.status,
+            n.lifecycle_state,
             n.body_path,
             n.summary,
             ns.body,
@@ -200,6 +202,7 @@ def _semantic_hits(connection: sqlite3.Connection, config: AppConfig, query: str
             n.title,
             n.type,
             n.status,
+            n.lifecycle_state,
             n.body_path,
             n.summary,
             ns.body,
@@ -284,13 +287,15 @@ def retrieve(
     *,
     top_k: int | None = None,
     query_type_hint: str | None = None,
+    include_archive_fallback: bool | None = None,
+    temporality_override: str | None = None,
 ) -> RetrieveResult:
     connection = connect_db(config.paths.db_path)
     run_migrations(connection, config.paths.workspace_root / "migrations")
 
     requested_top_k = top_k or config.retrieval.top_k
     query_type, classifier_confidence = _classify_query(query, query_type_hint)
-    temporality = query_temporality(query)
+    temporality = temporality_override or query_temporality(query)
     candidates: dict[str, _Candidate] = {}
 
     exact_rows = _exact_hits(connection, query)
@@ -300,6 +305,7 @@ def retrieve(
             title=str(row["title"]),
             type=str(row["type"]),
             status=str(row["status"]) if row["status"] is not None else None,
+            lifecycle_state=str(row["lifecycle_state"]) if row["lifecycle_state"] is not None else None,
             body_path=str(row["body_path"]),
             summary=str(row["summary"] or ""),
             body=str(row["body"] or ""),
@@ -325,6 +331,7 @@ def retrieve(
             title=str(row["title"]),
             type=str(row["type"]),
             status=str(row["status"]) if row["status"] is not None else None,
+            lifecycle_state=str(row["lifecycle_state"]) if row["lifecycle_state"] is not None else None,
             body_path=str(row["body_path"]),
             summary=str(row["summary"] or ""),
             body=str(row["body"] or ""),
@@ -351,6 +358,7 @@ def retrieve(
             title=str(row["title"]),
             type=str(row["type"]),
             status=str(row["status"]) if row["status"] is not None else None,
+            lifecycle_state=str(row["lifecycle_state"]) if row["lifecycle_state"] is not None else None,
             body_path=str(row["body_path"]),
             summary=str(row["summary"] or ""),
             body=str(row["body"] or ""),
@@ -379,6 +387,7 @@ def retrieve(
                 title=graph_hit.title,
                 type=graph_hit.type,
                 status=graph_hit.status,
+                lifecycle_state=None,
                 body_path=graph_hit.body_path,
                 summary=graph_hit.summary,
                 body=graph_hit.body,
@@ -473,19 +482,22 @@ def retrieve(
                 type=candidate.type,
                 status=candidate.status,
                 freshness_state=freshness_state,
+                lifecycle_state=candidate.lifecycle_state,
                 body_path=candidate.body_path,
                 summary=candidate.summary,
                 channels=sorted(candidate.channels),
                 raw_score=raw_score,
                 final_score=final_score,
                 excerpt=excerpt,
+                relation_types=list(candidate.graph_relations or []),
             )
         )
 
     ranked_hits = sorted(ranked_hits, key=lambda hit: (-hit.final_score, hit.title.casefold()))[:requested_top_k]
 
     archive_hits: list[RetrieveHit] = []
-    if not ranked_hits and config.retrieval.include_archive_fallback:
+    include_archive = config.retrieval.include_archive_fallback if include_archive_fallback is None else include_archive_fallback
+    if not ranked_hits and include_archive:
         for rank, row in enumerate(_archive_hits(connection, query, requested_top_k), start=1):
             score = 1.0 - ((rank - 1) / max(requested_top_k, 1))
             archive_hits.append(
@@ -495,12 +507,14 @@ def retrieve(
                     type="archive_chunk",
                     status=None,
                     freshness_state=None,
+                    lifecycle_state=None,
                     body_path=str(row["archive_path"]),
                     summary=str(row["summary"] or ""),
                     channels=["archive"],
                     raw_score=float(row["bm25_score"] or 0.0),
                     final_score=score,
                     excerpt=str(row["summary"] or row["body"][:240]),
+                    relation_types=[],
                 )
             )
         ranked_hits = archive_hits
