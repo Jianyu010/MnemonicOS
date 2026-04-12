@@ -1,0 +1,460 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+import json
+import re
+import sqlite3
+from typing import Any
+
+import yaml
+
+from .config import AppConfig
+from .models import RetrieveResult
+from .review import slugify
+from .semantics import cosine_similarity, encode_text, vector_from_json
+from .trust import query_temporality
+
+
+SECTION_PATTERN = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
+LIST_ITEM_PATTERN = re.compile(r"^\s*[-*]\s+(.+?)\s*$")
+FIELD_PATTERN = re.compile(r"^([a-z_]+):\s*(.+?)\s*$")
+MEMORY_BLOCK_PATTERN = re.compile(r"```(?:memory|mnemonic)\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
+
+
+@dataclass(slots=True)
+class RetrievalAssessment:
+    state: str
+    recommendation: str
+    hit_ids: list[str]
+    stale_ids: list[str]
+    contested_ids: list[str]
+    current_ids: list[str]
+    partial_ids: list[str]
+
+
+@dataclass(slots=True)
+class SummaryEnvelope:
+    metadata: dict[str, str]
+    sections: dict[str, str]
+    memory_items: list[dict[str, Any]]
+
+
+@dataclass(slots=True)
+class CandidateMatch:
+    note_id: str
+    title: str
+    note_type: str
+    score: float
+    reason: str
+
+
+@dataclass(slots=True)
+class UpsertDecision:
+    decision: str
+    targets: list[str]
+    candidates: list[str]
+    reason: str
+
+
+def assess_retrieval(result: RetrieveResult, query: str) -> RetrievalAssessment:
+    temporality = query_temporality(query)
+    if not result.hits:
+        return RetrievalAssessment(
+            state="insufficient_no_hit",
+            recommendation="research_fresh",
+            hit_ids=[],
+            stale_ids=[],
+            contested_ids=[],
+            current_ids=[],
+            partial_ids=[],
+        )
+
+    stale_ids: list[str] = []
+    contested_ids: list[str] = []
+    current_ids: list[str] = []
+    partial_ids: list[str] = []
+    note_hits = [hit for hit in result.hits if hit.type != "archive_chunk"]
+    hit_ids = [hit.id for hit in note_hits]
+
+    if not note_hits:
+        return RetrievalAssessment(
+            state="insufficient_no_hit",
+            recommendation="research_fresh",
+            hit_ids=[],
+            stale_ids=[],
+            contested_ids=[],
+            current_ids=[],
+            partial_ids=[],
+        )
+
+    for hit in note_hits:
+        freshness = hit.freshness_state or "fresh"
+        if freshness == "contested":
+            contested_ids.append(hit.id)
+        elif freshness == "stale":
+            stale_ids.append(hit.id)
+        elif freshness == "suspect":
+            partial_ids.append(hit.id)
+        else:
+            current_ids.append(hit.id)
+
+    if temporality == "historical":
+        return RetrievalAssessment(
+            state="sufficient_historical",
+            recommendation="reuse",
+            hit_ids=hit_ids,
+            stale_ids=stale_ids,
+            contested_ids=contested_ids,
+            current_ids=current_ids,
+            partial_ids=partial_ids,
+        )
+
+    top_hit = note_hits[0]
+    top_freshness = top_hit.freshness_state or "fresh"
+    if top_freshness == "contested" and not current_ids:
+        state = "insufficient_contested"
+        recommendation = "research_fresh"
+    elif top_freshness == "stale" and not current_ids:
+        state = "insufficient_stale"
+        recommendation = "research_fresh"
+    elif current_ids and not partial_ids:
+        state = "sufficient_current"
+        recommendation = "reuse"
+    elif current_ids or partial_ids:
+        state = "partial"
+        recommendation = "reuse_with_verification"
+    elif contested_ids:
+        state = "insufficient_contested"
+        recommendation = "research_fresh"
+    else:
+        state = "insufficient_stale"
+        recommendation = "research_fresh"
+
+    return RetrievalAssessment(
+        state=state,
+        recommendation=recommendation,
+        hit_ids=hit_ids,
+        stale_ids=stale_ids,
+        contested_ids=contested_ids,
+        current_ids=current_ids,
+        partial_ids=partial_ids,
+    )
+
+
+def assess_retrieval_payload(payload: dict[str, Any], query: str) -> RetrievalAssessment:
+    note_hits = [hit for hit in payload.get("hits", []) if hit.get("type") != "archive_chunk"]
+    stale_ids: list[str] = []
+    contested_ids: list[str] = []
+    current_ids: list[str] = []
+    partial_ids: list[str] = []
+    hit_ids = [str(hit.get("id")) for hit in note_hits]
+    temporality = query_temporality(query)
+
+    if not note_hits:
+        return RetrievalAssessment(
+            state="insufficient_no_hit",
+            recommendation="research_fresh",
+            hit_ids=[],
+            stale_ids=[],
+            contested_ids=[],
+            current_ids=[],
+            partial_ids=[],
+        )
+
+    for hit in note_hits:
+        freshness = str(hit.get("freshness_state") or "fresh")
+        if freshness == "contested":
+            contested_ids.append(str(hit["id"]))
+        elif freshness == "stale":
+            stale_ids.append(str(hit["id"]))
+        elif freshness == "suspect":
+            partial_ids.append(str(hit["id"]))
+        else:
+            current_ids.append(str(hit["id"]))
+
+    if temporality == "historical":
+        return RetrievalAssessment("sufficient_historical", "reuse", hit_ids, stale_ids, contested_ids, current_ids, partial_ids)
+
+    top_freshness = str(note_hits[0].get("freshness_state") or "fresh")
+    if top_freshness == "contested" and not current_ids:
+        return RetrievalAssessment("insufficient_contested", "research_fresh", hit_ids, stale_ids, contested_ids, current_ids, partial_ids)
+    if top_freshness == "stale" and not current_ids:
+        return RetrievalAssessment("insufficient_stale", "research_fresh", hit_ids, stale_ids, contested_ids, current_ids, partial_ids)
+    if current_ids and not partial_ids:
+        return RetrievalAssessment("sufficient_current", "reuse", hit_ids, stale_ids, contested_ids, current_ids, partial_ids)
+    if current_ids or partial_ids:
+        return RetrievalAssessment("partial", "reuse_with_verification", hit_ids, stale_ids, contested_ids, current_ids, partial_ids)
+    if contested_ids:
+        return RetrievalAssessment("insufficient_contested", "research_fresh", hit_ids, stale_ids, contested_ids, current_ids, partial_ids)
+    return RetrievalAssessment("insufficient_stale", "research_fresh", hit_ids, stale_ids, contested_ids, current_ids, partial_ids)
+
+
+def parse_summary(text: str) -> SummaryEnvelope:
+    metadata: dict[str, str] = {}
+    lines = text.splitlines()
+    index = 0
+    while index < len(lines):
+        line = lines[index].rstrip()
+        if not line:
+            index += 1
+            break
+        if line.startswith("#"):
+            break
+        match = FIELD_PATTERN.match(line)
+        if not match:
+            break
+        key, value = match.groups()
+        metadata[key] = value.strip()
+        index += 1
+
+    sections: dict[str, str] = {}
+    current_name: str | None = None
+    buffer: list[str] = []
+    for line in lines[index:]:
+        match = SECTION_PATTERN.match(line)
+        if match:
+            if current_name is not None:
+                sections[current_name] = "\n".join(buffer).strip()
+            current_name = match.group(1).strip()
+            buffer = []
+            continue
+        buffer.append(line)
+    if current_name is not None:
+        sections[current_name] = "\n".join(buffer).strip()
+
+    memory_items: list[dict[str, Any]] = []
+    for block in MEMORY_BLOCK_PATTERN.findall(text):
+        parsed = yaml.safe_load(block) or []
+        if isinstance(parsed, dict) and "items" in parsed:
+            parsed = parsed["items"]
+        if isinstance(parsed, dict):
+            parsed = [parsed]
+        if isinstance(parsed, list):
+            for item in parsed:
+                if isinstance(item, dict):
+                    memory_items.append(dict(item))
+    return SummaryEnvelope(metadata=metadata, sections=sections, memory_items=memory_items)
+
+
+def infer_summary_mode(summary: SummaryEnvelope) -> str:
+    task_kind = summary.metadata.get("task_kind", "").strip().casefold()
+    if task_kind in {"knowledge", "research"}:
+        return "knowledge"
+    failures = summary.sections.get("Failures", "")
+    if failures and failures.strip() and failures.strip().lower() not in {"none", "n/a"}:
+        return "failure"
+    return "success"
+
+
+def _extract_section_items(section_text: str) -> list[str]:
+    results: list[str] = []
+    for raw_line in section_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("```") or line == "items:":
+            continue
+        match = LIST_ITEM_PATTERN.match(line)
+        if match:
+            value = match.group(1).strip()
+            if value.startswith("```"):
+                continue
+            if re.match(r"^(type|title|body|confidence|tags):", value):
+                continue
+            results.append(value)
+        else:
+            if re.match(r"^[a-z_]+:\s*", line) and not line.lower().startswith(("http:", "https:")):
+                continue
+            results.append(line)
+    return [item for item in results if item]
+
+
+def candidate_queries_from_summary(summary: SummaryEnvelope) -> list[str]:
+    queries: list[str] = []
+    task = summary.sections.get("Task")
+    goal = summary.sections.get("Goal")
+    if task:
+        queries.append(task)
+    if goal:
+        queries.append(goal)
+    for item in _extract_section_items(summary.sections.get("Anchors", "")):
+        queries.append(item)
+    for item in _extract_section_items(summary.sections.get("Suggested Memory Items", "")):
+        queries.append(item)
+    for item in summary.memory_items:
+        title = str(item.get("title", "")).strip()
+        if title:
+            queries.append(title)
+    if summary.metadata.get("update_target_ids"):
+        queries.extend(
+            [part.strip() for part in summary.metadata["update_target_ids"].split(",") if part.strip()]
+        )
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for item in queries:
+        normalized = " ".join(item.split())
+        if not normalized:
+            continue
+        key = normalized.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(normalized)
+    return ordered[:8]
+
+
+def _token_set(text: str) -> set[str]:
+    return {token for token in re.findall(r"[\w/-]+", text.casefold()) if len(token) > 2}
+
+
+def _semantic_score(config: AppConfig, connection: sqlite3.Connection, note_id: str, query_text: str) -> float:
+    if not config.embeddings.enabled:
+        return 0.0
+    row = connection.execute(
+        "SELECT vector_json FROM note_vectors WHERE note_id = ? AND model = ?",
+        (note_id, config.embeddings.model),
+    ).fetchone()
+    if row is None:
+        return 0.0
+    query_vector = encode_text(query_text, dimensions=config.embeddings.dimensions)
+    return cosine_similarity(query_vector, vector_from_json(str(row["vector_json"])))
+
+
+def find_existing_candidates(
+    connection: sqlite3.Connection,
+    config: AppConfig,
+    *,
+    note_type: str,
+    title: str,
+    summary: str = "",
+    limit: int = 5,
+) -> list[CandidateMatch]:
+    slug = slugify(title)
+    query_text = summary or title
+    rows = connection.execute(
+        """
+        SELECT n.id, n.title, n.type, n.summary, GROUP_CONCAT(a.alias, '||') AS aliases
+        FROM notes n
+        LEFT JOIN aliases a ON a.note_id = n.id
+        WHERE (? = '' OR n.type = ?)
+        GROUP BY n.id, n.title, n.type, n.summary
+        """,
+        (note_type, note_type),
+    ).fetchall()
+
+    title_tokens = _token_set(title)
+    matches: list[CandidateMatch] = []
+    for row in rows:
+        note_id = str(row["id"])
+        note_title = str(row["title"])
+        aliases = [alias for alias in str(row["aliases"] or "").split("||") if alias]
+        title_slug = slugify(note_title)
+        score = 0.0
+        reason = "weak"
+        if title.casefold() == note_title.casefold():
+            score = 1.0
+            reason = "exact_title"
+        elif note_id.casefold().endswith(f"/{slug}"):
+            score = 0.99
+            reason = "id_slug"
+        elif slug and slug == title_slug:
+            score = 0.98
+            reason = "slug_match"
+        else:
+            alias_hit = next((alias for alias in aliases if alias.casefold() == title.casefold()), None)
+            if alias_hit:
+                score = 0.96
+                reason = "alias_exact"
+            else:
+                note_tokens = _token_set(note_title)
+                union = title_tokens | note_tokens
+                if union:
+                    token_overlap = len(title_tokens & note_tokens) / len(union)
+                    if token_overlap > score:
+                        score = token_overlap
+                        reason = "token_overlap"
+                semantic = _semantic_score(config, connection, note_id, query_text)
+                if semantic > score:
+                    score = semantic
+                    reason = "semantic"
+        if score >= 0.55:
+            matches.append(
+                CandidateMatch(
+                    note_id=note_id,
+                    title=note_title,
+                    note_type=str(row["type"]),
+                    score=score,
+                    reason=reason,
+                )
+            )
+
+    matches.sort(key=lambda item: (-item.score, item.title.casefold()))
+    return matches[:limit]
+
+
+def decide_upsert(
+    connection: sqlite3.Connection,
+    config: AppConfig,
+    *,
+    summary: SummaryEnvelope,
+    note_type: str,
+    title: str,
+    summary_text: str,
+    existing_candidates: list[CandidateMatch] | None = None,
+) -> UpsertDecision:
+    explicit_intent = summary.metadata.get("writeback_intent", "").strip().casefold()
+    retrieval_state = summary.metadata.get("mnemos_retrieval_state", "").strip().casefold()
+    update_targets = [
+        part.strip()
+        for part in summary.metadata.get("update_target_ids", "").split(",")
+        if part.strip()
+    ]
+    if explicit_intent == "skip":
+        return UpsertDecision("skip_duplicate", update_targets, update_targets, "explicit writeback_intent=skip")
+    if update_targets:
+        return UpsertDecision("update_existing", update_targets, update_targets, "explicit update_target_ids")
+
+    candidates = existing_candidates or find_existing_candidates(
+        connection,
+        config,
+        note_type=note_type,
+        title=title,
+        summary=summary_text,
+    )
+    candidate_ids = [candidate.note_id for candidate in candidates]
+    if not candidates:
+        return UpsertDecision("new_note", [], [], "no near-match candidate")
+
+    top = candidates[0]
+    if explicit_intent == "confirm":
+        return UpsertDecision("confirm_existing", [top.note_id], candidate_ids, "explicit writeback_intent=confirm")
+    if explicit_intent in {"update", "procedure_refinement", "incident_only"}:
+        return UpsertDecision("update_existing", [top.note_id], candidate_ids, f"explicit writeback_intent={explicit_intent}")
+
+    if top.score >= 0.98:
+        if retrieval_state in {"sufficient_current", "sufficient_historical"}:
+            return UpsertDecision("confirm_existing", [top.note_id], candidate_ids, f"strong match ({top.reason}) with sufficient retrieval state")
+        return UpsertDecision("update_existing", [top.note_id], candidate_ids, f"strong match ({top.reason})")
+
+    if top.score >= 0.90:
+        if retrieval_state in {"sufficient_current", "sufficient_historical"} and note_type in {"concept", "source"}:
+            return UpsertDecision("confirm_existing", [top.note_id], candidate_ids, "high-confidence concept/source match")
+        return UpsertDecision("needs_review", [top.note_id], candidate_ids, "high semantic/alias match but not exact")
+
+    if retrieval_state in {"insufficient_stale", "insufficient_contested", "partial"} and top.score >= 0.70:
+        return UpsertDecision("update_existing", [top.note_id], candidate_ids, "existing note likely needs refresh")
+
+    return UpsertDecision("new_note", [], candidate_ids, "candidate exists but similarity is too weak")
+
+
+def decision_to_json(decision: UpsertDecision) -> str:
+    return json.dumps(
+        {
+            "decision": decision.decision,
+            "targets": decision.targets,
+            "candidates": decision.candidates,
+            "reason": decision.reason,
+        },
+        indent=2,
+    )

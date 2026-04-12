@@ -1,0 +1,2 @@
+[console_scripts]
+mnemonicos = second_brain.cli:main

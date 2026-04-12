@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# mnemonic_context.sh — run hybrid retrieval and print compact or structured context
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+QUERY=""
+QUERY_TYPE_HINT=""
+TOP_K=""
+DRY_RUN=0
+EMIT_JSON=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --query-type-hint) QUERY_TYPE_HINT="$2"; shift 2 ;;
+    --top-k)           TOP_K="$2"; shift 2 ;;
+    --dry-run)         DRY_RUN=1; shift ;;
+    --json)            EMIT_JSON=1; shift ;;
+    -*)                echo "Unknown option: $1" >&2; exit 1 ;;
+    *)                 QUERY="$1"; shift ;;
+  esac
+done
+
+if [[ -z "$QUERY" ]]; then
+  echo "Usage: mnemonic_context.sh \"<query>\" [--query-type-hint <hint>] [--top-k <N>] [--json]" >&2
+  exit 1
+fi
+
+CONFIG="$REPO_ROOT/config/memory.toml"
+if [[ ! -f "$CONFIG" ]]; then
+  echo "Error: config not found at $CONFIG" >&2
+  exit 1
+fi
+
+if command -v mnemonicos >/dev/null 2>&1; then
+  CLI=(mnemonicos --config "$CONFIG")
+else
+  CLI=(env PYTHONPATH="$REPO_ROOT/src" python3 -m second_brain --config "$CONFIG")
+fi
+
+if [[ $DRY_RUN -eq 1 ]]; then
+  if [[ $EMIT_JSON -eq 1 ]]; then
+    printf '{\n  "query": "%s",\n  "retrieval_state": "dry_run",\n  "recommendation": "reuse_with_verification"\n}\n' "$QUERY"
+  else
+    echo "<!-- MnemonicOS context [DRY RUN] -->"
+    echo "<!-- query: $QUERY -->"
+    echo "<!-- query-type-hint: ${QUERY_TYPE_HINT:-none} -->"
+    echo "<!-- top-k: ${TOP_K:-default} -->"
+  fi
+  exit 0
+fi
+
+RETRIEVE_CMD=("${CLI[@]}" retrieve "$QUERY" --json)
+[[ -n "$QUERY_TYPE_HINT" ]] && RETRIEVE_CMD+=(--query-type-hint "$QUERY_TYPE_HINT")
+[[ -n "$TOP_K" ]] && RETRIEVE_CMD+=(--top-k "$TOP_K")
+
+cd "$REPO_ROOT"
+RAW="$("${RETRIEVE_CMD[@]}" 2>/dev/null)" || RAW=""
+if [[ -z "$RAW" ]]; then
+  if [[ $EMIT_JSON -eq 1 ]]; then
+    echo '{"query":"","retrieval_state":"insufficient_no_hit","recommendation":"research_fresh","hit_ids":[],"context_markdown":""}'
+  else
+    echo "<!-- MnemonicOS: retrieval error, continuing without context -->"
+  fi
+  exit 0
+fi
+
+env RAW_PAYLOAD="$RAW" PYTHONPATH="$REPO_ROOT/src" python3 - "$QUERY" "$EMIT_JSON" <<'PYEOF'
+import json
+import os
+import sys
+
+from second_brain.bridge import assess_retrieval_payload
+
+query = sys.argv[1]
+emit_json = sys.argv[2] == "1"
+payload = json.loads(os.environ["RAW_PAYLOAD"])
+assessment = assess_retrieval_payload(payload, query)
+
+hits = payload.get("hits", [])
+pinned = payload.get("pinned_paths", [])
+
+lines = ["<!-- MnemonicOS context block — do not edit -->", "## Memory Context", ""]
+lines.append(f"- retrieval_state: `{assessment.state}`")
+lines.append(f"- recommendation: `{assessment.recommendation}`")
+if assessment.current_ids:
+    lines.append(f"- current_hits: {', '.join(assessment.current_ids[:5])}")
+if assessment.stale_ids:
+    lines.append(f"- stale_hits: {', '.join(assessment.stale_ids[:5])}")
+if assessment.contested_ids:
+    lines.append(f"- contested_hits: {', '.join(assessment.contested_ids[:5])}")
+lines.append("")
+
+if pinned:
+    lines.append("### Pinned")
+    lines.append("")
+    for path in pinned:
+        lines.append(f"- {path}")
+    lines.append("")
+
+if hits:
+    lines.append("### Relevant Notes")
+    lines.append("")
+    for hit in hits[:8]:
+        title = hit.get("title", "untitled")
+        note_type = hit.get("type", "")
+        status = hit.get("status") or ""
+        freshness = hit.get("freshness_state") or ""
+        summary = (hit.get("summary") or hit.get("excerpt") or "").replace("\n", " ")
+        channels = ", ".join(hit.get("channels", []))
+        flags = []
+        if freshness in {"stale", "suspect", "contested"}:
+            flags.append(freshness)
+        if status in {"superseded", "archived"}:
+            flags.append(status)
+        flag_text = f" [{' | '.join(flags)}]" if flags else ""
+        lines.append(f"**{title}** ({note_type}){flag_text}")
+        if summary:
+            lines.append(f"  {summary[:220]}")
+        if channels:
+            lines.append(f"  _via {channels}_")
+        lines.append("")
+else:
+    lines.append("### Relevant Notes")
+    lines.append("")
+    lines.append("- No relevant MnemonicOS notes found.")
+    lines.append("")
+
+lines.append("<!-- end MnemonicOS context -->")
+context_markdown = "\n".join(lines)
+
+if emit_json:
+    json.dump(
+        {
+            "query": query,
+            "retrieval_state": assessment.state,
+            "recommendation": assessment.recommendation,
+            "hit_ids": assessment.hit_ids,
+            "stale_ids": assessment.stale_ids,
+            "contested_ids": assessment.contested_ids,
+            "current_ids": assessment.current_ids,
+            "partial_ids": assessment.partial_ids,
+            "context_markdown": context_markdown,
+            "raw_result": payload,
+        },
+        sys.stdout,
+        indent=2,
+    )
+    print()
+else:
+    print(context_markdown)
+PYEOF

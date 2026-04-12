@@ -48,6 +48,7 @@ class RetrieveHit:
     title: str
     type: str
     status: str | None
+    freshness_state: str | None
     body_path: str
     summary: str
     channels: list[str]

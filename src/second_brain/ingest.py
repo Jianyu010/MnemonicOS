@@ -3,12 +3,14 @@ from __future__ import annotations
 from datetime import datetime
 from hashlib import sha256
 import json
+from pathlib import Path
 import re
 import sqlite3
 from typing import Any
 
 import yaml
 
+from .bridge import decide_upsert, find_existing_candidates, parse_summary
 from .config import AppConfig
 from .db import connect_db, run_migrations
 from .models import IngestSessionResult
@@ -287,11 +289,26 @@ def _merge_note_metadata(existing_metadata: dict[str, Any], item: dict[str, Any]
     metadata = dict(existing_metadata)
     metadata["id"] = item["id"]
     metadata["type"] = item["type"]
-    metadata["title"] = item["title"]
-    metadata["aliases"] = _merge_unique(
-        list(existing_metadata.get("aliases") or []),
-        list(item.get("aliases") or []),
-    )
+    existing_title = str(existing_metadata.get("title", "")).strip()
+    incoming_title = str(item["title"]).strip()
+    if existing_title:
+        metadata["title"] = existing_title
+        if incoming_title and incoming_title.casefold() != existing_title.casefold():
+            metadata["aliases"] = _merge_unique(
+                list(existing_metadata.get("aliases") or []),
+                [incoming_title, *list(item.get("aliases") or [])],
+            )
+        else:
+            metadata["aliases"] = _merge_unique(
+                list(existing_metadata.get("aliases") or []),
+                list(item.get("aliases") or []),
+            )
+    else:
+        metadata["title"] = incoming_title
+        metadata["aliases"] = _merge_unique(
+            list(existing_metadata.get("aliases") or []),
+            list(item.get("aliases") or []),
+        )
     metadata["tags"] = _merge_unique(
         list(existing_metadata.get("tags") or []),
         list(item.get("tags") or []),
@@ -312,6 +329,20 @@ def _merge_note_metadata(existing_metadata: dict[str, Any], item: dict[str, Any]
     if "summary" in item and item["summary"]:
         metadata["summary"] = item["summary"]
     return metadata
+
+
+def _touch_existing_note(path: Path, source_refs: list[str], now_date: str) -> bool:
+    from .parser import split_frontmatter
+
+    if not path.exists():
+        return False
+    parsed = split_frontmatter(path.read_text())
+    metadata = dict(parsed.metadata)
+    metadata["source_refs"] = _merge_unique(list(metadata.get("source_refs") or []), source_refs)
+    metadata["last_observed_at"] = now_date
+    rendered = _render_note(metadata, parsed.body)
+    path.write_text(rendered)
+    return True
 
 
 def _append_system_memory(path: Path, heading: str, bullet: str) -> bool:
@@ -405,6 +436,7 @@ def ingest_session(
                 )
 
     raw_items = _read_memory_items(content, config.ingest.explicit_markers_only)
+    session_summary = parse_summary(content)
     promoted_notes: list[str] = []
     review_items: list[str] = []
     changed_paths: list[str] = []
@@ -468,9 +500,53 @@ def ingest_session(
             review_items.append(f"review/{review_path.stem}")
             continue
 
+        item_candidates = find_existing_candidates(
+            connection,
+            config,
+            note_type=normalized["type"],
+            title=normalized["title"],
+            summary=normalized.get("summary", "") or normalized.get("body", "") or normalized["title"],
+        )
+        upsert_decision = decide_upsert(
+            connection,
+            config,
+            summary=session_summary,
+            note_type=normalized["type"],
+            title=normalized["title"],
+            summary_text=normalized.get("summary", "") or normalized.get("body", "") or normalized["title"],
+            existing_candidates=item_candidates,
+        )
+        if upsert_decision.decision == "skip_duplicate":
+            continue
+        if upsert_decision.decision == "needs_review":
+            review_path = create_review_item(
+                config,
+                review_type="merge_review",
+                suggested_action=f"review duplicate candidate for {normalized['id']}",
+                reason=upsert_decision.reason,
+                confidence="medium",
+                agent=agent,
+                source_refs=list(normalized["source_refs"]),
+                candidates=upsert_decision.candidates,
+                context=normalized.get("summary", ""),
+                slug_seed=f"duplicate-{normalized['id'].replace('/', '-')}",
+                extra_metadata={
+                    "target_candidates": upsert_decision.targets,
+                },
+            )
+            review_items.append(f"review/{review_path.stem}")
+            continue
+
         target_path = _path_for_item(config, normalized)
         target_path.parent.mkdir(parents=True, exist_ok=True)
         metadata = dict(normalized)
+        if upsert_decision.targets:
+            metadata["linked_notes"] = _merge_unique(
+                list(metadata.get("linked_notes") or []),
+                list(upsert_decision.targets),
+            )
+            if upsert_decision.decision == "update_existing":
+                metadata["source_refs"] = _merge_unique(list(metadata.get("source_refs") or []), list(upsert_decision.targets))
         if normalized["type"] == "procedure":
             metadata.setdefault("status", "active" if normalized.get("reviewed_by") and normalized.get("reviewed_at") else "draft")
             if metadata["status"] == "active" and not (metadata.get("reviewed_by") and metadata.get("reviewed_at")):
@@ -482,6 +558,25 @@ def ingest_session(
             metadata.setdefault("status", "open")
         elif normalized["type"] in {"project", "repo"}:
             metadata.setdefault("status", "active")
+
+        if upsert_decision.decision in {"update_existing", "confirm_existing"} and upsert_decision.targets:
+            existing_id = upsert_decision.targets[0]
+            existing_slug = existing_id.split("/", 1)[1]
+            if normalized["type"] == "procedure":
+                procedure_root = config.paths.vault_root / "wiki" / "procedures"
+                for directory in ("drafts", "active", "retired"):
+                    candidate_path = procedure_root / directory / f"{existing_slug}.md"
+                    if candidate_path.exists():
+                        target_path = candidate_path
+                        break
+            else:
+                target_path = _path_for_item(config, {"type": normalized["type"], "id": existing_id})
+            metadata["id"] = existing_id
+            if upsert_decision.decision == "confirm_existing" and target_path.exists():
+                if _touch_existing_note(target_path, list(metadata.get("source_refs") or []), now.strftime("%Y-%m-%d")):
+                    changed_paths.append(str(target_path.resolve()))
+                    promoted_notes.append(existing_id)
+                continue
 
         body = _render_note_body(normalized["type"], normalized)
         if target_path.exists():

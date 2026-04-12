@@ -252,6 +252,32 @@ PYTHONPATH=src python3 -m second_brain run-job weekly_hygiene
 
 `run-job daily_consolidation` now refreshes `brain/system/ACTIVE.md`, updates trust/freshness state, creates relearn tasks, and appends retrieval misses to `evals/candidates.jsonl` on live runs.
 
+## Agent Bridges
+
+MnemonicOS now includes a reuse-first bridge for agent integrations.
+
+- Claude:
+  see [docs/claude-code-integration.md](/Users/jianyulong/ai_memory/docs/claude-code-integration.md)
+- Codex:
+  see [docs/codex-integration.md](/Users/jianyulong/ai_memory/docs/codex-integration.md)
+
+Shared bridge scripts:
+
+- `scripts/mnemonic_context.sh`
+- `scripts/mnemonic_should_retrieve.sh`
+- `scripts/mnemonic_should_writeback.sh`
+- `scripts/mnemonic_should_upsert.sh`
+- `scripts/mnemonic_postflight.sh`
+
+The bridge policy is:
+
+- query MnemonicOS first for coding, project, and knowledge tasks
+- reuse existing current memory when sufficient
+- treat stale or contested memory as background context, then research fresh
+- retrieve again after the first meaningful failure
+- write back failures, reusable successes, and durable knowledge sessions
+- prefer `confirm` or `update` over creating duplicate notes
+
 ## Repo Map
 
 - [docs/IMPLEMENTATION_PLAN.md](/Users/jianyulong/ai_memory/docs/IMPLEMENTATION_PLAN.md): build notes and architecture details
