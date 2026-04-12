@@ -31,8 +31,8 @@ class BridgeDedupeTest(unittest.TestCase):
         _write(
             workspace / "brain/system/AGENTS.md",
             """
-            agents:
-              codex:
+            bridges:
+              local_cli:
                 scope: [raw/sessions, wiki]
                 can_promote: false
                 can_write_canonical: true
@@ -69,7 +69,7 @@ class BridgeDedupeTest(unittest.TestCase):
             connection.close()
 
             first_summary = """
-            agent: claude
+            bridge_id: automation
             session_date: 2026-04-11
             task_kind: knowledge
             mnemos_retrieval_state: insufficient_no_hit
@@ -100,7 +100,7 @@ class BridgeDedupeTest(unittest.TestCase):
             ```
             """
             second_summary = """
-            agent: claude
+            bridge_id: automation
             session_date: 2026-04-11
             task_kind: knowledge
             mnemos_retrieval_state: sufficient_current
@@ -134,8 +134,8 @@ class BridgeDedupeTest(unittest.TestCase):
             ```
             """
 
-            ingest_session(config, agent="claude", slug="first-cann", content=textwrap.dedent(first_summary).strip() + "\n")
-            ingest_session(config, agent="claude", slug="second-cann", content=textwrap.dedent(second_summary).strip() + "\n")
+            ingest_session(config, bridge_id="automation", session_id="first-cann", content=textwrap.dedent(first_summary).strip() + "\n")
+            ingest_session(config, bridge_id="automation", session_id="second-cann", content=textwrap.dedent(second_summary).strip() + "\n")
 
             sync_vault(config, mode="full")
             concept_files = list((workspace / "brain/wiki/concepts").glob("*.md"))
@@ -177,7 +177,7 @@ class BridgeDedupeTest(unittest.TestCase):
             summary = parse_summary(
                 textwrap.dedent(
                     """
-                    agent: codex
+                    bridge_id: local_cli
                     session_date: 2026-04-11
                     task_kind: knowledge
                     mnemos_retrieval_state: insufficient_stale

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mnemonicos"
 version = "0.1.0"
-description = "MnemonicOS: local-first memory infrastructure for Codex and Claude"
+description = "MnemonicOS: local-first memory infrastructure for agentic runtimes"
 requires-python = ">=3.11"
 dependencies = [
   "PyYAML>=6.0",

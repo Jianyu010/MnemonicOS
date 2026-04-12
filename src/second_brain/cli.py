@@ -27,8 +27,10 @@ def _build_parser() -> argparse.ArgumentParser:
     sync_parser.add_argument("paths", nargs="*", help="Optional subset of files to sync.")
 
     ingest_parser = subparsers.add_parser("ingest-session", help="Ingest a raw session and promote explicit memory items.")
-    ingest_parser.add_argument("--agent", required=True)
-    ingest_parser.add_argument("--slug", required=True)
+    ingest_parser.add_argument("--bridge-id")
+    ingest_parser.add_argument("--session-id")
+    ingest_parser.add_argument("--agent", help="Deprecated alias for --bridge-id.")
+    ingest_parser.add_argument("--slug", help="Deprecated alias for --session-id.")
     ingest_parser.add_argument("--file", help="Path to a markdown file with session content.")
     ingest_parser.add_argument("--content", help="Inline session content.")
     ingest_parser.add_argument("--tag", action="append", default=[])
@@ -97,17 +99,31 @@ def _retrieve(config_path: str, query: str, top_k: int | None, query_type_hint: 
     return 0
 
 
-def _ingest_session(config_path: str, agent: str, slug: str, file_path: str | None, content: str | None, tags: list[str], source_refs: list[str]) -> int:
+def _ingest_session(
+    config_path: str,
+    bridge_id: str | None,
+    session_id: str | None,
+    agent: str | None,
+    slug: str | None,
+    file_path: str | None,
+    content: str | None,
+    tags: list[str],
+    source_refs: list[str],
+) -> int:
     if bool(file_path) == bool(content):
         raise SystemExit("provide exactly one of --file or --content")
+    resolved_bridge_id = bridge_id or agent
+    resolved_session_id = session_id or slug
+    if not resolved_bridge_id or not resolved_session_id:
+        raise SystemExit("provide bridge identity via --bridge-id/--session-id or legacy --agent/--slug")
     payload = content
     if file_path is not None:
         payload = open(file_path, encoding="utf-8").read()
     config = load_config(config_path)
     result = ingest_session(
         config,
-        agent=agent,
-        slug=slug,
+        bridge_id=resolved_bridge_id,
+        session_id=resolved_session_id,
         content=payload or "",
         tags=tags,
         source_refs=source_refs,
@@ -145,7 +161,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "sync":
         return _sync(args.config, args.mode, args.paths)
     if args.command == "ingest-session":
-        return _ingest_session(args.config, args.agent, args.slug, args.file, args.content, args.tag, args.source_ref)
+        return _ingest_session(
+            args.config,
+            args.bridge_id,
+            args.session_id,
+            args.agent,
+            args.slug,
+            args.file,
+            args.content,
+            args.tag,
+            args.source_ref,
+        )
     if args.command == "retrieve":
         return _retrieve(args.config, args.query, args.top_k, args.query_type_hint, args.json)
     if args.command == "run-job":

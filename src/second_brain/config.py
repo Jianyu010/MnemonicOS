@@ -64,7 +64,7 @@ class TrustConfig:
 
 
 @dataclass(slots=True)
-class AgentConfig:
+class BridgeConfig:
     session_prefix: str
     can_promote: bool
 
@@ -77,7 +77,7 @@ class AppConfig:
     embeddings: EmbeddingsConfig = field(default_factory=EmbeddingsConfig)
     graph: GraphConfig = field(default_factory=GraphConfig)
     trust: TrustConfig = field(default_factory=TrustConfig)
-    agents: dict[str, AgentConfig] = field(default_factory=dict)
+    bridges: dict[str, BridgeConfig] = field(default_factory=dict)
     config_path: Path | None = None
 
 
@@ -151,11 +151,14 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
         section_limit=int(trust_data.get("section_limit", 5)),
     )
 
-    agents: dict[str, AgentConfig] = {}
-    for agent_name, agent_data in data.get("agents", {}).items():
-        agents[agent_name] = AgentConfig(
-            session_prefix=str(agent_data.get("session_prefix", agent_name)),
-            can_promote=bool(agent_data.get("can_promote", False)),
+    bridges: dict[str, BridgeConfig] = {}
+    bridges_data = data.get("bridges")
+    if bridges_data is None:
+        bridges_data = data.get("agents", {})
+    for bridge_name, bridge_data in bridges_data.items():
+        bridges[bridge_name] = BridgeConfig(
+            session_prefix=str(bridge_data.get("session_prefix", bridge_name)),
+            can_promote=bool(bridge_data.get("can_promote", False)),
         )
 
     return AppConfig(
@@ -165,6 +168,6 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
         embeddings=embeddings,
         graph=graph,
         trust=trust,
-        agents=agents,
+        bridges=bridges,
         config_path=resolved_config,
     )

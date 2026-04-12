@@ -59,8 +59,8 @@ class Phase2Test(unittest.TestCase):
             _write(
                 workspace / "brain/system/AGENTS.md",
                 """
-                agents:
-                  codex:
+                bridges:
+                  local_cli:
                     scope: [raw/sessions, wiki]
                     can_promote: false
                     can_write_canonical: true
@@ -161,8 +161,8 @@ class Phase2Test(unittest.TestCase):
 
             ingest_result = ingest_session(
                 config,
-                agent="codex",
-                slug="pooling-review",
+                bridge_id="local_cli",
+                session_id="pooling-review",
                 content=textwrap.dedent(
                     """
                     # Session Notes

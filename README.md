@@ -1,6 +1,7 @@
 # MnemonicOS
 
-MnemonicOS is a local-first memory system for Codex and Claude. The markdown
+MnemonicOS is a local-first memory system for agentic runtimes and automation
+clients. The markdown
 vault is the source of truth; SQLite search tables, semantic vectors, the note
 graph, and trust/freshness state are rebuildable caches.
 
@@ -233,7 +234,7 @@ If installed as a package:
 ```bash
 mnemonicos init-db
 mnemonicos sync --mode full
-mnemonicos ingest-session --agent codex --slug pairing --file ./notes/session.md
+mnemonicos ingest-session --bridge-id local-cli --session-id pairing --file ./notes/session.md
 mnemonicos retrieve "how do we release the auth service?"
 mnemonicos run-job daily_consolidation
 mnemonicos run-job weekly_hygiene
@@ -244,7 +245,7 @@ Without installation:
 ```bash
 PYTHONPATH=src python3 -m second_brain init-db
 PYTHONPATH=src python3 -m second_brain sync --mode full
-PYTHONPATH=src python3 -m second_brain ingest-session --agent codex --slug pairing --file ./notes/session.md
+PYTHONPATH=src python3 -m second_brain ingest-session --bridge-id local-cli --session-id pairing --file ./notes/session.md
 PYTHONPATH=src python3 -m second_brain retrieve "how do we release the auth service?"
 PYTHONPATH=src python3 -m second_brain run-job daily_consolidation
 PYTHONPATH=src python3 -m second_brain run-job weekly_hygiene
@@ -252,14 +253,11 @@ PYTHONPATH=src python3 -m second_brain run-job weekly_hygiene
 
 `run-job daily_consolidation` now refreshes `brain/system/ACTIVE.md`, updates trust/freshness state, creates relearn tasks, and appends retrieval misses to `evals/candidates.jsonl` on live runs.
 
-## Agent Bridges
+## Bridge Adapters
 
-MnemonicOS now includes a reuse-first bridge for agent integrations.
-
-- Claude:
-  see [docs/claude-code-integration.md](/Users/jianyulong/ai_memory/docs/claude-code-integration.md)
-- Codex:
-  see [docs/codex-integration.md](/Users/jianyulong/ai_memory/docs/codex-integration.md)
+MnemonicOS exposes a reuse-first bridge protocol for external adapters. The
+core product stays model- and client-independent; vendor-specific adapters can
+layer on top of the shared bridge scripts and runtime API.
 
 Shared bridge scripts:
 

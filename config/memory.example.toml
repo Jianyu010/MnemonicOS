@@ -49,10 +49,10 @@ sync_after_ingest = true
 daily_consolidation = "0 3 * * *"
 weekly_hygiene = "0 4 * * 0"
 
-[agents.codex]
-session_prefix = "codex"
+[bridges.local_cli]
+session_prefix = "local-cli"
 can_promote = false
 
-[agents.claude]
-session_prefix = "claude"
+[bridges.automation]
+session_prefix = "automation"
 can_promote = true

@@ -372,15 +372,19 @@ def _append_system_memory(path: Path, heading: str, bullet: str) -> bool:
 def ingest_session(
     config: AppConfig,
     *,
-    agent: str,
-    slug: str,
+    bridge_id: str | None = None,
+    session_id: str | None = None,
     content: str,
     tags: list[str] | None = None,
     source_refs: list[str] | None = None,
+    agent: str | None = None,
+    slug: str | None = None,
 ) -> IngestSessionResult:
     now = datetime.now()
     timestamp = now.strftime("%Y-%m-%d-%H%M%S")
-    archive_name = f"{timestamp}-{slugify(agent)}-{slugify(slug)}"
+    resolved_bridge_id = (bridge_id or agent or "local").strip()
+    resolved_session_id = (session_id or slug or timestamp).strip()
+    archive_name = f"{timestamp}-{slugify(resolved_bridge_id)}-{slugify(resolved_session_id)}"
     archive_id = f"session/{archive_name}"
     raw_path = config.paths.vault_root / "raw" / "sessions" / f"{archive_name}.md"
     raw_path.parent.mkdir(parents=True, exist_ok=True)
@@ -405,7 +409,7 @@ def ingest_session(
                 archive_id,
                 config.ingest.default_archive_type,
                 str(raw_path.resolve()),
-                agent,
+                resolved_bridge_id,
                 json.dumps(tags or []),
                 len(chunks),
             ),
@@ -458,7 +462,7 @@ def ingest_session(
                     suggested_action=f"review {item_type}",
                     reason=normalized["title"],
                     confidence=confidence,
-                    agent=agent,
+                    bridge_id=resolved_bridge_id,
                     source_refs=list(normalized["source_refs"]),
                     context=normalized["summary"],
                     slug_seed=f"{item_type}-{normalized['title']}",
@@ -492,7 +496,7 @@ def ingest_session(
                 suggested_action=f"promote {normalized['id']}",
                 reason=normalized["title"],
                 confidence=confidence,
-                agent=agent,
+                bridge_id=resolved_bridge_id,
                 source_refs=list(normalized["source_refs"]),
                 context=normalized.get("summary", ""),
                 slug_seed=normalized["id"].replace("/", "-"),
@@ -525,7 +529,7 @@ def ingest_session(
                 suggested_action=f"review duplicate candidate for {normalized['id']}",
                 reason=upsert_decision.reason,
                 confidence="medium",
-                agent=agent,
+                bridge_id=resolved_bridge_id,
                 source_refs=list(normalized["source_refs"]),
                 candidates=upsert_decision.candidates,
                 context=normalized.get("summary", ""),
@@ -595,12 +599,12 @@ def ingest_session(
     sync_vault(config, mode="incremental", selected_paths=changed_paths)
 
     log_path = config.paths.vault_root / "wiki" / "log.md"
-    log_lines = [log_path.read_text().rstrip()] if log_path.exists() else ["# Change Log", "", "# Format", "- `YYYY-MM-DD HH:MM | agent | action | note_id | reason`"]
+    log_lines = [log_path.read_text().rstrip()] if log_path.exists() else ["# Change Log", "", "# Format", "- `YYYY-MM-DD HH:MM | bridge_id | action | note_id | reason`"]
     stamp = now.strftime("%Y-%m-%d %H:%M")
     for note_id in promoted_notes:
-        log_lines.append(f"{stamp} | {agent} | ingested | {note_id} | promoted from {archive_id}")
+        log_lines.append(f"{stamp} | {resolved_bridge_id} | ingested | {note_id} | promoted from {archive_id}")
     for review_id in review_items:
-        log_lines.append(f"{stamp} | {agent} | review | {review_id} | needs promotion review from {archive_id}")
+        log_lines.append(f"{stamp} | {resolved_bridge_id} | review | {review_id} | needs promotion review from {archive_id}")
     log_path.write_text("\n".join(log_lines).rstrip() + "\n")
     connection.close()
 

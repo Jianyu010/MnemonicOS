@@ -64,8 +64,8 @@ class Phase25Test(unittest.TestCase):
             _write(
                 workspace / "brain/system/AGENTS.md",
                 """
-                agents:
-                  codex:
+                bridges:
+                  local_cli:
                     scope: [raw/sessions, wiki]
                     can_promote: false
                     can_write_canonical: true
@@ -139,7 +139,7 @@ class Phase25Test(unittest.TestCase):
                 suggested_action="merge auth-db aliases",
                 reason="Auth DB aliases overlap across notes",
                 confidence="medium",
-                agent="codex",
+                bridge_id="local_cli",
                 source_refs=[],
                 context="Manual review seed for ACTIVE.md refresh.",
                 candidates=["decision/auth-postgres"],

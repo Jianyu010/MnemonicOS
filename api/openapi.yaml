@@ -97,9 +97,9 @@ components:
     IngestSessionRequest:
       type: object
       properties:
-        agent:
+        bridge_id:
           type: string
-        slug:
+        session_id:
           type: string
         content:
           type: string
@@ -111,7 +111,13 @@ components:
           type: array
           items:
             type: string
-      required: [agent, slug, content]
+        agent:
+          type: string
+          deprecated: true
+        slug:
+          type: string
+          deprecated: true
+      required: [bridge_id, session_id, content]
 
     IngestSessionResponse:
       type: object

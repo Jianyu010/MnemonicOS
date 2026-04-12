@@ -30,7 +30,8 @@ def create_review_item(
     suggested_action: str,
     reason: str,
     confidence: str,
-    agent: str,
+    bridge_id: str | None = None,
+    agent: str | None = None,
     source_refs: list[str],
     context: str = "",
     candidates: list[str] | None = None,
@@ -47,6 +48,7 @@ def create_review_item(
     resolved_at = None
     resolved_by = None
     resolution = ""
+    resolved_bridge_id = bridge_id or agent or "local"
 
     if path.exists():
         parsed = split_frontmatter(path.read_text())
@@ -71,7 +73,7 @@ def create_review_item(
         "suggested_action": suggested_action,
         "confidence": confidence,
         "source_refs": source_refs,
-        "agent": agent,
+        "bridge_id": resolved_bridge_id,
         "resolution": resolution,
     }
     if extra_metadata:

@@ -5,8 +5,8 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPTS="$REPO_ROOT/scripts"
-AGENT=""
-SLUG=""
+BRIDGE_ID=""
+SESSION_ID=""
 SUMMARY_FILE=""
 MODE=""
 TAGS=()
@@ -15,8 +15,10 @@ DRY_RUN=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --agent)        AGENT="$2"; shift 2 ;;
-    --slug)         SLUG="$2"; shift 2 ;;
+    --bridge-id)    BRIDGE_ID="$2"; shift 2 ;;
+    --session-id)   SESSION_ID="$2"; shift 2 ;;
+    --agent)        BRIDGE_ID="$2"; shift 2 ;;
+    --slug)         SESSION_ID="$2"; shift 2 ;;
     --summary-file) SUMMARY_FILE="$2"; shift 2 ;;
     --mode)         MODE="$2"; shift 2 ;;
     --tag)          TAGS+=("$2"); shift 2 ;;
@@ -26,8 +28,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$AGENT" || -z "$SLUG" || -z "$SUMMARY_FILE" ]]; then
-  echo "Usage: mnemonic_postflight.sh --agent <name> --slug <slug> --summary-file <path> [--mode failure|success|knowledge]" >&2
+if [[ -z "$BRIDGE_ID" || -z "$SESSION_ID" || -z "$SUMMARY_FILE" ]]; then
+  echo "Usage: mnemonic_postflight.sh --bridge-id <id> --session-id <id> --summary-file <path> [--mode failure|success|knowledge]" >&2
   exit 1
 fi
 
@@ -69,6 +71,8 @@ target = Path(sys.argv[2])
 payload = json.loads(os.environ["UPSERT_JSON"])
 summary = parse_summary(source)
 metadata = dict(summary.metadata)
+legacy_agent = metadata.get("agent", "").strip()
+metadata.setdefault("bridge_id", metadata.get("bridge_id", "").strip() or legacy_agent)
 metadata.setdefault("writeback_intent", {
     "new_note": "new",
     "update_existing": "update",
@@ -100,7 +104,7 @@ target.write_text(rendered.rstrip() + "\n", encoding="utf-8")
 PYEOF
 
 cd "$REPO_ROOT"
-INGEST_CMD=("${CLI[@]}" ingest-session --agent "$AGENT" --slug "$SLUG" --file "$TMP_SUMMARY")
+INGEST_CMD=("${CLI[@]}" ingest-session --bridge-id "$BRIDGE_ID" --session-id "$SESSION_ID" --file "$TMP_SUMMARY")
 for tag in "${TAGS[@]+"${TAGS[@]}"}"; do
   INGEST_CMD+=(--tag "$tag")
 done

@@ -51,8 +51,8 @@ class Phase1Test(unittest.TestCase):
             _write(
                 workspace / "brain/system/AGENTS.md",
                 """
-                agents:
-                  codex:
+                bridges:
+                  local_cli:
                     scope: [raw/sessions, wiki]
                     can_promote: false
                     can_write_canonical: true
