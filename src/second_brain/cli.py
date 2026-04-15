@@ -141,7 +141,8 @@ def _build_parser() -> argparse.ArgumentParser:
     daemon_subparsers = daemon_parser.add_subparsers(dest="daemon_command", required=True)
     daemon_subparsers.add_parser("start", help="Start the daemon.")
     daemon_subparsers.add_parser("stop", help="Stop the daemon.")
-    daemon_subparsers.add_parser("status", help="Show daemon status.")
+    daemon_status = daemon_subparsers.add_parser("status", help="Show daemon status.")
+    daemon_status.add_argument("--json", action="store_true", help="Emit raw JSON output.")
     daemon_run_job = daemon_subparsers.add_parser("run-job", help="Ask the daemon to run a job immediately.")
     daemon_run_job.add_argument("job_name")
 
@@ -683,16 +684,96 @@ def _daemon_stop(config_path: str) -> int:
     return 1
 
 
-def _daemon_status(config_path: str) -> int:
+def _format_bytes(num_bytes: int | None) -> str:
+    if num_bytes is None:
+        return "unknown"
+    units = ["B", "KB", "MB", "GB", "TB"]
+    value = float(num_bytes)
+    unit = units[0]
+    for candidate in units:
+        unit = candidate
+        if value < 1024.0 or candidate == units[-1]:
+            break
+        value /= 1024.0
+    if unit == "B":
+        return f"{int(value)} {unit}"
+    return f"{value:.1f} {unit}"
+
+
+def _daemon_status_summary(response: dict[str, object]) -> str:
+    status = str(response.get("status") or "unknown")
+    service = response.get("service") if isinstance(response.get("service"), dict) else {}
+    health = response.get("health") if isinstance(response.get("health"), dict) else {}
+    queue = health.get("queue") if isinstance(health, dict) and isinstance(health.get("queue"), dict) else {}
+    storage = health.get("storage") if isinstance(health, dict) and isinstance(health.get("storage"), dict) else {}
+    recent_runs = health.get("recent_job_runs") if isinstance(health, dict) and isinstance(health.get("recent_job_runs"), list) else []
+    scheduled_jobs = service.get("scheduled_jobs") if isinstance(service, dict) and isinstance(service.get("scheduled_jobs"), list) else []
+
+    pending_count = int(queue.get("pending_count", 0) or 0) if isinstance(queue, dict) else 0
+    error_count = int(queue.get("error_count", 0) or 0) if isinstance(queue, dict) else 0
+    oldest_age = queue.get("oldest_pending_age_minutes") if isinstance(queue, dict) else None
+    running_job = service.get("running_job") if isinstance(service, dict) else None
+    warnings = queue.get("warnings") if isinstance(queue, dict) and isinstance(queue.get("warnings"), list) else []
+    db_bytes = storage.get("db_bytes") if isinstance(storage, dict) else None
+    vault_bytes = storage.get("vault_bytes") if isinstance(storage, dict) else None
+
+    next_promotion_run = None
+    if isinstance(scheduled_jobs, list):
+        for item in scheduled_jobs:
+            if isinstance(item, dict) and item.get("name") == "process_promotion_queue":
+                next_promotion_run = item.get("next_run_utc")
+                break
+
+    last_job_line = "none"
+    if isinstance(recent_runs, list) and recent_runs:
+        first = recent_runs[0]
+        if isinstance(first, dict):
+            last_job_line = f"{first.get('job_name', 'unknown')} ({first.get('status', 'unknown')}) at {first.get('finished_at', 'unknown')}"
+
+    lines = [
+        f"Daemon: {status}",
+        f"Running job: {running_job or 'idle'}",
+        "",
+        "Promotion Queue",
+        f"  pending: {pending_count}",
+        f"  errors: {error_count}",
+        f"  oldest pending age: {oldest_age if oldest_age is not None else 'none'}",
+        f"  next promotion run: {next_promotion_run or 'unknown'}",
+        "",
+        "Storage",
+        f"  db: {_format_bytes(db_bytes if isinstance(db_bytes, int) else None)}",
+        f"  vault: {_format_bytes(vault_bytes if isinstance(vault_bytes, int) else None)}",
+        "",
+        "Recent Activity",
+        f"  last completed job: {last_job_line}",
+    ]
+
+    if isinstance(warnings, list) and warnings:
+        lines.extend(["", "Warnings"])
+        for warning in warnings:
+            lines.append(f"  - {warning}")
+
+    return "\n".join(lines)
+
+
+def _daemon_status(config_path: str, emit_json: bool) -> int:
     config = load_config(config_path)
     if config.daemon is None:
         raise SystemExit("daemon configuration is not available")
     response = _socket_send(config.daemon.socket_path, {"cmd": "status"})
     if response is None:
         pid = _read_pid(config.daemon.pid_path)
-        print(json.dumps({"status": "error", "error": "daemon_unreachable", "pid": pid}, sort_keys=True))
+        error_response = {"status": "error", "error": "daemon_unreachable", "pid": pid}
+        if emit_json:
+            print(json.dumps(error_response, sort_keys=True))
+        else:
+            print("Daemon: unreachable")
+            print(f"PID file: {pid if pid is not None else 'none'}")
         return 1
-    print(json.dumps(response, sort_keys=True))
+    if emit_json:
+        print(json.dumps(response, sort_keys=True))
+    else:
+        print(_daemon_status_summary(response))
     return 0 if response.get("status") == "ok" else 1
 
 
@@ -810,7 +891,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.daemon_command == "stop":
             return _daemon_stop(args.config)
         if args.daemon_command == "status":
-            return _daemon_status(args.config)
+            return _daemon_status(args.config, args.json)
         if args.daemon_command == "run-job":
             return _daemon_run_job(args.config, args.job_name)
     if args.command == "orchestrator":
