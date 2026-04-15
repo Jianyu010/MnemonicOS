@@ -578,6 +578,14 @@ def _orchestrator_finish_task(
         writeback_intent=writeback_intent,
     )
     result = finish_task(config, req)
+    if result.decision != "skip":
+        from .ingest import ingest_session
+        ingest_session(
+            config,
+            bridge_id=bridge_id,
+            session_id=session_id,
+            content=resolved_summary or "",
+        )
     if emit_json:
         print(writeback_result_to_json(result))
         return 0

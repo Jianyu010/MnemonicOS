@@ -162,6 +162,14 @@ def _handle_orchestrator_finish_task(config: AppConfig, body: dict[str, Any]) ->
         writeback_intent=body.get("writeback_intent"),
     )
     result = finish_task(config, req)
+    if result.decision != "skip":
+        from .ingest import ingest_session
+        ingest_session(
+            config,
+            bridge_id=body["bridge_id"],
+            session_id=body["session_id"],
+            content=body["summary"],
+        )
     return result.to_dict()
 
 
