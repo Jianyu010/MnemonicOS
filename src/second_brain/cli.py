@@ -9,7 +9,7 @@ import subprocess
 import sys
 import time
 
-from .config import load_config
+from .config import default_config_path, load_config
 from .db import connect_db, run_migrations
 from .ingest import ingest_session, ingest_session_promote
 from .jobs import run_job
@@ -40,8 +40,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="MnemonicOS local memory system CLI")
     parser.add_argument(
         "--config",
-        default="config/memory.example.toml",
-        help="Path to the TOML config file.",
+        default=None,
+        help=(
+            "Path to the TOML config file. "
+            "Defaults to config/memory.toml when present, otherwise config/memory.example.toml."
+        ),
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -721,6 +724,8 @@ def _run_job(config_path: str, job_name: str, dry_run: bool) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    if getattr(args, "config", None) is None:
+        args.config = str(default_config_path())
 
     if args.command == "init-db":
         return _init_db(args.config)

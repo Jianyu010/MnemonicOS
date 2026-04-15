@@ -99,9 +99,17 @@ def _resolve_path(base_dir: Path, raw_value: str) -> Path:
     return (base_dir / path).resolve()
 
 
+def default_config_path(workspace_root: str | Path | None = None) -> Path:
+    root = Path(workspace_root or Path.cwd()).resolve()
+    primary = root / "config" / "memory.toml"
+    if primary.exists():
+        return primary.resolve()
+    return (root / "config" / "memory.example.toml").resolve()
+
+
 def load_config(config_path: str | Path | None = None, workspace_root: str | Path | None = None) -> AppConfig:
     root = Path(workspace_root or Path.cwd()).resolve()
-    resolved_config = Path(config_path or root / "config" / "memory.example.toml").resolve()
+    resolved_config = Path(config_path).resolve() if config_path is not None else default_config_path(root)
     data = tomllib.loads(resolved_config.read_text())
 
     paths_data = data.get("paths", {})

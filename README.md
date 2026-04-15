@@ -150,22 +150,79 @@ Practical rule:
 - `src/second_brain/daemon.py`: Unix-socket daemon and scheduler
 - `src/second_brain/server.py`: local HTTP transport
 
-## Minimal Usage
+## How To Use
+
+### Install once
+
+From the repo root:
+
+```bash
+python3 -m pip install -e .
+```
+
+This installs the user-facing commands:
+
+- `mnemonicos`
+- `mnemonicos-daemon`
+
+Config discovery is automatic:
+
+- use `config/memory.toml` when it exists
+- otherwise fall back to `config/memory.example.toml`
+- pass `--config /path/to/file.toml` only when you want to override that
+
+### Main CLI: installed entrypoints
+
+Use this as the normal path after installation:
+
+```bash
+mnemonicos init-db
+mnemonicos daemon start
+mnemonicos daemon status
+mnemonicos sync --mode full
+mnemonicos orchestrator begin-task "debug the failing auth deploy"
+mnemonicos ingest-session --bridge-id local-cli --session-id session-001 --file ./notes/session.md
+mnemonicos daemon run-job process_promotion_queue
+mnemonicos server --host 127.0.0.1 --port 8000
+```
+
+Daemon-only shortcut:
+
+```bash
+mnemonicos-daemon
+```
+
+### No-install fallback: Python module entrypoint
+
+If you have not installed the package yet, the same CLI is available through the Python module:
 
 ```bash
 PYTHONPATH=src python3 -m second_brain init-db
 PYTHONPATH=src python3 -m second_brain daemon start
 PYTHONPATH=src python3 -m second_brain sync --mode full
 PYTHONPATH=src python3 -m second_brain orchestrator begin-task "debug the failing auth deploy"
-PYTHONPATH=src python3 -m second_brain ingest-session --bridge-id local-cli --session-id session-001 --file ./notes/session.md
-PYTHONPATH=src python3 -m second_brain daemon run-job process_promotion_queue
-PYTHONPATH=src python3 -m second_brain server --host 127.0.0.1 --port 8000
 ```
 
-Installed entrypoints:
+`second_brain` is the internal Python package name. `mnemonicos` is the intended user-facing command.
 
-- `mnemonicos`
-- `mnemonicos-daemon`
+### API entrypoints
+
+Start the local API server:
+
+```bash
+mnemonicos server --host 127.0.0.1 --port 8000
+```
+
+Main HTTP endpoints:
+
+- `GET /v1/health`
+- `POST /v1/retrieve`
+- `POST /v1/ingest/session`
+- `POST /v1/sync/vault`
+- `POST /v1/jobs/run`
+- `POST /v1/orchestrator/begin-task`
+- `POST /v1/orchestrator/mark-failure`
+- `POST /v1/orchestrator/finish-task`
 
 ## Where To Look Next
 
