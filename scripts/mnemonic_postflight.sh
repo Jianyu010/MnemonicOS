@@ -37,10 +37,10 @@ if [[ ! -f "$SUMMARY_FILE" ]]; then
   exit 1
 fi
 
-CONFIG="$REPO_ROOT/config/memory.toml"
-if [[ ! -f "$CONFIG" ]]; then
-  echo "Error: config not found at $CONFIG" >&2
-  exit 1
+if [[ -f "$REPO_ROOT/config/memory.toml" ]]; then
+  CONFIG="$REPO_ROOT/config/memory.toml"
+else
+  CONFIG="$REPO_ROOT/config/memory.example.toml"
 fi
 
 if command -v mnemonicos >/dev/null 2>&1; then

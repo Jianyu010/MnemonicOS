@@ -126,7 +126,7 @@ After a session with writeback:
 Query the archive to verify:
 ```bash
 cd /Users/jianyulong/ai_memory
-PYTHONPATH=src python3 -m second_brain --config config/memory.toml retrieve "what I learned about auth" --top-k 5
+mnemonicos retrieve "what I learned about auth" --top-k 5
 ```
 
 ---

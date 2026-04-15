@@ -11,7 +11,11 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CONFIG="$REPO_ROOT/config/memory.toml"
+if [[ -f "$REPO_ROOT/config/memory.toml" ]]; then
+  CONFIG="$REPO_ROOT/config/memory.toml"
+else
+  CONFIG="$REPO_ROOT/config/memory.example.toml"
+fi
 STATE_FILE="${STATE_FILE:-/tmp/mnemo_hook_state}"
 
 # --- MnemonicOS enable/disable switch ---

@@ -12,7 +12,7 @@ import socket
 import threading
 from typing import Any
 
-from .config import AppConfig, load_config
+from .config import AppConfig, default_config_path, load_config
 from .daemon_jobs import JobRegistry, build_registry
 from .jobs import collect_status_snapshot
 from .models import JobRunResult
@@ -235,8 +235,17 @@ class Daemon:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="MnemonicOS daemon")
-    parser.add_argument("--config", default="config/memory.example.toml")
+    parser.add_argument(
+        "--config",
+        default=None,
+        help=(
+            "Path to the TOML config file. "
+            "Defaults to config/memory.toml when present, otherwise config/memory.example.toml."
+        ),
+    )
     args = parser.parse_args(argv)
+    if args.config is None:
+        args.config = str(default_config_path())
     config = load_config(args.config)
     daemon = Daemon(config)
     return daemon.run()

@@ -171,6 +171,44 @@ Config discovery is automatic:
 - otherwise fall back to `config/memory.example.toml`
 - pass `--config /path/to/file.toml` only when you want to override that
 
+### Configuration
+
+`config/memory.toml` is the local runtime configuration for your MnemonicOS workspace.
+
+What it controls:
+
+- storage locations such as the vault, SQLite DB, vectors, and graph directories
+- retrieval behavior such as top-k, archive fallback, and rerank weights
+- ingest behavior such as chunk size and archive defaults
+- embedding, graph, and trust settings
+- daemon socket, PID, logs, and scheduled jobs
+- bridge-specific settings for agent integrations
+
+Who uses it:
+
+- `mnemonicos` reads it for all CLI operations
+- `mnemonicos-daemon` reads it when starting the background daemon
+- shared scripts in `scripts/` read it for hooks, retrieval helpers, and postflight ingest
+- the local HTTP server uses it when started through `mnemonicos server`
+
+When to use `config/memory.toml`:
+
+- when you are actually running MnemonicOS in a real workspace
+- when you want local paths, schedules, or settings that should not live in the checked-in example file
+- when different machines or users need different local runtime settings
+
+When `config/memory.example.toml` is enough:
+
+- when you are evaluating the project quickly
+- when the example paths and defaults already match your checkout
+- as the template you copy from to create `config/memory.toml`
+
+Typical setup:
+
+```bash
+cp config/memory.example.toml config/memory.toml
+```
+
 ### Main CLI: installed entrypoints
 
 Use this as the normal path after installation:

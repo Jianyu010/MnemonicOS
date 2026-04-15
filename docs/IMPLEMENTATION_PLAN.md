@@ -154,7 +154,7 @@ src/second_brain/
 
 Minimal responsibilities:
 
-- `config.py`: read `config/memory.example.toml`-style settings
+- `config.py`: read MnemonicOS TOML settings with automatic config discovery
 - `paths.py`: resolve vault-relative paths safely
 - `db.py`: open SQLite, run migrations, transaction helpers
 - `models.py`: request and response models
