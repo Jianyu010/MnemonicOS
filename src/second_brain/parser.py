@@ -38,6 +38,12 @@ OVERLAY_CLASSES = {
     "episode",
 }
 
+CHAIN_CONFIDENCE_LEVELS = {
+    "high",
+    "medium",
+    "low",
+}
+
 ENTITY_FIELDS = (
     "entities",
     "linked_projects",
@@ -82,6 +88,8 @@ class ParsedFrontmatter:
 
 def _ensure_list(value: object) -> list[str]:
     if value is None:
+        return []
+    if isinstance(value, dict):
         return []
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
@@ -149,6 +157,22 @@ def _collect_obsidian_links(metadata: dict[str, object]) -> list[str]:
     return ordered
 
 
+def _optional_string(metadata: dict[str, object], key: str) -> str | None:
+    raw_value = metadata.get(key)
+    if raw_value is None:
+        return None
+    value = str(raw_value).strip()
+    return value or None
+
+
+def _optional_chain_confidence(metadata: dict[str, object]) -> str | None:
+    value = _optional_string(metadata, "chain_confidence")
+    if value is None:
+        return None
+    normalized = value.casefold()
+    return normalized if normalized in CHAIN_CONFIDENCE_LEVELS else None
+
+
 def split_frontmatter(text: str) -> ParsedFrontmatter:
     match = FRONTMATTER_PATTERN.match(text)
     if not match:
@@ -203,6 +227,14 @@ def parse_note(path: Path) -> NoteRecord:
     entity_relations = _collect_entity_relations(metadata)
     entities = _collect_entities(entity_relations)
     obsidian_links = _collect_obsidian_links(metadata)
+    chain_id = _optional_string(metadata, "chain_id")
+    chain_confidence = _optional_chain_confidence(metadata)
+    chain_question = _optional_string(metadata, "chain_question")
+    chain_summary = _optional_string(metadata, "chain_summary")
+    problem_class = _optional_string(metadata, "problem_class")
+    failure_summary = _optional_string(metadata, "failure_summary")
+    attempt_summaries = _ensure_list(metadata.get("attempt_summaries"))
+    solution_rationale = _optional_string(metadata, "solution_rationale")
     summary = _extract_summary(metadata, parsed.body)
     content_hash = sha256(text.encode("utf-8")).hexdigest()
 
@@ -225,6 +257,14 @@ def parse_note(path: Path) -> NoteRecord:
         last_verified_at=str(metadata.get("last_verified_at", "")).strip() or None,
         verified_by=str(metadata.get("verified_by", "")).strip() or None,
         last_observed_at=str(metadata.get("last_observed_at", "")).strip() or None,
+        chain_id=chain_id,
+        chain_confidence=chain_confidence,
+        chain_question=chain_question,
+        chain_summary=chain_summary,
+        problem_class=problem_class,
+        failure_summary=failure_summary,
+        attempt_summaries=attempt_summaries,
+        solution_rationale=solution_rationale,
         summary=summary,
         aliases=aliases,
         obsidian_links=obsidian_links,

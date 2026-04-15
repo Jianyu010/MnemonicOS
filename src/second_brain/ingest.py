@@ -10,10 +10,10 @@ from typing import Any
 
 import yaml
 
-from .bridge import decide_upsert, find_existing_candidates, parse_summary
+from .bridge import decide_upsert, find_existing_candidates, infer_chain_context, parse_summary
 from .config import AppConfig
 from .db import connect_db, run_migrations
-from .models import IngestSessionResult
+from .models import CandidateMatch, IngestSessionResult
 from .review import create_review_item, slugify
 from .semantics import encode_text, upsert_archive_chunk_vector
 from .summaries import summarize_text
@@ -74,6 +74,9 @@ def _merge_unique(left: list[str], right: list[str]) -> list[str]:
         ordered.append(normalized)
         seen.add(lowered)
     return ordered
+
+
+CHAIN_BOUNDED_TYPES = {"procedure", "incident", "decision", "concept"}
 
 
 def _read_memory_items(content: str, explicit_only: bool) -> list[dict[str, Any]]:
@@ -340,6 +343,14 @@ def _normalize_item(
             "reviewed_at",
             "last_verified_at",
             "verified_by",
+            "chain_id",
+            "chain_confidence",
+            "chain_question",
+            "chain_summary",
+            "problem_class",
+            "failure_summary",
+            "attempt_summaries",
+            "solution_rationale",
             "evidence_refs",
             "verification",
             "applicability",
@@ -441,6 +452,27 @@ def _merge_note_metadata(existing_metadata: dict[str, Any], item: dict[str, Any]
     return metadata
 
 
+def _same_chain_candidate(
+    connection: sqlite3.Connection,
+    *,
+    note_type: str,
+    chain_id: str | None,
+) -> str | None:
+    if not chain_id:
+        return None
+    row = connection.execute(
+        """
+        SELECT id
+        FROM notes
+        WHERE type = ? AND chain_id = ?
+        ORDER BY updated_at DESC, created_at DESC, id ASC
+        LIMIT 1
+        """,
+        (note_type, chain_id),
+    ).fetchone()
+    return str(row["id"]) if row is not None else None
+
+
 def _touch_existing_note(path: Path, source_refs: list[str], now_date: str) -> bool:
     from .parser import split_frontmatter
 
@@ -495,21 +527,17 @@ def _append_system_memory(path: Path, heading: str, bullet: str) -> bool:
     return True
 
 
-def ingest_session(
+def _archive_session(
     config: AppConfig,
     *,
-    bridge_id: str | None = None,
-    session_id: str | None = None,
+    resolved_bridge_id: str,
+    resolved_session_id: str,
     content: str,
-    tags: list[str] | None = None,
-    source_refs: list[str] | None = None,
-    agent: str | None = None,
-    slug: str | None = None,
-) -> IngestSessionResult:
+    tags: list[str] | None,
+    skip_vectors: bool,
+) -> tuple[str, Path, list[str], sqlite3.Connection]:
     now = datetime.now()
     timestamp = now.strftime("%Y-%m-%d-%H%M%S")
-    resolved_bridge_id = (bridge_id or agent or "local").strip()
-    resolved_session_id = (session_id or slug or timestamp).strip()
     archive_name = f"{timestamp}-{slugify(resolved_bridge_id)}-{slugify(resolved_session_id)}"
     archive_id = f"session/{archive_name}"
     raw_path = config.paths.vault_root / "raw" / "sessions" / f"{archive_name}.md"
@@ -554,7 +582,7 @@ def ingest_session(
                 (archive_id, index, chunk, summary, len(WORD_PATTERN.findall(chunk)), content_hash),
             )
             chunk_id = int(cursor.lastrowid)
-            if config.embeddings.enabled:
+            if not skip_vectors and config.embeddings.enabled:
                 vector = encode_text(summary or chunk, dimensions=config.embeddings.dimensions)
                 upsert_archive_chunk_vector(
                     connection,
@@ -564,21 +592,188 @@ def ingest_session(
                     vector=vector,
                     source_hash=content_hash,
                 )
+    return archive_id, raw_path, chunks, connection
 
+
+def _enqueue_promotion_candidate(
+    connection: sqlite3.Connection,
+    *,
+    archive_id: str,
+    bridge_id: str,
+    session_id: str,
+    task_id: str | None,
+    task_kind: str | None,
+    content: str,
+    summary_payload: dict[str, Any],
+    chain_extraction: str,
+    chain_reason: str,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO promotion_queue(
+            archive_id, bridge_id, session_id, task_id, task_kind, content, summary_payload,
+            chain_extraction, chain_reason, status
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+        ON CONFLICT(archive_id) DO UPDATE SET
+            bridge_id = excluded.bridge_id,
+            session_id = excluded.session_id,
+            task_id = excluded.task_id,
+            task_kind = excluded.task_kind,
+            content = excluded.content,
+            summary_payload = excluded.summary_payload,
+            chain_extraction = excluded.chain_extraction,
+            chain_reason = excluded.chain_reason,
+            status = CASE
+                WHEN promotion_queue.status = 'processed' THEN promotion_queue.status
+                ELSE 'pending'
+            END,
+            last_error = NULL
+        """,
+        (
+            archive_id,
+            bridge_id,
+            session_id,
+            task_id,
+            task_kind,
+            content,
+            json.dumps(summary_payload, default=str),
+            chain_extraction,
+            chain_reason,
+        ),
+    )
+
+
+def ingest_session(
+    config: AppConfig,
+    *,
+    bridge_id: str | None = None,
+    session_id: str | None = None,
+    content: str,
+    tags: list[str] | None = None,
+    source_refs: list[str] | None = None,
+    agent: str | None = None,
+    slug: str | None = None,
+) -> IngestSessionResult:
+    resolved_bridge_id = (bridge_id or agent or "local").strip()
+    resolved_session_id = (session_id or slug or datetime.now().strftime("%Y-%m-%d-%H%M%S")).strip()
+    archive_id, raw_path, chunks, connection = _archive_session(
+        config,
+        resolved_bridge_id=resolved_bridge_id,
+        resolved_session_id=resolved_session_id,
+        content=content,
+        tags=tags,
+        skip_vectors=True,
+    )
+    session_summary = parse_summary(content)
+    chain_context = infer_chain_context(
+        session_summary,
+        session_id=resolved_session_id,
+        task_id=session_summary.metadata.get("task_id", "").strip() or None,
+    )
+    with connection:
+        _enqueue_promotion_candidate(
+            connection,
+            archive_id=archive_id,
+            bridge_id=resolved_bridge_id,
+            session_id=resolved_session_id,
+            task_id=session_summary.metadata.get("task_id", "").strip() or None,
+            task_kind=session_summary.metadata.get("task_kind", "").strip() or None,
+            content=content,
+            summary_payload={
+                "metadata": session_summary.metadata,
+                "sections": session_summary.sections,
+                "memory_items": session_summary.memory_items,
+                "source_refs": list(source_refs or []),
+            },
+            chain_extraction=chain_context.get("chain_extraction", "no_chain"),
+            chain_reason=chain_context.get("chain_reason", ""),
+        )
+    connection.close()
+
+    return IngestSessionResult(
+        archive_id=archive_id,
+        raw_path=str(raw_path.resolve()),
+        chunk_count=len(chunks),
+        promoted_notes=[],
+        review_items=[],
+    )
+
+
+def _promote_session_content(
+    config: AppConfig,
+    *,
+    connection: sqlite3.Connection,
+    archive_id: str,
+    resolved_bridge_id: str,
+    resolved_session_id: str,
+    content: str,
+    source_refs: list[str] | None,
+) -> tuple[list[str], list[str]]:
+    now = datetime.now()
     raw_items = _read_memory_items(content, config.ingest.explicit_markers_only)
     session_summary = parse_summary(content)
+    chain_context = infer_chain_context(
+        session_summary,
+        session_id=resolved_session_id,
+        task_id=session_summary.metadata.get("task_id", "").strip() or None,
+    )
     promoted_notes: list[str] = []
     review_items: list[str] = []
     changed_paths: list[str] = []
     extra_source_refs = list(source_refs or [])
+    chain_seen_types: set[str] = set()
+    new_count = 0
+    update_count = 0
+    confirm_count = 0
+    skip_count = 0
 
     for raw_item in raw_items:
         normalized = _normalize_item(raw_item, archive_id=archive_id, now=now)
         if normalized is None:
             continue
+        if chain_context.get("chain_extraction") != "no_chain":
+            for key in ("chain_id", "chain_confidence", "chain_question", "chain_summary", "problem_class"):
+                value = chain_context.get(key, "").strip()
+                if value and not str(normalized.get(key, "")).strip():
+                    normalized[key] = value
+            chain_id_value = str(normalized.get("chain_id", "")).strip()
+            if chain_id_value:
+                relations = normalized.get("relations")
+                if not isinstance(relations, list):
+                    relations = []
+                if not any(
+                    isinstance(entry, dict)
+                    and str(entry.get("type", "")).strip() == "part_of_chain"
+                    and str(entry.get("target", "")).strip() == chain_id_value
+                    for entry in relations
+                ):
+                    relations = [*relations, {"type": "part_of_chain", "target": chain_id_value}]
+                normalized["relations"] = relations
         normalized["source_refs"] = _merge_unique(normalized.get("source_refs", []), extra_source_refs)
         item_type = normalized["type"]
         confidence = str(normalized.get("confidence", "medium"))
+        chain_id = str(normalized.get("chain_id", "")).strip() or None
+
+        if chain_id and item_type in CHAIN_BOUNDED_TYPES and item_type in chain_seen_types:
+            review_path = create_review_item(
+                config,
+                review_type="bounded_promotion_review",
+                suggested_action=f"review extra {item_type} for {chain_id}",
+                reason=f"additional {item_type} candidate within bounded chain promotion",
+                confidence="medium",
+                bridge_id=resolved_bridge_id,
+                source_refs=list(normalized["source_refs"]),
+                context=normalized.get("summary", "") or normalized.get("body", ""),
+                slug_seed=f"bounded-{chain_id.replace('/', '-')}-{item_type}",
+                extra_metadata={
+                    "chain_id": chain_id,
+                    "note_type": item_type,
+                    "candidate_title": normalized["title"],
+                },
+            )
+            review_items.append(f"review/{review_path.stem}")
+            continue
 
         if item_type in {"preference", "convention"}:
             if confidence != "high":
@@ -637,6 +832,20 @@ def ingest_session(
             title=normalized["title"],
             summary=normalized.get("summary", "") or normalized.get("body", "") or normalized["title"],
         )
+        same_chain_target = _same_chain_candidate(connection, note_type=normalized["type"], chain_id=chain_id)
+        if chain_id:
+            if same_chain_target:
+                item_candidates = [
+                    CandidateMatch(
+                        note_id=same_chain_target,
+                        title=normalized["title"],
+                        note_type=normalized["type"],
+                        score=1.01,
+                        reason="same_chain",
+                    )
+                ]
+            else:
+                item_candidates = []
         upsert_decision = decide_upsert(
             connection,
             config,
@@ -647,6 +856,7 @@ def ingest_session(
             existing_candidates=item_candidates,
         )
         if upsert_decision.decision == "skip_duplicate":
+            skip_count += 1
             continue
         if upsert_decision.decision == "needs_review":
             review_path = create_review_item(
@@ -660,21 +870,17 @@ def ingest_session(
                 candidates=upsert_decision.candidates,
                 context=normalized.get("summary", ""),
                 slug_seed=f"duplicate-{normalized['id'].replace('/', '-')}",
-                extra_metadata={
-                    "target_candidates": upsert_decision.targets,
-                },
+                extra_metadata={"target_candidates": upsert_decision.targets},
             )
             review_items.append(f"review/{review_path.stem}")
             continue
 
         target_path = _path_for_item(config, normalized)
         target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_preexisting = target_path.exists()
         metadata = dict(normalized)
         if upsert_decision.targets:
-            metadata["linked_notes"] = _merge_unique(
-                list(metadata.get("linked_notes") or []),
-                list(upsert_decision.targets),
-            )
+            metadata["linked_notes"] = _merge_unique(list(metadata.get("linked_notes") or []), list(upsert_decision.targets))
             if upsert_decision.decision == "update_existing":
                 metadata["source_refs"] = _merge_unique(list(metadata.get("source_refs") or []), list(upsert_decision.targets))
         metadata = _apply_note_defaults(metadata, normalized["type"])
@@ -696,6 +902,9 @@ def ingest_session(
                 if _touch_existing_note(target_path, list(metadata.get("source_refs") or []), now.strftime("%Y-%m-%d")):
                     changed_paths.append(str(target_path.resolve()))
                     promoted_notes.append(existing_id)
+                    confirm_count += 1
+                    if chain_id and item_type in CHAIN_BOUNDED_TYPES:
+                        chain_seen_types.add(item_type)
                 continue
 
         body = _render_note_body(normalized["type"], normalized)
@@ -713,6 +922,12 @@ def ingest_session(
         target_path.write_text(_render_note(metadata, body))
         changed_paths.append(str(target_path.resolve()))
         promoted_notes.append(normalized["id"])
+        if upsert_decision.decision == "update_existing" or target_preexisting:
+            update_count += 1
+        else:
+            new_count += 1
+        if chain_id and item_type in CHAIN_BOUNDED_TYPES:
+            chain_seen_types.add(item_type)
 
     sync_vault(config, mode="incremental", selected_paths=changed_paths)
 
@@ -724,6 +939,79 @@ def ingest_session(
     for review_id in review_items:
         log_lines.append(f"{stamp} | {resolved_bridge_id} | review | {review_id} | needs promotion review from {archive_id}")
     log_path.write_text("\n".join(log_lines).rstrip() + "\n")
+    with connection:
+        connection.execute(
+            """
+            INSERT INTO session_metrics(
+                session_id, bridge_id, archive_id, task_id, task_kind, chain_extraction, chain_reason,
+                promoted_count, review_count, new_count, update_count, confirm_count, skip_count, note_delta
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                bridge_id = excluded.bridge_id,
+                archive_id = excluded.archive_id,
+                task_id = excluded.task_id,
+                task_kind = excluded.task_kind,
+                chain_extraction = excluded.chain_extraction,
+                chain_reason = excluded.chain_reason,
+                promoted_count = excluded.promoted_count,
+                review_count = excluded.review_count,
+                new_count = excluded.new_count,
+                update_count = excluded.update_count,
+                confirm_count = excluded.confirm_count,
+                skip_count = excluded.skip_count,
+                note_delta = excluded.note_delta
+            """,
+            (
+                resolved_session_id,
+                resolved_bridge_id,
+                archive_id,
+                session_summary.metadata.get("task_id", "").strip() or None,
+                session_summary.metadata.get("task_kind", "").strip() or None,
+                chain_context.get("chain_extraction", "no_chain"),
+                chain_context.get("chain_reason", ""),
+                len(promoted_notes),
+                len(review_items),
+                new_count,
+                update_count,
+                confirm_count,
+                skip_count,
+                new_count,
+            ),
+        )
+    return promoted_notes, review_items
+
+
+def ingest_session_promote(
+    config: AppConfig,
+    *,
+    bridge_id: str | None = None,
+    session_id: str | None = None,
+    content: str,
+    tags: list[str] | None = None,
+    source_refs: list[str] | None = None,
+    agent: str | None = None,
+    slug: str | None = None,
+) -> IngestSessionResult:
+    resolved_bridge_id = (bridge_id or agent or "local").strip()
+    resolved_session_id = (session_id or slug or datetime.now().strftime("%Y-%m-%d-%H%M%S")).strip()
+    archive_id, raw_path, chunks, connection = _archive_session(
+        config,
+        resolved_bridge_id=resolved_bridge_id,
+        resolved_session_id=resolved_session_id,
+        content=content,
+        tags=tags,
+        skip_vectors=False,
+    )
+    promoted_notes, review_items = _promote_session_content(
+        config,
+        connection=connection,
+        archive_id=archive_id,
+        resolved_bridge_id=resolved_bridge_id,
+        resolved_session_id=resolved_session_id,
+        content=content,
+        source_refs=source_refs,
+    )
     connection.close()
 
     return IngestSessionResult(

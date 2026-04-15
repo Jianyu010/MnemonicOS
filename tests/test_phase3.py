@@ -15,6 +15,7 @@ if str(SRC) not in sys.path:
 from second_brain.config import load_config
 from second_brain.db import connect_db, run_migrations
 from second_brain.ingest import ingest_session
+from second_brain.jobs import run_job
 from second_brain.parser import parse_note
 from second_brain.retrieval import retrieve
 from second_brain.sync import sync_vault
@@ -23,6 +24,12 @@ from second_brain.sync import sync_vault
 def _write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(textwrap.dedent(content).strip() + "\n")
+
+
+def _ingest_and_process(config, *, bridge_id: str, session_id: str, content: str):
+    result = ingest_session(config, bridge_id=bridge_id, session_id=session_id, content=content)
+    queue_run = run_job(config, job_name="process_promotion_queue", dry_run=False)
+    return result, queue_run
 
 
 class Phase3Test(unittest.TestCase):
@@ -261,7 +268,7 @@ class Phase3Test(unittest.TestCase):
             ```
             """
 
-            ingest_session(
+            _ingest_and_process(
                 config,
                 bridge_id="local_cli",
                 session_id="obsidian-projection",
@@ -274,6 +281,105 @@ class Phase3Test(unittest.TestCase):
             self.assertIn("lifecycle_state: draft", procedure_text)
             self.assertIn("obsidian_links:", procedure_text)
             self.assertIn("[[wiki/decisions/auth-postgres]]", procedure_text)
+
+    def test_chain_relations_materialize_without_cross_chain_collapse(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            _write(workspace / "brain/system/MEMORY.md", "# MEMORY\n")
+            _write(workspace / "brain/system/USER.md", "# USER\n")
+            _write(workspace / "brain/system/ACTIVE.md", "# ACTIVE\n")
+            _write(workspace / "brain/system/AGENTS.md", "bridges: {}\n")
+
+            config_path = workspace / "config.toml"
+            _write(
+                config_path,
+                f"""
+                [paths]
+                vault_root = "{(workspace / 'brain').as_posix()}"
+                db_path = "{(workspace / 'brain/data/archive.db').as_posix()}"
+                vectors_dir = "{(workspace / 'brain/data/vectors').as_posix()}"
+                graph_dir = "{(workspace / 'brain/data/graph').as_posix()}"
+                eval_queries = "{(workspace / 'evals/queries.jsonl').as_posix()}"
+
+                [embeddings]
+                enabled = false
+
+                [graph]
+                enabled = true
+                """,
+            )
+
+            config = load_config(config_path, workspace)
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            connection.close()
+
+            summary_a = """
+            task_kind: debugging
+            task_id: auth-chain-a
+            chain_id: trace/auth-chain-a
+            chain_confidence: high
+
+            ## Task
+            Recover auth rollout A
+
+            ```memory
+            items:
+              - type: incident
+                title: "Auth rollout A failed"
+                confidence: high
+              - type: procedure
+                title: "Recover auth rollout A"
+                confidence: high
+            ```
+            """
+            summary_b = """
+            task_kind: debugging
+            task_id: auth-chain-b
+            chain_id: trace/auth-chain-b
+            chain_confidence: high
+
+            ## Task
+            Recover auth rollout B
+
+            ```memory
+            items:
+              - type: incident
+                title: "Auth rollout B failed"
+                confidence: high
+              - type: procedure
+                title: "Recover auth rollout B"
+                confidence: high
+            ```
+            """
+
+            _ingest_and_process(
+                config,
+                bridge_id="local_cli",
+                session_id="chain-a",
+                content=textwrap.dedent(summary_a).strip() + "\n",
+            )
+            _ingest_and_process(
+                config,
+                bridge_id="local_cli",
+                session_id="chain-b",
+                content=textwrap.dedent(summary_b).strip() + "\n",
+            )
+
+            connection = connect_db(config.paths.db_path)
+            chain_edges = connection.execute(
+                """
+                SELECT source_note_id, target_id
+                FROM graph_edges
+                WHERE relation_type = 'part_of_chain'
+                ORDER BY source_note_id
+                """
+            ).fetchall()
+            chain_targets = {str(row["target_id"]) for row in chain_edges}
+            connection.close()
+
+            self.assertEqual(chain_targets, {"trace/auth-chain-a", "trace/auth-chain-b"})
+            self.assertEqual(len(chain_edges), 4)
 
 
 if __name__ == "__main__":

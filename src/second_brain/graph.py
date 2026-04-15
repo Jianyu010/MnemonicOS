@@ -40,6 +40,12 @@ RELATION_WEIGHTS = {
     "refines": 0.8,
     "supersedes": 0.9,
     "evidence_for": 0.8,
+    "part_of_chain": 0.8,
+    "attempts_to_solve": 0.7,
+    "failed_due_to": 0.8,
+    "resolved_by": 0.8,
+    "supports_solution": 0.7,
+    "derived_from_attempt": 0.7,
     "related_to": 0.5,
 }
 

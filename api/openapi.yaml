@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: MnemonicOS Local API
-  version: 0.4.0
-  description: Minimal local API for ingest, sync, retrieval, trust/freshness scoring, graph expansion, and maintenance jobs.
+  version: 0.5.0
+  description: Local API for ingest, sync, retrieval, trust/freshness scoring, graph expansion, maintenance jobs, and the shared orchestrator facade.
 servers:
   - url: http://127.0.0.1:8000
 paths:
@@ -91,6 +91,88 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RunJobResponse'
+
+  /v1/orchestrator/begin-task:
+    post:
+      operationId: orchestratorBeginTask
+      summary: Resolve MnemonicOS context before an LLM call.
+      description: >
+        Infers task_kind, temporality, and token_budget when not supplied.
+        Returns a context_markdown string ready to prepend to the system prompt.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrchestratorTaskRequest'
+      responses:
+        '200':
+          description: Context resolved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrchestratorContextResult'
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/orchestrator/mark-failure:
+    post:
+      operationId: orchestratorMarkFailure
+      summary: Record a failure and re-resolve context, preserving task_id.
+      description: >
+        Records an intermediate failure outcome then calls begin-task again with
+        the failure text as the query.  The same task_id is preserved so the full
+        attempt chain is linked in the database.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrchestratorMarkFailureRequest'
+      responses:
+        '200':
+          description: Failure recorded; refreshed context returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrchestratorContextResult'
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/orchestrator/finish-task:
+    post:
+      operationId: orchestratorFinishTask
+      summary: Record the final outcome and compute a writeback decision.
+      description: >
+        Calls record_outcome then decide_writeback_runtime.  Callers hand off to
+        ingest/archive when the returned decision is not "skip".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrchestratorOutcomeRequest'
+      responses:
+        '200':
+          description: Outcome recorded; writeback decision returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrchestratorWritebackResult'
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
 components:
   schemas:
@@ -244,3 +326,188 @@ components:
           items:
             type: string
       required: [job_name, status, stats, review_items_created]
+
+    # -----------------------------------------------------------------------
+    # Orchestrator schemas
+    # -----------------------------------------------------------------------
+
+    OrchestratorTaskRequest:
+      type: object
+      properties:
+        bridge_id:
+          type: string
+          description: Agent identifier (e.g. "claude", "codex", "firm-agent-x").
+        task_text:
+          type: string
+          description: The user's task or prompt text.
+        session_id:
+          type: string
+          description: Session identifier. Auto-generated when absent.
+        task_id:
+          type: string
+          description: Task identifier. Auto-generated when absent.
+        task_kind:
+          type: string
+          description: >
+            Hint for retrieval tuning: coding, debugging, architecture, research, general.
+            Inferred from task_text when absent.
+        temporality:
+          type: string
+          enum: [current, historical, mixed, unknown]
+          description: Inferred from task_kind when absent.
+        token_budget:
+          type: integer
+          description: Max tokens for the injected memory packet. Defaulted by task_kind.
+        workspace:
+          type: string
+        project:
+          type: string
+        repo:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+      required: [bridge_id, task_text]
+
+    OrchestratorContextResult:
+      type: object
+      properties:
+        task_id:
+          type: string
+        session_id:
+          type: string
+        retrieval_state:
+          type: string
+          description: >
+            sufficient_current | sufficient_historical | partial |
+            insufficient_no_hit | insufficient_stale | insufficient_contested
+        recommendation:
+          type: string
+          description: reuse | reuse_with_verification | research_fresh
+        verification_action:
+          type: string
+          description: none | verify_current_truth | check_recent_sources | treat_as_historical_only
+        task_kind:
+          type: string
+        temporality:
+          type: string
+        query_id:
+          type: integer
+        context_markdown:
+          type: string
+          description: Pre-formatted ## Memory Context block ready for system-prompt injection.
+        memory_packet:
+          type: object
+          description: Structured memory packet (primary, related, warnings, verification_needed).
+          additionalProperties: true
+      required: [task_id, session_id, retrieval_state, recommendation, verification_action,
+                 task_kind, temporality, query_id, context_markdown, memory_packet]
+
+    OrchestratorMarkFailureRequest:
+      type: object
+      properties:
+        bridge_id:
+          type: string
+        session_id:
+          type: string
+        task_id:
+          type: string
+        failure_text:
+          type: string
+          description: Description of the failure used as the re-resolution query.
+        task_kind:
+          type: string
+          default: general
+        query_id:
+          type: integer
+        retrieval_state:
+          type: string
+      required: [bridge_id, session_id, task_id, failure_text]
+
+    OrchestratorOutcomeRequest:
+      type: object
+      properties:
+        bridge_id:
+          type: string
+        session_id:
+          type: string
+        task_id:
+          type: string
+        status:
+          type: string
+          enum: [success, failure, partial]
+        outcome_type:
+          type: string
+          description: "e.g. coding, debugging, research, general"
+        summary:
+          type: string
+          description: Structured summary markdown. Parsed for writeback note_type and title.
+        query_id:
+          type: integer
+        retrieval_state:
+          type: string
+        recommendation:
+          type: string
+        useful_ids:
+          type: array
+          items:
+            type: string
+        misleading_ids:
+          type: array
+          items:
+            type: string
+        fresh_sources_checked:
+          type: array
+          items:
+            type: string
+        note_type:
+          type: string
+          description: Override parsed note type (concept, procedure, decision, incident).
+        title:
+          type: string
+          description: Override parsed note title.
+        writeback_intent:
+          type: string
+          enum: [skip, confirm, update, new, incident_only, procedure_refinement]
+      required: [bridge_id, session_id, task_id, status, outcome_type, summary]
+
+    OrchestratorWritebackResult:
+      type: object
+      properties:
+        task_id:
+          type: string
+        session_id:
+          type: string
+        outcome_status:
+          type: string
+          description: '"accepted" when record_outcome succeeded.'
+        candidate_note_ids:
+          type: array
+          items:
+            type: string
+        decision:
+          type: string
+          enum: [skip, confirm, update, new, incident_only, procedure_refinement]
+        targets:
+          type: array
+          items:
+            type: string
+          description: Note IDs to update (populated when decision is update or confirm).
+        candidates:
+          type: array
+          items:
+            type: string
+          description: Note IDs that were considered.
+        reason:
+          type: string
+      required: [task_id, session_id, outcome_status, candidate_note_ids, decision, targets, candidates, reason]
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        detail:
+          type: string
+      required: [error]

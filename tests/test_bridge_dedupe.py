@@ -11,16 +11,23 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from second_brain.bridge import decide_upsert, parse_summary
+from second_brain.bridge import decide_upsert, infer_chain_context, parse_summary
 from second_brain.config import load_config
 from second_brain.db import connect_db, run_migrations
 from second_brain.ingest import ingest_session
+from second_brain.jobs import run_job
 from second_brain.sync import sync_vault
 
 
 def _write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(textwrap.dedent(content).strip() + "\n")
+
+
+def _ingest_and_process(config, *, bridge_id: str, session_id: str, content: str):
+    result = ingest_session(config, bridge_id=bridge_id, session_id=session_id, content=content)
+    queue_run = run_job(config, job_name="process_promotion_queue", dry_run=False)
+    return result, queue_run
 
 
 class BridgeDedupeTest(unittest.TestCase):
@@ -134,8 +141,18 @@ class BridgeDedupeTest(unittest.TestCase):
             ```
             """
 
-            ingest_session(config, bridge_id="automation", session_id="first-cann", content=textwrap.dedent(first_summary).strip() + "\n")
-            ingest_session(config, bridge_id="automation", session_id="second-cann", content=textwrap.dedent(second_summary).strip() + "\n")
+            _ingest_and_process(
+                config,
+                bridge_id="automation",
+                session_id="first-cann",
+                content=textwrap.dedent(first_summary).strip() + "\n",
+            )
+            _ingest_and_process(
+                config,
+                bridge_id="automation",
+                session_id="second-cann",
+                content=textwrap.dedent(second_summary).strip() + "\n",
+            )
 
             sync_vault(config, mode="full")
             concept_files = list((workspace / "brain/wiki/concepts").glob("*.md"))
@@ -214,6 +231,237 @@ class BridgeDedupeTest(unittest.TestCase):
             connection.close()
             self.assertEqual(decision.decision, "update_existing")
             self.assertEqual(decision.targets, ["concept/cann-npu"])
+
+    def test_infer_chain_context_supports_explicit_inferred_and_no_chain_modes(self) -> None:
+        explicit = parse_summary(
+            textwrap.dedent(
+                """
+                task_kind: debugging
+                chain_id: trace/auth-debug
+                chain_confidence: high
+                chain_question: Why is auth deploy failing?
+                chain_summary: Recovered by reconciling schema state.
+                problem_class: auth-deploy
+
+                ## Task
+                Debug auth deploy
+                """
+            ).strip()
+        )
+        explicit_context = infer_chain_context(explicit, session_id="session-explicit", task_id="task-explicit")
+        self.assertEqual(explicit_context["chain_extraction"], "explicit_chain")
+        self.assertEqual(explicit_context["chain_id"], "trace/auth-debug")
+
+        inferred = parse_summary(
+            textwrap.dedent(
+                """
+                task_kind: debugging
+
+                ## Task
+                Debug auth rollout after failed migration
+
+                ## Failures
+                - Retry deploy failed again before schema reconciliation.
+
+                ## Reusable Takeaways
+                - Reconcile schema state before retrying deploy.
+
+                ```memory
+                items:
+                  - type: incident
+                    title: "Auth rollout failed on schema drift"
+                    confidence: high
+                  - type: procedure
+                    title: "Recover auth rollout after schema drift"
+                    confidence: high
+                ```
+                """
+            ).strip()
+        )
+        inferred_context = infer_chain_context(inferred, session_id="session-inferred", task_id="task-inferred")
+        self.assertEqual(inferred_context["chain_extraction"], "inferred_chain")
+        self.assertTrue(inferred_context["chain_id"].startswith("trace/"))
+        self.assertEqual(inferred_context["chain_confidence"], "medium")
+
+        flat = parse_summary(
+            textwrap.dedent(
+                """
+                task_kind: knowledge
+
+                ## Task
+                Explain CANN NPU
+                """
+            ).strip()
+        )
+        flat_context = infer_chain_context(flat, session_id="session-flat", task_id="task-flat")
+        self.assertEqual(flat_context["chain_extraction"], "no_chain")
+
+    def test_ingest_session_applies_inferred_chain_only_to_problem_solving_sessions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            config_path = self._prepare_workspace(workspace)
+            config = load_config(config_path, workspace)
+
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            connection.close()
+
+            debugging_summary = """
+            task_kind: debugging
+
+            ## Task
+            Recover auth rollout after failed migration
+
+            ## Failures
+            - Initial rollout retry failed.
+
+            ## Reusable Takeaways
+            - Reconcile schema state before rerunning deploy.
+
+            ```memory
+            items:
+              - type: incident
+                title: "Auth rollout failed on schema drift"
+                confidence: high
+              - type: procedure
+                title: "Recover auth rollout after schema drift"
+                confidence: high
+            ```
+            """
+            _ingest_and_process(
+                config,
+                bridge_id="automation",
+                session_id="session-debug",
+                content=textwrap.dedent(debugging_summary).strip() + "\n",
+            )
+
+            sync_vault(config, mode="full")
+            incident_text = (workspace / "brain/wiki/incidents/auth-rollout-failed-on-schema-drift.md").read_text()
+            procedure_paths = list((workspace / "brain/wiki/procedures").rglob("recover-auth-rollout-after-schema-drift.md"))
+            self.assertTrue(procedure_paths)
+            procedure_text = procedure_paths[0].read_text()
+            self.assertIn("chain_id:", incident_text)
+            self.assertIn("chain_id:", procedure_text)
+            self.assertIn("chain_confidence: medium", incident_text)
+
+            knowledge_summary = """
+            task_kind: knowledge
+
+            ## Task
+            Explain CANN NPU
+
+            ```memory
+            items:
+              - type: concept
+                title: "CANN NPU"
+                body: "CANN is Huawei's software stack for Ascend NPUs."
+                confidence: high
+            ```
+            """
+            _ingest_and_process(
+                config,
+                bridge_id="automation",
+                session_id="session-knowledge",
+                content=textwrap.dedent(knowledge_summary).strip() + "\n",
+            )
+            sync_vault(config, mode="full")
+            concept_text = (workspace / "brain/wiki/concepts/cann-npu.md").read_text()
+            self.assertNotIn("chain_id:", concept_text)
+
+    def test_bounded_chain_promotion_limits_duplicate_core_types_and_prefers_same_chain_updates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            config_path = self._prepare_workspace(workspace)
+            config = load_config(config_path, workspace)
+
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            connection.close()
+
+            first_summary = """
+            task_kind: debugging
+            task_id: auth-recovery
+            chain_id: trace/auth-recovery
+            chain_confidence: high
+            chain_question: How do we recover the auth rollout?
+            chain_summary: Use schema reconciliation before retrying deploy.
+
+            ## Task
+            Recover auth rollout
+
+            ```memory
+            items:
+              - type: incident
+                title: "Auth rollout failed on schema drift"
+                body: "Initial retry failed before schema reconciliation."
+                confidence: high
+              - type: procedure
+                title: "Recover auth rollout"
+                body: "Reconcile schema state before rerunning deploy."
+                confidence: high
+            ```
+            """
+            _ingest_and_process(
+                config,
+                bridge_id="automation",
+                session_id="session-first",
+                content=textwrap.dedent(first_summary).strip() + "\n",
+            )
+            sync_vault(config, mode="full")
+
+            second_summary = """
+            task_kind: debugging
+            task_id: auth-recovery
+            chain_id: trace/auth-recovery
+            chain_confidence: high
+            chain_question: How do we recover the auth rollout?
+            chain_summary: Use schema reconciliation before retrying deploy.
+
+            ## Task
+            Recover auth rollout
+
+            ```memory
+            items:
+              - type: incident
+                title: "Auth rollout retry still failed"
+                body: "Another failed retry before verifying schema state."
+                confidence: high
+              - type: incident
+                title: "Auth rollout failed after stale migration cache"
+                body: "A second incident candidate from the same chain."
+                confidence: high
+            ```
+            """
+            result, queue_run = _ingest_and_process(
+                config,
+                bridge_id="automation",
+                session_id="session-second",
+                content=textwrap.dedent(second_summary).strip() + "\n",
+            )
+            sync_vault(config, mode="full")
+
+            incident_files = list((workspace / "brain/wiki/incidents").glob("*.md"))
+            self.assertEqual(len(incident_files), 1)
+            incident_text = incident_files[0].read_text()
+            self.assertIn("chain_id: trace/auth-recovery", incident_text)
+            self.assertIn("Another failed retry", incident_text)
+            self.assertEqual(result.review_items, [])
+            self.assertTrue(any(review_id.startswith("review/") for review_id in queue_run.review_items_created))
+            connection = connect_db(config.paths.db_path)
+            metrics_row = connection.execute(
+                """
+                SELECT chain_extraction, promoted_count, review_count, new_count, update_count, note_delta
+                FROM session_metrics
+                WHERE session_id = 'session-second'
+                """
+            ).fetchone()
+            connection.close()
+            self.assertEqual(str(metrics_row["chain_extraction"]), "explicit_chain")
+            self.assertEqual(int(metrics_row["promoted_count"]), 1)
+            self.assertEqual(int(metrics_row["review_count"]), 1)
+            self.assertEqual(int(metrics_row["new_count"]), 0)
+            self.assertEqual(int(metrics_row["update_count"]), 1)
+            self.assertEqual(int(metrics_row["note_delta"]), 0)
 
 
 if __name__ == "__main__":

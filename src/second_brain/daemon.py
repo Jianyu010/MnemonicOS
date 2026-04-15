@@ -1,0 +1,246 @@
+from __future__ import annotations
+
+import argparse
+from datetime import datetime, timezone
+import json
+import logging
+from logging.handlers import RotatingFileHandler
+import os
+from pathlib import Path
+import signal
+import socket
+import threading
+from typing import Any
+
+from .config import AppConfig, load_config
+from .daemon_jobs import JobRegistry, build_registry
+from .jobs import collect_status_snapshot
+from .models import JobRunResult
+
+
+class Scheduler:
+    def __init__(self, config: AppConfig, registry: JobRegistry, shutdown_event: threading.Event, job_lock: threading.Lock) -> None:
+        self.config = config
+        self.registry = registry
+        self.shutdown_event = shutdown_event
+        self.job_lock = job_lock
+        self.logger = logging.getLogger("mnemonicos.daemon.scheduler")
+        self.running_job: str | None = None
+        self.last_result: dict[str, Any] | None = None
+
+    def _run_job(self, job_name: str) -> dict[str, Any]:
+        self.running_job = job_name
+        try:
+            result = self.registry.run(self.config, job_name)
+            payload = {
+                "status": "ok",
+                "job": job_name,
+                "result": {
+                    "job_name": result.job_name,
+                    "status": result.status,
+                    "stats": result.stats,
+                    "review_items_created": result.review_items_created,
+                },
+            }
+            self.last_result = payload
+            return payload
+        except Exception as exc:
+            self.logger.exception("job failed: %s", job_name)
+            payload = {"status": "error", "job": job_name, "error": str(exc)}
+            self.last_result = payload
+            return payload
+        finally:
+            self.running_job = None
+
+    def tick(self) -> None:
+        now = datetime.now(timezone.utc)
+        for entry in self.registry.due_jobs(now):
+            with self.job_lock:
+                self._run_job(entry.name)
+
+    def run(self) -> None:
+        while not self.shutdown_event.is_set():
+            self.tick()
+            self.shutdown_event.wait(30.0)
+
+    def run_job_now(self, job_name: str) -> dict[str, Any]:
+        if job_name not in self.registry.job_names():
+            return {"status": "error", "error": f"unknown job: {job_name}"}
+        acquired = self.job_lock.acquire(blocking=False)
+        if not acquired:
+            return {"status": "busy", "running_job": self.running_job}
+        try:
+            return self._run_job(job_name)
+        finally:
+            self.job_lock.release()
+
+    def status(self) -> dict[str, Any]:
+        scheduled_jobs = [
+            {
+                "name": entry.name,
+                "schedule": entry.schedule,
+                "next_run_utc": entry.next_due.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            }
+            for entry in self.registry.all_jobs()
+        ]
+        return {
+            "running_job": self.running_job,
+            "scheduled_jobs": scheduled_jobs,
+            "last_result": self.last_result,
+        }
+
+
+class SocketServer:
+    def __init__(self, config: AppConfig, scheduler: Scheduler, shutdown_event: threading.Event) -> None:
+        self.config = config
+        self.scheduler = scheduler
+        self.shutdown_event = shutdown_event
+        self.logger = logging.getLogger("mnemonicos.daemon.socket")
+        self.server_socket: socket.socket | None = None
+
+    def _remove_stale_socket(self) -> None:
+        socket_path = self.config.daemon.socket_path if self.config.daemon is not None else None
+        if socket_path is None:
+            return
+        try:
+            if socket_path.exists():
+                socket_path.unlink()
+        except FileNotFoundError:
+            pass
+
+    def _handle_request(self, payload: dict[str, Any]) -> dict[str, Any]:
+        cmd = str(payload.get("cmd", "")).strip()
+        if cmd == "status":
+            snapshot = collect_status_snapshot(self.config)
+            return {
+                "status": "ok",
+                "service": self.scheduler.status(),
+                "health": snapshot,
+            }
+        if cmd == "run-job":
+            job_name = str(payload.get("job", "")).strip()
+            return self.scheduler.run_job_now(job_name)
+        return {"status": "error", "error": f"unsupported command: {cmd}"}
+
+    def serve(self) -> None:
+        if self.config.daemon is None:
+            raise RuntimeError("daemon config missing")
+        socket_path = self.config.daemon.socket_path
+        socket_path.parent.mkdir(parents=True, exist_ok=True)
+        self._remove_stale_socket()
+        server_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.server_socket = server_socket
+        server_socket.bind(str(socket_path))
+        server_socket.listen()
+        server_socket.settimeout(1.0)
+        while not self.shutdown_event.is_set():
+            try:
+                client, _ = server_socket.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            with client:
+                try:
+                    request = b""
+                    while b"\n" not in request:
+                        chunk = client.recv(4096)
+                        if not chunk:
+                            break
+                        request += chunk
+                    payload = json.loads(request.decode("utf-8").strip() or "{}")
+                    response = self._handle_request(payload)
+                except Exception as exc:
+                    response = {"status": "error", "error": str(exc)}
+                client.sendall((json.dumps(response, sort_keys=True) + "\n").encode("utf-8"))
+        self.close()
+
+    def close(self) -> None:
+        if self.server_socket is not None:
+            try:
+                self.server_socket.close()
+            except OSError:
+                pass
+            self.server_socket = None
+        self._remove_stale_socket()
+
+
+class Daemon:
+    def __init__(self, config: AppConfig, registry: JobRegistry | None = None) -> None:
+        if config.daemon is None:
+            raise RuntimeError("daemon config missing")
+        self.config = config
+        self.registry = registry or build_registry(config)
+        self.shutdown_event = threading.Event()
+        self.job_lock = threading.Lock()
+        self.scheduler = Scheduler(config, self.registry, self.shutdown_event, self.job_lock)
+        self.socket_server = SocketServer(config, self.scheduler, self.shutdown_event)
+        self.scheduler_thread = threading.Thread(target=self.scheduler.run, name="mnemonicos-scheduler", daemon=False)
+        self.socket_thread = threading.Thread(target=self.socket_server.serve, name="mnemonicos-socket", daemon=True)
+        self.logger = logging.getLogger("mnemonicos.daemon")
+
+    def _setup_logging(self) -> None:
+        log_path = self.config.daemon.log_path
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        root = logging.getLogger()
+        root.setLevel(logging.INFO)
+        root.handlers.clear()
+        formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+        file_handler = RotatingFileHandler(log_path, maxBytes=10 * 1024 * 1024, backupCount=5)
+        file_handler.setFormatter(formatter)
+        stream_handler = logging.StreamHandler()
+        stream_handler.setFormatter(formatter)
+        root.addHandler(file_handler)
+        root.addHandler(stream_handler)
+
+    def _write_pid(self) -> None:
+        pid_path = self.config.daemon.pid_path
+        pid_path.parent.mkdir(parents=True, exist_ok=True)
+        pid_path.write_text(f"{os.getpid()}\n", encoding="utf-8")
+
+    def _remove_pid(self) -> None:
+        try:
+            self.config.daemon.pid_path.unlink()
+        except FileNotFoundError:
+            pass
+
+    def _install_signal_handlers(self) -> None:
+        def _handler(signum: int, _frame: Any) -> None:
+            self.logger.info("received signal %s, shutting down", signum)
+            self.shutdown_event.set()
+
+        signal.signal(signal.SIGTERM, _handler)
+        signal.signal(signal.SIGINT, _handler)
+
+    def run(self) -> int:
+        self._setup_logging()
+        self._write_pid()
+        if threading.current_thread() is threading.main_thread():
+            self._install_signal_handlers()
+        self.logger.info("mnemonicos daemon starting")
+        try:
+            self.scheduler_thread.start()
+            self.socket_thread.start()
+            while not self.shutdown_event.is_set():
+                self.shutdown_event.wait(1.0)
+        finally:
+            self.shutdown_event.set()
+            self.scheduler_thread.join()
+            self.socket_server.close()
+            self.socket_thread.join(timeout=2.0)
+            self._remove_pid()
+            self.logger.info("mnemonicos daemon stopped")
+        return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="MnemonicOS daemon")
+    parser.add_argument("--config", default="config/memory.example.toml")
+    args = parser.parse_args(argv)
+    config = load_config(args.config)
+    daemon = Daemon(config)
+    return daemon.run()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

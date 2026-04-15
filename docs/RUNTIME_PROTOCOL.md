@@ -7,8 +7,8 @@ This document defines the Phase 1 runtime contract for MnemonicOS as a model-agn
 The protocol is:
 
 - runtime-first and transport-agnostic
-- compatible with the current CLI, scripts, and minimal HTTP API
-- designed for a local callable engine first, with service/daemon adapters later
+- compatible with the current CLI, scripts, and daemon control plane
+- designed for a local callable engine with a Unix-socket daemon as the canonical v1 service runtime
 - grounded in the existing Phase 4 retrieval, graph, trust/freshness, and ingest substrate
 
 This protocol does not replace the current `retrieve`, `ingest-session`, or maintenance flows. It defines the canonical runtime contract above them. Existing bridge scripts and agent-specific integrations are compatibility adapters, not the architectural center.
@@ -36,7 +36,33 @@ MnemonicOS exposes four logical operations:
 3. `decide_writeback`
 4. `run_maintenance`
 
-These are protocol operations, not transport requirements. They may be exposed through local Python calls, shell scripts, or HTTP endpoints.
+These are protocol operations, not transport requirements. They may be exposed through local Python calls, shell scripts, Unix-socket daemon commands, or future HTTP endpoints.
+
+## Execution Model
+
+MnemonicOS now uses an archive-first dual-pass writeback model.
+
+Fast path:
+
+- `resolve_task_context`
+- `record_outcome`
+- archive-first `ingest-session`
+- lightweight writeback policy decisions
+
+Slow path:
+
+- `process_promotion_queue`
+- `embed_backfill`
+- `daily_consolidation`
+- `weekly_hygiene`
+- `status_report`
+
+Rules:
+
+- `ingest-session` archives immediately and queues a promotion candidate by default
+- canonical note mutation does not happen in default intake
+- pending promotion candidates are not directly retrievable memory
+- retrieval lag before promotion is an explicit tradeoff in exchange for lower writeback latency
 
 ## Shared Concepts
 
@@ -236,6 +262,17 @@ memory_packet:
       relation_types: []
       final_score: 1.14
       provenance: [channels:bm25,exact, freshness:fresh]
+  same_episode_context:
+    - id: incident/auth-deploy-failure
+      title: Auth Deploy Failure
+      type: incident
+      summary: The previous deploy failed until the checklist and schema state were reconciled.
+      body_path: /vault/wiki/incidents/auth-deploy-failure.md
+      chain_id: trace/auth-rollout-recovery
+      channels: [same_episode]
+      relation_types: [part_of_chain]
+      final_score: 1.139
+      provenance: [chain:trace/auth-rollout-recovery, channels:same_episode, relations:part_of_chain]
   related_by_topic:
     - id: decision/auth-database
       title: Auth Database Choice
@@ -279,6 +316,8 @@ debug:
 
 - `memory_packet` is a bounded context product, not a raw ranked hit dump
 - `primary_memories` should preferentially include a useful mix of procedures, fact-like notes, and episode-like notes when available
+- `same_episode_context` should be attached only after a strong primary hit and must stay bounded
+- same-episode context should not compete directly for primary ranking slots
 - related memories should be grouped by relation bucket rather than flattened into the primary list
 - packet size should respect the caller's token budget
 - provenance should explain why an item appears in the packet, including retrieval channels, freshness state, and relation hints when available
@@ -305,6 +344,9 @@ outcome:
   type: task_result
   status: failure
   summary: Initial deploy fix failed because the release checklist was outdated.
+  chain_id: trace/auth-rollout-recovery
+  problem_class: auth-rollout-recovery
+  chain_extraction: inferred_chain
   fresh_research_needed: true
   fresh_sources_checked:
     - repo history
@@ -338,6 +380,7 @@ writeback_hint:
 - when `query_id` is available, usefulness feedback should be written back to retrieval logs as well as stored in the outcome record
 - usefulness feedback should be tied to retrieved note ids whenever possible
 - `task_id` and `session_id` must be preserved so logs stay attributable
+- optional chain fields let MnemonicOS evaluate episode-aware retrieval without requiring chain structure for every task
 
 ## Operation: `decide_writeback`
 
@@ -471,6 +514,7 @@ Phase 1 mapping:
 - summary parsing and candidate selection align with `decide_writeback`
 - usefulness and task outcome capture align with `record_outcome`
 - final ingest remains a downstream mutation path after an explicit writeback decision
+- session metrics capture note growth, chain extraction mode, and confirm/update/new ratios for selective promotion evaluation
 
 ### Existing HTTP API
 
@@ -547,6 +591,7 @@ Properties:
 - runtime responses can carry `recommendation` and `verification_action` consistently
 - writeback decisioning is explicitly represented as a protocol operation, even if the underlying mutation path remains unchanged
 - the protocol layers onto current scripts and API without making any one compatibility bridge the source of truth
+- episode-aware selective promotion remains optional, bounded, and measurable via runtime packet and session metrics
 
 ## Next Implementation Step
 

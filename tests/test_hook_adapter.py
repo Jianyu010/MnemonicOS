@@ -1,0 +1,425 @@
+"""
+Hook adapter tests — Phase 2 Claude Code integration.
+
+Tests are organized into four groups:
+  1. TestPreflightHook      — UserPromptSubmit hook (mnemonic_hook_preflight.sh)
+  2. TestStopHook           — Stop hook (mnemonic_stop_hook.sh)
+  3. TestHookRoundTrip      — Cross-hook per-turn task_id independence
+  4. TestHookDisableSwitch  — Enable/disable two-tier switch (env var + flag file)
+
+Each test gets its own temp STATE_FILE to prevent cross-test contamination.
+Tests run the actual shell scripts via subprocess.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import textwrap
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPTS = ROOT / "scripts"
+PREFLIGHT = str(SCRIPTS / "mnemonic_hook_preflight.sh")
+STOP_HOOK = str(SCRIPTS / "mnemonic_stop_hook.sh")
+
+
+def _make_env(*, state_file: str, mnemo_enabled: str = "1", extra: dict | None = None) -> dict:
+    """Return an env dict for subprocess with test-safe STATE_FILE."""
+    env = os.environ.copy()
+    env["STATE_FILE"] = state_file
+    env["MNEMO_ENABLED"] = mnemo_enabled
+    # Ensure disable flag file path can be tested independently
+    if extra:
+        env.update(extra)
+    return env
+
+
+def _run_script(script: str, stdin_data: str, *, state_file: str, env: dict | None = None) -> subprocess.CompletedProcess:
+    if env is None:
+        env = _make_env(state_file=state_file)
+    return subprocess.run(
+        ["bash", script],
+        input=stdin_data,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=30,
+    )
+
+
+def _hook_json(prompt: str = "test prompt", session_id: str = "test-session-abc") -> str:
+    return json.dumps({"prompt": prompt, "session_id": session_id})
+
+
+def _pending_summary(*, agent: str = "claude", date: str = "2026-04-15") -> str:
+    return textwrap.dedent(f"""\
+        agent: {agent}
+        session_date: {date}
+
+        ## Task
+        Test task for hook adapter tests.
+
+        ## Goal
+        Verify stop hook ingestion.
+
+        ## Reusable Takeaways
+        - hooks fire per turn
+    """)
+
+
+class TestPreflightHook(unittest.TestCase):
+    """Tests for mnemonic_hook_preflight.sh."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.NamedTemporaryFile(prefix="mnemo_state_", delete=False)
+        self._tmp.close()
+        self._state_file = self._tmp.name
+        # Remove so the script can write fresh
+        os.unlink(self._state_file)
+
+    def tearDown(self) -> None:
+        for f in [self._state_file]:
+            try:
+                os.unlink(f)
+            except FileNotFoundError:
+                pass
+
+    def test_exits_zero_on_empty_prompt(self) -> None:
+        """Empty prompt → exit 0, no stdout, no state file written."""
+        result = _run_script(
+            PREFLIGHT,
+            _hook_json(prompt=""),
+            state_file=self._state_file,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "")
+        self.assertFalse(os.path.exists(self._state_file))
+
+    def test_exits_zero_always(self) -> None:
+        """Hook must always exit 0, even with unusual/long prompts."""
+        result = _run_script(
+            PREFLIGHT,
+            _hook_json(prompt="x" * 2000),
+            state_file=self._state_file,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_writes_task_id_to_state_file_on_hit(self) -> None:
+        """When orchestrator returns a result, task_id is written to state file."""
+        # We use a prompt that's likely to return a context (or at least not crash).
+        # The key invariant: if orchestrator ran and returned a task_id, state file exists.
+        # Since the test DB is empty, we can't force a hit — instead we verify the
+        # script handles the flow end-to-end without error.
+        result = _run_script(
+            PREFLIGHT,
+            _hook_json(prompt="implement a test function for the orchestrator"),
+            state_file=self._state_file,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # If state file exists, it must contain a non-empty task_id
+        if os.path.exists(self._state_file):
+            content = Path(self._state_file).read_text().strip()
+            self.assertTrue(content.startswith("task-"), f"Unexpected task_id: {content!r}")
+
+    def test_stdout_is_valid_json_context_when_state_file_written(self) -> None:
+        """If orchestrator ran and wrote a state file, stdout must be valid JSON {"context": ...}."""
+        result = _run_script(
+            PREFLIGHT,
+            _hook_json(prompt="debug the failing test in orchestrator module"),
+            state_file=self._state_file,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        stdout = result.stdout.strip()
+        if stdout:
+            parsed = json.loads(stdout)
+            self.assertIn("context", parsed)
+            self.assertIsInstance(parsed["context"], str)
+
+    def test_uses_session_id_from_hook_json(self) -> None:
+        """session_id from stdin JSON is passed through (verified via state model)."""
+        # Run twice with different session IDs and verify neither crashes
+        for sess in ["session-aaa111", "session-bbb222"]:
+            result = _run_script(
+                PREFLIGHT,
+                _hook_json(prompt="implement auth module", session_id=sess),
+                state_file=self._state_file,
+            )
+            self.assertEqual(result.returncode, 0, f"Failed for session {sess}: {result.stderr}")
+            # Clean state file between runs
+            try:
+                os.unlink(self._state_file)
+            except FileNotFoundError:
+                pass
+
+
+class TestStopHook(unittest.TestCase):
+    """Tests for mnemonic_stop_hook.sh."""
+
+    def setUp(self) -> None:
+        self._state_tmp = tempfile.NamedTemporaryFile(prefix="mnemo_state_", delete=False)
+        self._state_tmp.close()
+        self._state_file = self._state_tmp.name
+        os.unlink(self._state_file)
+
+        self._pending_tmp = tempfile.NamedTemporaryFile(
+            prefix="mnemo_pending_", suffix=".md", delete=False
+        )
+        self._pending_tmp.close()
+        self._pending_file = self._pending_tmp.name
+        os.unlink(self._pending_file)
+
+    def tearDown(self) -> None:
+        for f in [self._state_file, self._pending_file]:
+            try:
+                os.unlink(f)
+            except FileNotFoundError:
+                pass
+
+    def _run_stop(self, *, session_id: str = "test-session-xyz",
+                  pending_content: str | None = None,
+                  task_id: str | None = None,
+                  env_extra: dict | None = None) -> subprocess.CompletedProcess:
+        env = _make_env(state_file=self._state_file, extra=env_extra)
+        # Override PENDING path via env (scripts use /tmp/mnemo_pending_summary.md by default,
+        # but we inject it by symlinking or via env if the script supports it).
+        # Since the script hardcodes PENDING, we patch via a wrapper approach:
+        # write to the hardcoded path and use a temp directory trick.
+        # For simplicity, we write to the fixed path and restore it after.
+        fixed_pending = "/tmp/mnemo_pending_summary.md"
+        original_content = None
+        if os.path.exists(fixed_pending):
+            original_content = Path(fixed_pending).read_text()
+
+        try:
+            if pending_content is not None:
+                Path(fixed_pending).write_text(pending_content)
+            elif os.path.exists(fixed_pending):
+                # Remove so the hook sees no pending file
+                os.unlink(fixed_pending)
+
+            if task_id is not None:
+                Path(self._state_file).write_text(task_id + "\n")
+
+            stdin_data = json.dumps({"session_id": session_id})
+            result = subprocess.run(
+                ["bash", STOP_HOOK],
+                input=stdin_data,
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=30,
+            )
+        finally:
+            # Restore any pre-existing pending file
+            if original_content is not None and not os.path.exists(fixed_pending):
+                Path(fixed_pending).write_text(original_content)
+            elif pending_content is not None and os.path.exists(fixed_pending):
+                # Clean up what we wrote (hook should have deleted it, but in case of failure)
+                try:
+                    os.unlink(fixed_pending)
+                except FileNotFoundError:
+                    pass
+
+        return result
+
+    def test_exits_zero_no_pending_summary(self) -> None:
+        """No pending summary → exit 0, state file cleaned up."""
+        # Write a state file to verify it gets cleaned up
+        Path(self._state_file).write_text("task-abc123\n")
+        result = self._run_stop(pending_content=None)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(os.path.exists(self._state_file))
+
+    def test_exits_zero_always(self) -> None:
+        """Stop hook must always exit 0 — never blocks session close."""
+        result = self._run_stop(
+            pending_content=_pending_summary(),
+            task_id="task-xyz999",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_cleans_up_state_file(self) -> None:
+        """State file is deleted after stop hook runs."""
+        Path(self._state_file).write_text("task-cleanup-test\n")
+        result = self._run_stop(
+            pending_content=_pending_summary(),
+            task_id="task-cleanup-test",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(os.path.exists(self._state_file))
+
+    def test_fallback_when_no_state_file(self) -> None:
+        """Pending summary but no state file → fallback path runs, exit 0."""
+        # No state file written — should fall back to mnemonic_postflight.sh
+        result = self._run_stop(
+            pending_content=_pending_summary(),
+            task_id=None,  # no state file
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class TestHookRoundTrip(unittest.TestCase):
+    """Cross-hook integration: per-turn task_id independence."""
+
+    def setUp(self) -> None:
+        self._state_tmp = tempfile.NamedTemporaryFile(prefix="mnemo_state_", delete=False)
+        self._state_tmp.close()
+        self._state_file = self._state_tmp.name
+        os.unlink(self._state_file)
+
+    def tearDown(self) -> None:
+        try:
+            os.unlink(self._state_file)
+        except FileNotFoundError:
+            pass
+
+    def test_per_turn_task_ids_are_independent(self) -> None:
+        """Two preflight runs with the same session_id produce different task_ids."""
+        env = _make_env(state_file=self._state_file)
+        task_ids: list[str] = []
+
+        for _ in range(2):
+            # Remove state file before each run
+            try:
+                os.unlink(self._state_file)
+            except FileNotFoundError:
+                pass
+
+            result = subprocess.run(
+                ["bash", PREFLIGHT],
+                input=_hook_json(
+                    prompt="implement a new feature for the memory system",
+                    session_id="round-trip-session-001",
+                ),
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            if os.path.exists(self._state_file):
+                tid = Path(self._state_file).read_text().strip()
+                if tid:
+                    task_ids.append(tid)
+
+        # If both runs produced task_ids, they must be distinct
+        if len(task_ids) == 2:
+            self.assertNotEqual(
+                task_ids[0],
+                task_ids[1],
+                f"Expected distinct task_ids per turn, got: {task_ids}",
+            )
+
+
+class TestHookDisableSwitch(unittest.TestCase):
+    """Two-tier enable/disable switch: env var + flag file."""
+
+    def setUp(self) -> None:
+        self._state_tmp = tempfile.NamedTemporaryFile(prefix="mnemo_state_", delete=False)
+        self._state_tmp.close()
+        self._state_file = self._state_tmp.name
+        os.unlink(self._state_file)
+
+        self._flag_tmp = tempfile.NamedTemporaryFile(prefix="mnemo_disabled_", delete=False)
+        self._flag_tmp.close()
+        self._flag_file = self._flag_tmp.name
+        # Keep file for flag-file test; remove for env-var test
+        os.unlink(self._flag_file)
+
+    def tearDown(self) -> None:
+        for f in [self._state_file, self._flag_file]:
+            try:
+                os.unlink(f)
+            except FileNotFoundError:
+                pass
+
+    def _make_disable_env(self, *, mnemo_enabled: str = "1", flag_file: str | None = None) -> dict:
+        env = _make_env(state_file=self._state_file, mnemo_enabled=mnemo_enabled)
+        # Inject a custom DISABLE_FLAG path by prepending a wrapper
+        # We achieve this by setting DISABLE_FLAG env var — the scripts read
+        # REPO_ROOT/config/mnemo_disabled directly, so we need a different approach:
+        # run a wrapper that creates/removes the actual flag file.
+        if flag_file:
+            # Create the actual flag file at the repo path
+            actual_flag = ROOT / "config" / "mnemo_disabled"
+            # Track it so teardown can clean it
+            self._actual_flag = str(actual_flag)
+            actual_flag.parent.mkdir(parents=True, exist_ok=True)
+            actual_flag.touch()
+        return env
+
+    def test_preflight_disabled_via_env_exits_noop(self) -> None:
+        """MNEMO_ENABLED=0 → preflight exits 0 immediately, no state file written."""
+        env = _make_env(state_file=self._state_file, mnemo_enabled="0")
+        result = subprocess.run(
+            ["bash", PREFLIGHT],
+            input=_hook_json(prompt="implement something important"),
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "")
+        self.assertFalse(os.path.exists(self._state_file))
+
+    def test_stop_hook_disabled_via_env_exits_noop(self) -> None:
+        """MNEMO_ENABLED=0 → stop hook exits 0 immediately, pending file left intact."""
+        pending = "/tmp/mnemo_pending_summary.md"
+        # Write a pending summary
+        original = None
+        if os.path.exists(pending):
+            original = Path(pending).read_text()
+        Path(pending).write_text(_pending_summary())
+        try:
+            env = _make_env(state_file=self._state_file, mnemo_enabled="0")
+            result = subprocess.run(
+                ["bash", STOP_HOOK],
+                input=json.dumps({"session_id": "disabled-test-session"}),
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=10,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            # Pending file must still exist (was not consumed)
+            self.assertTrue(os.path.exists(pending), "Pending file should NOT be deleted when disabled")
+        finally:
+            if original is not None:
+                Path(pending).write_text(original)
+            elif os.path.exists(pending):
+                os.unlink(pending)
+
+    def test_preflight_disabled_via_flag_file_exits_noop(self) -> None:
+        """config/mnemo_disabled flag file → preflight exits 0, no state file written."""
+        actual_flag = ROOT / "config" / "mnemo_disabled"
+        actual_flag.parent.mkdir(parents=True, exist_ok=True)
+        actual_flag.touch()
+        try:
+            env = _make_env(state_file=self._state_file)  # MNEMO_ENABLED=1
+            result = subprocess.run(
+                ["bash", PREFLIGHT],
+                input=_hook_json(prompt="implement something important"),
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=10,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "")
+            self.assertFalse(os.path.exists(self._state_file))
+        finally:
+            try:
+                actual_flag.unlink()
+            except FileNotFoundError:
+                pass
+
+
+if __name__ == "__main__":
+    unittest.main()

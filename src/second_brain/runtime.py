@@ -55,6 +55,7 @@ def assess_retrieval_payload(
                 title=str(raw_hit.get("title") or ""),
                 type=str(raw_hit.get("type") or ""),
                 status=str(raw_hit["status"]) if raw_hit.get("status") is not None else None,
+                chain_id=str(raw_hit["chain_id"]) if raw_hit.get("chain_id") is not None else None,
                 freshness_state=str(raw_hit["freshness_state"]) if raw_hit.get("freshness_state") is not None else None,
                 lifecycle_state=str(raw_hit["lifecycle_state"]) if raw_hit.get("lifecycle_state") is not None else None,
                 body_path=str(raw_hit.get("body_path") or ""),
@@ -89,13 +90,28 @@ def resolve_task_context(config: AppConfig, request: ResolveTaskContextRequest) 
         assessment=assessment,
         token_budget=request.token_budget,
     )
+    memory_packet.same_episode_context = _load_same_episode_context(
+        config,
+        retrieval_result=retrieval_result,
+        memory_packet=memory_packet,
+        max_related=_max_related_memories(request.token_budget),
+    )
     related_memories = [
+        *memory_packet.same_episode_context,
         *memory_packet.related_by_topic,
         *memory_packet.related_by_timeline,
         *memory_packet.related_by_similarity,
         *memory_packet.related_by_contrast,
     ]
     provenance_summary = _provenance_summary(memory_packet)
+    _record_runtime_packet_metrics(
+        config,
+        request=request,
+        retrieval_state=assessment.state,
+        recommendation=assessment.recommendation,
+        query_id=retrieval_result.query_id,
+        memory_packet=memory_packet,
+    )
     return ResolveTaskContextResult(
         protocol=PROTOCOL_NAME,
         version=PROTOCOL_VERSION,
@@ -128,9 +144,10 @@ def record_outcome(config: AppConfig, request: RecordOutcomeRequest) -> RecordOu
             INSERT INTO task_outcomes(
                 task_id, session_id, bridge_id, query_id, task_kind, outcome_type, status,
                 summary, fresh_research_needed, fresh_sources_checked, useful_ids,
-                misleading_ids, retrieval_state, recommendation, candidate_note_ids, updated_at
+                misleading_ids, retrieval_state, recommendation, candidate_note_ids,
+                chain_id, problem_class, chain_extraction, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(task_id) DO UPDATE SET
                 session_id = excluded.session_id,
                 bridge_id = excluded.bridge_id,
@@ -146,6 +163,9 @@ def record_outcome(config: AppConfig, request: RecordOutcomeRequest) -> RecordOu
                 retrieval_state = excluded.retrieval_state,
                 recommendation = excluded.recommendation,
                 candidate_note_ids = excluded.candidate_note_ids,
+                chain_id = excluded.chain_id,
+                problem_class = excluded.problem_class,
+                chain_extraction = excluded.chain_extraction,
                 updated_at = excluded.updated_at
             """,
             (
@@ -164,6 +184,9 @@ def record_outcome(config: AppConfig, request: RecordOutcomeRequest) -> RecordOu
                 request.retrieval_state,
                 request.recommendation,
                 json.dumps(candidate_note_ids),
+                request.chain_id,
+                request.problem_class,
+                request.chain_extraction,
             ),
         )
         if request.query_id is not None:
@@ -177,6 +200,7 @@ def record_outcome(config: AppConfig, request: RecordOutcomeRequest) -> RecordOu
         session_id=request.session_id,
         status="accepted",
         candidate_note_ids=candidate_note_ids,
+        chain_id=request.chain_id,
     )
 
 
@@ -407,6 +431,75 @@ def _build_memory_packet(
     )
 
 
+def _load_same_episode_context(
+    config: AppConfig,
+    *,
+    retrieval_result: RetrieveResult,
+    memory_packet: MemoryPacket,
+    max_related: int,
+) -> list[RuntimeMemory]:
+    if max_related <= 0 or not memory_packet.primary_memories:
+        return []
+    primary = memory_packet.primary_memories[0]
+    if not primary.chain_id or primary.type == "archive_chunk":
+        return []
+    primary_hit = next((hit for hit in retrieval_result.hits if hit.id == primary.id), None)
+    if primary_hit is None or primary_hit.final_score <= 0.0:
+        return []
+
+    connection = connect_db(config.paths.db_path)
+    run_migrations(connection, config.paths.workspace_root / "migrations")
+    rows = connection.execute(
+        """
+        SELECT id, title, type, status, chain_id, lifecycle_state, body_path, summary
+        FROM notes
+        WHERE chain_id = ? AND id != ?
+        ORDER BY
+            CASE type
+                WHEN 'procedure' THEN 0
+                WHEN 'incident' THEN 1
+                WHEN 'decision' THEN 2
+                WHEN 'concept' THEN 3
+                ELSE 4
+            END,
+            updated_at DESC,
+            title ASC
+        LIMIT ?
+        """,
+        (primary.chain_id, primary.id, max_related * 2),
+    ).fetchall()
+    connection.close()
+
+    context: list[RuntimeMemory] = []
+    selected_ids = {item.id for item in memory_packet.primary_memories}
+    for row in rows:
+        if str(row["id"]) in selected_ids:
+            continue
+        note_type = str(row["type"])
+        if primary.type == "procedure" and note_type == "incident":
+            pass
+        elif primary.type == "incident" and note_type not in {"procedure", "decision", "concept"}:
+            continue
+        memory = RuntimeMemory(
+            id=str(row["id"]),
+            title=str(row["title"]),
+            type=note_type,
+            summary=str(row["summary"] or ""),
+            body_path=str(row["body_path"]),
+            chain_id=str(row["chain_id"]) if row["chain_id"] is not None else None,
+            freshness_state=None,
+            lifecycle_state=str(row["lifecycle_state"]) if row["lifecycle_state"] is not None else None,
+            channels=["same_episode"],
+            final_score=max(primary_hit.final_score - 0.001 * (len(context) + 1), 0.0),
+            relation_types=["part_of_chain"],
+            provenance=[f"chain:{primary.chain_id}", "channels:same_episode", "relations:part_of_chain"],
+        )
+        context.append(memory)
+        if len(context) >= max_related:
+            break
+    return context
+
+
 def _to_runtime_memory(hit: RetrieveHit) -> RuntimeMemory:
     provenance: list[str] = []
     if hit.channels:
@@ -417,12 +510,15 @@ def _to_runtime_memory(hit: RetrieveHit) -> RuntimeMemory:
         provenance.append(f"lifecycle:{hit.lifecycle_state}")
     if hit.relation_types:
         provenance.append(f"relations:{','.join(hit.relation_types)}")
+    if hit.chain_id:
+        provenance.append(f"chain:{hit.chain_id}")
     return RuntimeMemory(
         id=hit.id,
         title=hit.title,
         type=hit.type,
         summary=hit.summary or hit.excerpt,
         body_path=hit.body_path,
+        chain_id=hit.chain_id,
         freshness_state=hit.freshness_state,
         lifecycle_state=hit.lifecycle_state,
         channels=list(hit.channels),
@@ -436,6 +532,8 @@ def _provenance_summary(memory_packet: MemoryPacket) -> list[str]:
     summary: list[str] = []
     if memory_packet.primary_memories:
         summary.append(f"primary_memories={len(memory_packet.primary_memories)}")
+    if memory_packet.same_episode_context:
+        summary.append(f"same_episode_context={len(memory_packet.same_episode_context)}")
     if memory_packet.related_by_topic:
         summary.append(f"related_by_topic={len(memory_packet.related_by_topic)}")
     if memory_packet.related_by_timeline:
@@ -625,3 +723,50 @@ def _normalize_writeback_decision(decision: str, explicit_intent: str | None) ->
         "new_note": "new",
         "needs_review": "update",
     }.get(decision, decision)
+
+
+def _record_runtime_packet_metrics(
+    config: AppConfig,
+    *,
+    request: ResolveTaskContextRequest,
+    retrieval_state: str,
+    recommendation: str,
+    query_id: int,
+    memory_packet: MemoryPacket,
+) -> None:
+    connection = connect_db(config.paths.db_path)
+    run_migrations(connection, config.paths.workspace_root / "migrations")
+    with connection:
+        connection.execute(
+            """
+            INSERT INTO runtime_packet_metrics(
+                query_id, task_id, session_id, task_kind, retrieval_state, recommendation,
+                primary_memory_count, same_episode_context_count, related_memory_count
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(query_id) DO UPDATE SET
+                task_id = excluded.task_id,
+                session_id = excluded.session_id,
+                task_kind = excluded.task_kind,
+                retrieval_state = excluded.retrieval_state,
+                recommendation = excluded.recommendation,
+                primary_memory_count = excluded.primary_memory_count,
+                same_episode_context_count = excluded.same_episode_context_count,
+                related_memory_count = excluded.related_memory_count
+            """,
+            (
+                query_id,
+                request.task_id,
+                request.session_id,
+                request.task_kind,
+                retrieval_state,
+                recommendation,
+                len(memory_packet.primary_memories),
+                len(memory_packet.same_episode_context),
+                len(memory_packet.related_by_topic)
+                + len(memory_packet.related_by_timeline)
+                + len(memory_packet.related_by_similarity)
+                + len(memory_packet.related_by_contrast),
+            ),
+        )
+    connection.close()

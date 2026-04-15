@@ -18,6 +18,7 @@ SECTION_PATTERN = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
 LIST_ITEM_PATTERN = re.compile(r"^\s*[-*]\s+(.+?)\s*$")
 FIELD_PATTERN = re.compile(r"^([a-z_]+):\s*(.+?)\s*$")
 MEMORY_BLOCK_PATTERN = re.compile(r"```(?:memory|mnemonic)\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
+CHAIN_EXTRACTION_STATES = {"explicit_chain", "inferred_chain", "no_chain"}
 
 
 def parse_summary(text: str) -> SummaryEnvelope:
@@ -135,6 +136,91 @@ def candidate_queries_from_summary(summary: SummaryEnvelope) -> list[str]:
     return ordered[:8]
 
 
+def infer_chain_context(summary: SummaryEnvelope, *, session_id: str, task_id: str | None = None) -> dict[str, str]:
+    metadata = summary.metadata
+    explicit_chain_id = metadata.get("chain_id", "").strip()
+    explicit_question = metadata.get("chain_question", "").strip()
+    explicit_summary = metadata.get("chain_summary", "").strip()
+    explicit_problem_class = metadata.get("problem_class", "").strip()
+
+    if explicit_chain_id:
+        return {
+            "chain_extraction": "explicit_chain",
+            "chain_reason": "explicit_metadata",
+            "chain_id": explicit_chain_id,
+            "chain_confidence": metadata.get("chain_confidence", "").strip().casefold() or "high",
+            "chain_question": explicit_question or _first_non_empty_section(summary, "Task", "Goal"),
+            "chain_summary": explicit_summary or _default_chain_summary(summary),
+            "problem_class": explicit_problem_class or _default_problem_class(summary),
+        }
+
+    task_kind = metadata.get("task_kind", "").strip().casefold()
+    if task_kind not in {"debugging", "architecture", "research"}:
+        return {"chain_extraction": "no_chain", "chain_reason": "unsupported_task_kind"}
+
+    question = _first_non_empty_section(summary, "Task", "Goal")
+    if not question:
+        return {"chain_extraction": "no_chain", "chain_reason": "missing_question"}
+
+    attempts = _extract_section_items(summary.sections.get("Attempts", "")) or _extract_section_items(summary.sections.get("Retry Chain", ""))
+    failures = _extract_section_items(summary.sections.get("Failures", ""))
+    outcomes = _extract_section_items(summary.sections.get("Outcome", "")) or _extract_section_items(summary.sections.get("Reusable Takeaways", ""))
+    memory_items = summary.memory_items
+
+    signal_count = 0
+    if attempts:
+        signal_count += 1
+    if failures:
+        signal_count += 1
+    if outcomes:
+        signal_count += 1
+    if len(memory_items) >= 2:
+        signal_count += 1
+
+    if signal_count < 2:
+        return {"chain_extraction": "no_chain", "chain_reason": "insufficient_signal"}
+
+    slug_source = task_id or session_id or question
+    chain_id = f"trace/{slugify(slug_source)}"
+    return {
+        "chain_extraction": "inferred_chain",
+        "chain_reason": "problem_solving_signal",
+        "chain_id": chain_id,
+        "chain_confidence": "medium",
+        "chain_question": question,
+        "chain_summary": _default_chain_summary(summary),
+        "problem_class": _default_problem_class(summary),
+    }
+
+
+def _first_non_empty_section(summary: SummaryEnvelope, *names: str) -> str:
+    for name in names:
+        value = summary.sections.get(name, "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _default_chain_summary(summary: SummaryEnvelope) -> str:
+    for name in ("Reusable Takeaways", "Outcome", "Failures"):
+        items = _extract_section_items(summary.sections.get(name, ""))
+        if items:
+            return items[0]
+    for item in summary.memory_items:
+        text = str(item.get("summary") or item.get("body") or item.get("title") or "").strip()
+        if text:
+            return " ".join(text.split())[:240]
+    return ""
+
+
+def _default_problem_class(summary: SummaryEnvelope) -> str:
+    anchors = _extract_section_items(summary.sections.get("Anchors", ""))
+    if anchors:
+        return slugify(anchors[0])
+    question = _first_non_empty_section(summary, "Task", "Goal")
+    return slugify(question) if question else ""
+
+
 def _token_set(text: str) -> set[str]:
     return {token for token in re.findall(r"[\w/-]+", text.casefold()) if len(token) > 2}
 
@@ -246,7 +332,7 @@ def decide_upsert(
     if update_targets:
         return UpsertDecision("update_existing", update_targets, update_targets, "explicit update_target_ids")
 
-    candidates = existing_candidates or find_existing_candidates(
+    candidates = existing_candidates if existing_candidates is not None else find_existing_candidates(
         connection,
         config,
         note_type=note_type,

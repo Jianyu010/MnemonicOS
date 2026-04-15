@@ -3,3 +3,4 @@ __pycache__/
 brain/data/archive.db
 brain/data/archive.db-shm
 brain/data/archive.db-wal
+development/

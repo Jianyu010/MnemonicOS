@@ -191,9 +191,13 @@ class Phase2Test(unittest.TestCase):
                 ),
             )
             self.assertGreater(ingest_result.chunk_count, 0)
-            self.assertIn("decision/use-pgbouncer-for-auth-connection-pooling", ingest_result.promoted_notes)
-            self.assertTrue(ingest_result.review_items)
+            self.assertEqual(ingest_result.promoted_notes, [])
+            self.assertEqual(ingest_result.review_items, [])
             self.assertTrue(Path(ingest_result.raw_path).exists())
+
+            queue_run = run_job(config, job_name="process_promotion_queue", dry_run=False)
+            self.assertGreaterEqual(queue_run.stats["promoted_notes"], 1)
+            self.assertGreaterEqual(queue_run.stats["review_items"], 1)
 
             updated_user = (workspace / "brain/system/USER.md").read_text()
             self.assertIn("Prefer async PR reviews for infra changes", updated_user)

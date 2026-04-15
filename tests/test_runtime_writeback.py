@@ -175,6 +175,44 @@ class RuntimeWritebackTest(unittest.TestCase):
             self.assertEqual(result.targets, ["concept/cann-npu"])
             self.assertIn("concept/cann-npu", result.candidates)
 
+    def test_record_outcome_persists_chain_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            config = self._prepare_workspace(workspace)
+
+            result = record_outcome(
+                config,
+                RecordOutcomeRequest(
+                    bridge_id="api-client",
+                    session_id="session-chain",
+                    task_id="task-chain",
+                    outcome_type="task_result",
+                    status="success",
+                    summary="Recovered auth rollout after reconciling schema state.",
+                    task_kind="debugging",
+                    retrieval_state="partial",
+                    recommendation="reuse_with_verification",
+                    chain_id="trace/auth-rollout-recovery",
+                    problem_class="auth-rollout-recovery",
+                    chain_extraction="inferred_chain",
+                ),
+            )
+
+            self.assertEqual(result.chain_id, "trace/auth-rollout-recovery")
+            connection = connect_db(config.paths.db_path)
+            row = connection.execute(
+                """
+                SELECT chain_id, problem_class, chain_extraction
+                FROM task_outcomes
+                WHERE task_id = 'task-chain'
+                """
+            ).fetchone()
+            connection.close()
+
+            self.assertEqual(str(row["chain_id"]), "trace/auth-rollout-recovery")
+            self.assertEqual(str(row["problem_class"]), "auth-rollout-recovery")
+            self.assertEqual(str(row["chain_extraction"]), "inferred_chain")
+
 
 if __name__ == "__main__":
     unittest.main()

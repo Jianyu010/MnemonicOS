@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
-# mnemonic_postflight.sh — ingest a session summary and run daily consolidation
+# mnemonic_postflight.sh — archive-first postflight intake
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SCRIPTS="$REPO_ROOT/scripts"
 BRIDGE_ID=""
 SESSION_ID=""
 SUMMARY_FILE=""
-MODE=""
+PROMOTE_NOW=0
 TAGS=()
 SOURCE_REFS=()
 DRY_RUN=0
@@ -20,16 +19,16 @@ while [[ $# -gt 0 ]]; do
     --agent)        BRIDGE_ID="$2"; shift 2 ;;
     --slug)         SESSION_ID="$2"; shift 2 ;;
     --summary-file) SUMMARY_FILE="$2"; shift 2 ;;
-    --mode)         MODE="$2"; shift 2 ;;
     --tag)          TAGS+=("$2"); shift 2 ;;
     --source-ref)   SOURCE_REFS+=("$2"); shift 2 ;;
+    --promote-now)  PROMOTE_NOW=1; shift ;;
     --dry-run)      DRY_RUN=1; shift ;;
     *)              echo "Unknown option: $1" >&2; exit 1 ;;
   esac
 done
 
 if [[ -z "$BRIDGE_ID" || -z "$SESSION_ID" || -z "$SUMMARY_FILE" ]]; then
-  echo "Usage: mnemonic_postflight.sh --bridge-id <id> --session-id <id> --summary-file <path> [--mode failure|success|knowledge]" >&2
+  echo "Usage: mnemonic_postflight.sh --bridge-id <id> --session-id <id> --summary-file <path> [--promote-now]" >&2
   exit 1
 fi
 
@@ -50,82 +49,32 @@ else
   CLI=(env PYTHONPATH="$REPO_ROOT/src" python3 -m second_brain --config "$CONFIG")
 fi
 
-UPSERT_CMD=("$SCRIPTS/mnemonic_should_upsert.sh" --summary-file "$SUMMARY_FILE")
-[[ -n "$MODE" ]] && UPSERT_CMD+=(--mode "$MODE")
-UPSERT_CMD+=(--json)
-UPSERT_JSON="$("${UPSERT_CMD[@]}")"
-
-TMP_SUMMARY="$(mktemp /tmp/mnemo-postflight-XXXXXX.md)"
-trap 'rm -f "$TMP_SUMMARY"' EXIT
-
-env UPSERT_JSON="$UPSERT_JSON" PYTHONPATH="$REPO_ROOT/src" python3 - "$SUMMARY_FILE" "$TMP_SUMMARY" <<'PYEOF'
-import json
-import os
-import sys
-from pathlib import Path
-
-from second_brain.bridge import parse_summary
-
-source = Path(sys.argv[1]).read_text(encoding="utf-8")
-target = Path(sys.argv[2])
-payload = json.loads(os.environ["UPSERT_JSON"])
-summary = parse_summary(source)
-metadata = dict(summary.metadata)
-legacy_agent = metadata.get("agent", "").strip()
-metadata.setdefault("bridge_id", metadata.get("bridge_id", "").strip() or legacy_agent)
-metadata.setdefault("writeback_intent", {
-    "new_note": "new",
-    "update_existing": "update",
-    "confirm_existing": "confirm",
-    "skip_duplicate": "skip",
-    "needs_review": "update",
-}.get(payload["decision"], "new"))
-metadata.setdefault("existing_note_candidates", ", ".join(payload.get("candidates", [])))
-metadata.setdefault("update_target_ids", ", ".join(payload.get("targets", [])))
-
-header_lines = [f"{key}: {value}" for key, value in metadata.items() if str(value).strip()]
-
-body_lines = source.splitlines()
-index = 0
-while index < len(body_lines):
-    line = body_lines[index]
-    if not line.strip():
-        index += 1
-        break
-    if line.startswith("#"):
-        break
-    if ":" not in line:
-        break
-    index += 1
-
-body = "\n".join(body_lines[index:]).lstrip("\n")
-rendered = "\n".join(header_lines).rstrip() + "\n\n" + body
-target.write_text(rendered.rstrip() + "\n", encoding="utf-8")
-PYEOF
-
 cd "$REPO_ROOT"
-INGEST_CMD=("${CLI[@]}" ingest-session --bridge-id "$BRIDGE_ID" --session-id "$SESSION_ID" --file "$TMP_SUMMARY")
+INGEST_CMD=("${CLI[@]}" ingest-session --bridge-id "$BRIDGE_ID" --session-id "$SESSION_ID" --file "$SUMMARY_FILE")
 for tag in "${TAGS[@]+"${TAGS[@]}"}"; do
   INGEST_CMD+=(--tag "$tag")
 done
 for ref in "${SOURCE_REFS[@]+"${SOURCE_REFS[@]}"}"; do
   INGEST_CMD+=(--source-ref "$ref")
 done
+if [[ $PROMOTE_NOW -eq 1 ]]; then
+  INGEST_CMD+=(--promote-now)
+fi
 
 if [[ $DRY_RUN -eq 1 ]]; then
-  echo "[DRY RUN] Upsert decision:"
-  echo "$UPSERT_JSON"
   echo "[DRY RUN] Would run: ${INGEST_CMD[*]}"
-  echo "[DRY RUN] Then: ${CLI[*]} run-job daily_consolidation --dry-run"
+  if [[ $PROMOTE_NOW -eq 1 ]]; then
+    echo "[DRY RUN] Deferred processing bypass enabled."
+  else
+    echo "[DRY RUN] Session will be archived and queued for daemon/background promotion."
+  fi
   exit 0
 fi
 
-echo "=== MnemonicOS: Upsert decision ==="
-echo "$UPSERT_JSON"
-echo ""
 echo "=== MnemonicOS: Ingesting session summary ==="
 "${INGEST_CMD[@]}"
 
-echo ""
-echo "=== MnemonicOS: Running daily consolidation ==="
-"${CLI[@]}" run-job daily_consolidation
+if [[ $PROMOTE_NOW -eq 1 ]]; then
+  echo ""
+  echo "=== MnemonicOS: Immediate promotion requested ==="
+fi

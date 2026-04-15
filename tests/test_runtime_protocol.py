@@ -446,6 +446,156 @@ class RuntimeProtocolTest(unittest.TestCase):
             self.assertIn("linked_decision", related.relation_types)
             self.assertIn("relations:linked_decision", related.provenance)
 
+    def test_resolve_task_context_adds_bounded_same_episode_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            _, config = self._prepare_workspace(workspace)
+            _write(
+                workspace / "brain/wiki/procedures/active/recover-auth-rollout.md",
+                """
+                ---
+                id: procedure/recover-auth-rollout
+                type: procedure
+                title: Recover Auth Rollout
+                status: active
+                chain_id: trace/auth-rollout-recovery
+                updated_at: 2026-04-14
+                created_at: 2026-04-14
+                source_refs: [session/2026-04-14-0900]
+                confidence: high
+                ---
+
+                Reconcile schema state before rerunning deploy.
+                """,
+            )
+            _write(
+                workspace / "brain/wiki/incidents/auth-rollout-failure.md",
+                """
+                ---
+                id: incident/auth-rollout-failure
+                type: incident
+                title: Auth Rollout Failure
+                status: resolved
+                chain_id: trace/auth-rollout-recovery
+                updated_at: 2026-04-14
+                created_at: 2026-04-14
+                source_refs: [session/2026-04-14-0900]
+                confidence: high
+                ---
+
+                The rollout failed until schema state was reconciled.
+                """,
+            )
+            _write(
+                workspace / "brain/wiki/decisions/auth-rollout-decision.md",
+                """
+                ---
+                id: decision/auth-rollout-decision
+                type: decision
+                title: Auth Rollout Recovery Decision
+                status: active
+                chain_id: trace/auth-rollout-recovery
+                updated_at: 2026-04-14
+                created_at: 2026-04-14
+                source_refs: [session/2026-04-14-0900]
+                confidence: high
+                ---
+
+                Use schema reconciliation before retrying rollout.
+                """,
+            )
+            _write(
+                workspace / "brain/wiki/concepts/schema-reconciliation.md",
+                """
+                ---
+                id: concept/schema-reconciliation
+                type: concept
+                title: Schema Reconciliation
+                status: active
+                chain_id: trace/auth-rollout-recovery
+                updated_at: 2026-04-14
+                created_at: 2026-04-14
+                source_refs: [session/2026-04-14-0900]
+                confidence: high
+                ---
+
+                Reconcile schema state before rerunning deploy.
+                """,
+            )
+            sync_vault(config, mode="full")
+
+            result = resolve_task_context(
+                config,
+                ResolveTaskContextRequest(
+                    bridge_id="api-client",
+                    session_id="session-chain-context",
+                    task_id="task-chain-context",
+                    task_text="how do we recover auth rollout",
+                    task_kind="debugging",
+                    token_budget=800,
+                ),
+            )
+
+            self.assertEqual(result.memory_packet.primary_memories[0].id, "procedure/recover-auth-rollout")
+            self.assertEqual(len(result.memory_packet.same_episode_context), 1)
+            self.assertIn(
+                result.memory_packet.same_episode_context[0].id,
+                {"incident/auth-rollout-failure", "decision/auth-rollout-decision", "concept/schema-reconciliation"},
+            )
+            self.assertEqual(result.memory_packet.same_episode_context[0].chain_id, "trace/auth-rollout-recovery")
+            self.assertEqual(len(result.memory_packet.primary_memories), 2)
+
+    def test_resolve_task_context_keeps_flat_factual_queries_without_episode_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            _, config = self._prepare_workspace(workspace)
+            _write(
+                workspace / "brain/wiki/concepts/redis-expiry.md",
+                """
+                ---
+                id: concept/redis-expiry
+                type: concept
+                title: Redis Expiry
+                status: active
+                updated_at: 2026-04-14
+                created_at: 2026-04-14
+                source_refs: [session/2026-04-14-1000]
+                confidence: high
+                ---
+
+                Redis expires keys lazily and actively, not eagerly.
+                """,
+            )
+            sync_vault(config, mode="full")
+
+            result = resolve_task_context(
+                config,
+                ResolveTaskContextRequest(
+                    bridge_id="api-client",
+                    session_id="session-flat",
+                    task_id="task-flat",
+                    task_text="how does redis expire keys",
+                    task_kind="knowledge",
+                    token_budget=1200,
+                ),
+            )
+
+            self.assertEqual(result.memory_packet.primary_memories[0].id, "concept/redis-expiry")
+            self.assertEqual(result.memory_packet.same_episode_context, [])
+            connection = connect_db(config.paths.db_path)
+            row = connection.execute(
+                """
+                SELECT task_kind, primary_memory_count, same_episode_context_count
+                FROM runtime_packet_metrics
+                WHERE query_id = ?
+                """,
+                (result.query_id,),
+            ).fetchone()
+            connection.close()
+            self.assertEqual(str(row["task_kind"]), "knowledge")
+            self.assertEqual(int(row["primary_memory_count"]), len(result.memory_packet.primary_memories))
+            self.assertEqual(int(row["same_episode_context_count"]), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

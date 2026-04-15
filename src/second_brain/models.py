@@ -25,6 +25,14 @@ class NoteRecord:
     last_verified_at: str | None
     verified_by: str | None
     last_observed_at: str | None
+    chain_id: str | None
+    chain_confidence: str | None
+    chain_question: str | None
+    chain_summary: str | None
+    problem_class: str | None
+    failure_summary: str | None
+    attempt_summaries: list[str]
+    solution_rationale: str | None
     summary: str
     aliases: list[str]
     obsidian_links: list[str]
@@ -52,6 +60,7 @@ class RetrieveHit:
     title: str
     type: str
     status: str | None
+    chain_id: str | None
     freshness_state: str | None
     lifecycle_state: str | None
     body_path: str
@@ -131,6 +140,7 @@ class RuntimeMemory:
     type: str
     summary: str
     body_path: str
+    chain_id: str | None
     freshness_state: str | None
     lifecycle_state: str | None
     channels: list[str]
@@ -142,6 +152,7 @@ class RuntimeMemory:
 @dataclass(slots=True)
 class MemoryPacket:
     primary_memories: list[RuntimeMemory] = field(default_factory=list)
+    same_episode_context: list[RuntimeMemory] = field(default_factory=list)
     related_by_topic: list[RuntimeMemory] = field(default_factory=list)
     related_by_timeline: list[RuntimeMemory] = field(default_factory=list)
     related_by_similarity: list[RuntimeMemory] = field(default_factory=list)
@@ -152,6 +163,7 @@ class MemoryPacket:
     def to_dict(self) -> dict[str, object]:
         return {
             "primary_memories": [asdict(item) for item in self.primary_memories],
+            "same_episode_context": [asdict(item) for item in self.same_episode_context],
             "related_by_topic": [asdict(item) for item in self.related_by_topic],
             "related_by_timeline": [asdict(item) for item in self.related_by_timeline],
             "related_by_similarity": [asdict(item) for item in self.related_by_similarity],
@@ -233,6 +245,9 @@ class RecordOutcomeRequest:
     fresh_sources_checked: list[str] = field(default_factory=list)
     useful_ids: list[str] = field(default_factory=list)
     misleading_ids: list[str] = field(default_factory=list)
+    chain_id: str | None = None
+    problem_class: str | None = None
+    chain_extraction: str | None = None
 
 
 @dataclass(slots=True)
@@ -244,6 +259,7 @@ class RecordOutcomeResult:
     session_id: str
     status: str
     candidate_note_ids: list[str]
+    chain_id: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -253,6 +269,7 @@ class RecordOutcomeResult:
             "task_id": self.task_id,
             "session_id": self.session_id,
             "status": self.status,
+            "chain_id": self.chain_id,
             "writeback_hint": {
                 "recommended_operation": "decide_writeback",
                 "candidate_note_ids": list(self.candidate_note_ids),

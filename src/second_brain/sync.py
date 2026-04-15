@@ -86,10 +86,12 @@ def _upsert_note(connection: sqlite3.Connection, note: NoteRecord) -> tuple[list
         INSERT INTO notes(
             id, type, title, status, confidence, tags, entities, source_refs,
             valid_from, valid_to, updated_at, created_at, last_verified_at,
-            verified_by, last_observed_at, overlay_class, lifecycle_state,
+            verified_by, last_observed_at, chain_id, chain_confidence,
+            chain_question, chain_summary, problem_class, failure_summary,
+            attempt_summaries, solution_rationale, overlay_class, lifecycle_state,
             body_path, summary, content_hash, revision
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
         ON CONFLICT(id) DO UPDATE SET
             type = excluded.type,
             title = excluded.title,
@@ -105,6 +107,14 @@ def _upsert_note(connection: sqlite3.Connection, note: NoteRecord) -> tuple[list
             last_verified_at = excluded.last_verified_at,
             verified_by = excluded.verified_by,
             last_observed_at = excluded.last_observed_at,
+            chain_id = excluded.chain_id,
+            chain_confidence = excluded.chain_confidence,
+            chain_question = excluded.chain_question,
+            chain_summary = excluded.chain_summary,
+            problem_class = excluded.problem_class,
+            failure_summary = excluded.failure_summary,
+            attempt_summaries = excluded.attempt_summaries,
+            solution_rationale = excluded.solution_rationale,
             overlay_class = excluded.overlay_class,
             lifecycle_state = excluded.lifecycle_state,
             body_path = excluded.body_path,
@@ -128,6 +138,14 @@ def _upsert_note(connection: sqlite3.Connection, note: NoteRecord) -> tuple[list
             note.last_verified_at,
             note.verified_by,
             note.last_observed_at,
+            note.chain_id,
+            note.chain_confidence,
+            note.chain_question,
+            note.chain_summary,
+            note.problem_class,
+            note.failure_summary,
+            json.dumps(note.attempt_summaries),
+            note.solution_rationale,
             note.overlay_class,
             note.lifecycle_state,
             str(note.body_path),

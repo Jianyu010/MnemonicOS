@@ -13,6 +13,7 @@ dependencies = [
 
 [project.scripts]
 mnemonicos = "second_brain.cli:main"
+mnemonicos-daemon = "second_brain.daemon:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
+from pathlib import Path
 from typing import Any
 
 from .config import AppConfig
 from .db import connect_db, run_migrations
+from .bridge import infer_chain_context, parse_summary
+from .ingest import _enqueue_promotion_candidate, _promote_session_content
 from .models import JobRunResult
 from .ops import (
     load_open_relearn_tasks,
@@ -16,6 +20,7 @@ from .ops import (
 from .review import create_review_item, slugify
 from .sync import sync_vault
 from .trust import compute_note_freshness, compute_note_trust_stats, train_rerank_model
+from .semantics import encode_text, upsert_archive_chunk_vector
 
 
 def _open_job_run(connection, job_name: str, mode: str) -> int:
@@ -35,6 +40,407 @@ def _close_job_run(connection, job_id: int, *, status: str, stats: dict[str, Any
         """,
         (status, json.dumps(stats), error_text, job_id),
     )
+
+
+def _to_iso_utc(value: datetime) -> str:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def collect_queue_stats(config: AppConfig) -> dict[str, Any]:
+    connection = connect_db(config.paths.db_path)
+    run_migrations(connection, config.paths.workspace_root / "migrations")
+    rows = connection.execute(
+        """
+        SELECT status, COUNT(*) AS count
+        FROM promotion_queue
+        GROUP BY status
+        """
+    ).fetchall()
+    oldest_row = connection.execute(
+        """
+        SELECT queued_at
+        FROM promotion_queue
+        WHERE status = 'pending'
+        ORDER BY queued_at ASC
+        LIMIT 1
+        """
+    ).fetchone()
+    failure_rows = connection.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM promotion_queue
+        WHERE status = 'error'
+        """
+    ).fetchone()
+    connection.close()
+
+    counts = {str(row["status"]): int(row["count"]) for row in rows}
+    pending = counts.get("pending", 0)
+    oldest_pending_age_minutes: int | None = None
+    if oldest_row is not None and oldest_row["queued_at"]:
+        queued_at = datetime.fromisoformat(str(oldest_row["queued_at"]).replace("Z", "+00:00"))
+        oldest_pending_age_minutes = max(
+            0,
+            int((datetime.now().astimezone() - queued_at.astimezone()).total_seconds() // 60),
+        )
+    warnings: list[str] = []
+    daemon = config.daemon
+    if daemon is not None:
+        if pending > daemon.max_pending:
+            warnings.append(f"promotion_queue depth {pending} exceeds threshold {daemon.max_pending}")
+        if oldest_pending_age_minutes is not None and oldest_pending_age_minutes > daemon.max_oldest_age_minutes:
+            warnings.append(
+                "oldest pending promotion candidate age "
+                f"{oldest_pending_age_minutes}m exceeds threshold {daemon.max_oldest_age_minutes}m"
+            )
+    return {
+        "queue_counts": counts,
+        "pending_count": pending,
+        "error_count": int(failure_rows["count"] or 0) if failure_rows is not None else 0,
+        "oldest_pending_age_minutes": oldest_pending_age_minutes,
+        "warnings": warnings,
+    }
+
+
+def collect_storage_stats(config: AppConfig) -> dict[str, Any]:
+    def _dir_size(path: Path) -> int:
+        if not path.exists():
+            return 0
+        total = 0
+        for child in path.rglob("*"):
+            if child.is_file():
+                total += child.stat().st_size
+        return total
+
+    db_bytes = config.paths.db_path.stat().st_size if config.paths.db_path.exists() else 0
+    vault_bytes = _dir_size(config.paths.vault_root)
+    vectors_bytes = _dir_size(config.paths.vectors_dir)
+    graph_bytes = _dir_size(config.paths.graph_dir)
+    return {
+        "db_bytes": db_bytes,
+        "vault_bytes": vault_bytes,
+        "vectors_bytes": vectors_bytes,
+        "graph_bytes": graph_bytes,
+    }
+
+
+def collect_status_snapshot(config: AppConfig) -> dict[str, Any]:
+    connection = connect_db(config.paths.db_path)
+    run_migrations(connection, config.paths.workspace_root / "migrations")
+    last_runs = connection.execute(
+        """
+        SELECT job_name, status, finished_at
+        FROM job_runs
+        WHERE finished_at IS NOT NULL
+        ORDER BY id DESC
+        LIMIT 10
+        """
+    ).fetchall()
+    connection.close()
+    snapshot = {
+        "queue": collect_queue_stats(config),
+        "storage": collect_storage_stats(config),
+        "recent_job_runs": [
+            {
+                "job_name": str(row["job_name"]),
+                "status": str(row["status"]),
+                "finished_at": str(row["finished_at"]),
+            }
+            for row in last_runs
+        ],
+    }
+    return snapshot
+
+
+def _process_promotion_queue(config: AppConfig, *, dry_run: bool = False) -> JobRunResult:
+    connection = connect_db(config.paths.db_path)
+    run_migrations(connection, config.paths.workspace_root / "migrations")
+    stats: dict[str, int] = {
+        "recovered_processing_rows": 0,
+        "pending_before": 0,
+        "processed_candidates": 0,
+        "skipped_candidates": 0,
+        "error_candidates": 0,
+        "promoted_notes": 0,
+        "review_items": 0,
+    }
+    with connection:
+        job_id = _open_job_run(connection, "process_promotion_queue", "dry-run" if dry_run else "live")
+        try:
+            # Queue workers are single-runner today (serialized by the daemon job lock),
+            # so any row still in 'processing' at worker start is leftover from an
+            # interrupted prior run.  In live mode, reset them to 'pending' so they
+            # are retried.  In dry-run mode, only count them without mutating.
+            if dry_run:
+                recovered = connection.execute(
+                    "SELECT COUNT(*) AS n FROM promotion_queue WHERE status = 'processing'"
+                ).fetchone()["n"]
+            else:
+                recovered = connection.execute(
+                    """
+                    UPDATE promotion_queue
+                    SET status = 'pending',
+                        last_error = 'reset after interrupted promotion worker',
+                        processed_at = NULL
+                    WHERE status = 'processing'
+                    """
+                ).rowcount
+            stats["recovered_processing_rows"] = recovered
+
+            pending_rows = connection.execute(
+                """
+                SELECT id, archive_id, bridge_id, session_id, content, summary_payload
+                FROM promotion_queue
+                WHERE status = 'pending'
+                ORDER BY queued_at ASC, id ASC
+                """
+            ).fetchall()
+            stats["pending_before"] = len(pending_rows)
+
+            if dry_run:
+                _close_job_run(connection, job_id, status="ok", stats=stats)
+                return JobRunResult(
+                    job_name="process_promotion_queue",
+                    status="ok",
+                    stats=stats,
+                    review_items_created=[],
+                )
+
+            review_items_created: list[str] = []
+            for row in pending_rows:
+                candidate_id = int(row["id"])
+                archive_id = str(row["archive_id"])
+                bridge_id = str(row["bridge_id"] or "local")
+                session_id = str(row["session_id"] or archive_id)
+                content = str(row["content"] or "")
+                summary_payload = json.loads(str(row["summary_payload"] or "{}"))
+
+                with connection:
+                    connection.execute(
+                        """
+                        UPDATE promotion_queue
+                        SET status = 'processing',
+                            attempt_count = attempt_count + 1,
+                            last_attempted_at = datetime('now'),
+                            last_error = NULL
+                        WHERE id = ?
+                        """,
+                        (candidate_id,),
+                    )
+                try:
+                    promoted_notes, review_items = _promote_session_content(
+                        config,
+                        connection=connection,
+                        archive_id=archive_id,
+                        resolved_bridge_id=bridge_id,
+                        resolved_session_id=session_id,
+                        content=content,
+                        source_refs=list(summary_payload.get("source_refs") or []),
+                    )
+                    with connection:
+                        connection.execute(
+                            """
+                            UPDATE promotion_queue
+                            SET status = ?, processed_at = datetime('now'), last_error = NULL
+                            WHERE id = ?
+                            """,
+                            ("processed" if (promoted_notes or review_items) else "skipped", candidate_id),
+                        )
+                    stats["processed_candidates"] += 1
+                    if not promoted_notes and not review_items:
+                        stats["skipped_candidates"] += 1
+                    stats["promoted_notes"] += len(promoted_notes)
+                    stats["review_items"] += len(review_items)
+                    review_items_created.extend(review_items)
+                except Exception as exc:
+                    with connection:
+                        connection.execute(
+                            """
+                            UPDATE promotion_queue
+                            SET status = 'error', last_error = ?
+                            WHERE id = ?
+                            """,
+                            (str(exc), candidate_id),
+                        )
+                    stats["error_candidates"] += 1
+
+            queue_stats = collect_queue_stats(config)
+            stats["pending_after"] = int(queue_stats["pending_count"])
+            stats["error_after"] = int(queue_stats["error_count"])
+            _close_job_run(connection, job_id, status="ok", stats=stats)
+        except Exception as exc:
+            _close_job_run(connection, job_id, status="error", stats=stats, error_text=str(exc))
+            connection.close()
+            raise
+
+    connection.close()
+    return JobRunResult(
+        job_name="process_promotion_queue",
+        status="ok",
+        stats=stats,
+        review_items_created=review_items_created,
+    )
+
+
+def _backfill_promotion_queue(config: AppConfig, *, dry_run: bool = False) -> JobRunResult:
+    """Enqueue archive session rows that predate the promotion_queue system."""
+    connection = connect_db(config.paths.db_path)
+    run_migrations(connection, config.paths.workspace_root / "migrations")
+    stats: dict[str, int] = {"eligible": 0, "enqueued": 0, "skipped_missing_file": 0}
+    with connection:
+        job_id = _open_job_run(connection, "backfill_promotion_queue", "dry-run" if dry_run else "live")
+        try:
+            # Find session archive rows with no promotion_queue entry.
+            unqueued = connection.execute(
+                """
+                SELECT a.id, a.path, a.agent
+                FROM archive a
+                LEFT JOIN promotion_queue q ON q.archive_id = a.id
+                WHERE a.type = 'session'
+                  AND q.id IS NULL
+                ORDER BY a.ingested_at ASC
+                """
+            ).fetchall()
+            stats["eligible"] = len(unqueued)
+
+            if not dry_run:
+                for row in unqueued:
+                    archive_id = str(row["id"])
+                    raw_path = Path(str(row["path"]))
+                    bridge_id = str(row["agent"] or "local")
+
+                    if not raw_path.exists():
+                        stats["skipped_missing_file"] += 1
+                        continue
+
+                    content = raw_path.read_text()
+                    # Derive session_id from the archive_id slug after the timestamp prefix.
+                    # Format: session/{timestamp}-{bridge_slug}-{session_slug}
+                    slug_part = archive_id.removeprefix("session/")
+                    # Strip leading timestamp (YYYY-MM-DD-HHMMSS = 18 chars) and bridge slug.
+                    bridge_slug = slugify(bridge_id)
+                    prefix = slug_part[len("YYYY-MM-DD-HHMMSS-") :]  # noqa: E203 — strip timestamp
+                    # Robustly extract: drop timestamp prefix then bridge slug prefix.
+                    parts = slug_part.split("-", maxsplit=4)  # [YYYY, MM, DD, HHMMSS, rest]
+                    rest = parts[4] if len(parts) > 4 else slug_part
+                    session_id = rest.removeprefix(bridge_slug + "-") if rest.startswith(bridge_slug + "-") else rest
+
+                    session_summary = parse_summary(content)
+                    chain_context = infer_chain_context(
+                        session_summary,
+                        session_id=session_id,
+                        task_id=session_summary.metadata.get("task_id", "").strip() or None,
+                    )
+                    with connection:
+                        _enqueue_promotion_candidate(
+                            connection,
+                            archive_id=archive_id,
+                            bridge_id=bridge_id,
+                            session_id=session_id,
+                            task_id=session_summary.metadata.get("task_id", "").strip() or None,
+                            task_kind=session_summary.metadata.get("task_kind", "").strip() or None,
+                            content=content,
+                            summary_payload={
+                                "metadata": session_summary.metadata,
+                                "sections": session_summary.sections,
+                                "memory_items": session_summary.memory_items,
+                                "source_refs": [],
+                            },
+                            chain_extraction=chain_context.get("chain_extraction", "no_chain"),
+                            chain_reason=chain_context.get("chain_reason", ""),
+                        )
+                    stats["enqueued"] += 1
+
+            _close_job_run(connection, job_id, status="ok", stats=stats)
+        except Exception as exc:
+            _close_job_run(connection, job_id, status="error", stats=stats, error_text=str(exc))
+            connection.close()
+            raise
+
+    connection.close()
+    return JobRunResult(
+        job_name="backfill_promotion_queue",
+        status="ok",
+        stats=stats,
+        review_items_created=[],
+    )
+
+
+def _embed_backfill(config: AppConfig, *, dry_run: bool = False) -> JobRunResult:
+    connection = connect_db(config.paths.db_path)
+    run_migrations(connection, config.paths.workspace_root / "migrations")
+    stats: dict[str, int] = {"archive_chunks_embedded": 0}
+    try:
+        with connection:
+            job_id = _open_job_run(connection, "embed_backfill", "dry-run" if dry_run else "live")
+        if not config.embeddings.enabled:
+            stats["embeddings_disabled"] = 1
+            with connection:
+                _close_job_run(connection, job_id, status="ok", stats=stats)
+            return JobRunResult(job_name="embed_backfill", status="ok", stats=stats, review_items_created=[])
+
+        rows = connection.execute(
+            """
+            SELECT ac.id, ac.body, ac.summary, ac.content_hash
+            FROM archive_chunks ac
+            LEFT JOIN archive_chunk_vectors acv
+              ON acv.chunk_id = ac.id AND acv.model = ?
+            WHERE acv.chunk_id IS NULL
+            ORDER BY ac.id ASC
+            """,
+            (config.embeddings.model,),
+        ).fetchall()
+        if dry_run:
+            stats["archive_chunks_pending"] = len(rows)
+            with connection:
+                _close_job_run(connection, job_id, status="ok", stats=stats)
+            return JobRunResult(job_name="embed_backfill", status="ok", stats=stats, review_items_created=[])
+
+        with connection:
+            for row in rows:
+                vector = encode_text(
+                    str(row["summary"] or row["body"] or ""),
+                    dimensions=config.embeddings.dimensions,
+                )
+                upsert_archive_chunk_vector(
+                    connection,
+                    chunk_id=int(row["id"]),
+                    model=config.embeddings.model,
+                    dimensions=config.embeddings.dimensions,
+                    vector=vector,
+                    source_hash=str(row["content_hash"]),
+                )
+                stats["archive_chunks_embedded"] += 1
+            _close_job_run(connection, job_id, status="ok", stats=stats)
+        return JobRunResult(job_name="embed_backfill", status="ok", stats=stats, review_items_created=[])
+    except Exception as exc:
+        with connection:
+            _close_job_run(connection, job_id, status="error", stats=stats, error_text=str(exc))
+        raise
+    finally:
+        connection.close()
+
+
+def _status_report_job(config: AppConfig, *, dry_run: bool = False) -> JobRunResult:
+    connection = connect_db(config.paths.db_path)
+    run_migrations(connection, config.paths.workspace_root / "migrations")
+    snapshot = collect_status_snapshot(config)
+    stats = {
+        "pending_count": int(snapshot["queue"]["pending_count"]),
+        "error_count": int(snapshot["queue"]["error_count"]),
+        "warning_count": len(snapshot["queue"]["warnings"]),
+        "db_bytes": int(snapshot["storage"]["db_bytes"]),
+        "vault_bytes": int(snapshot["storage"]["vault_bytes"]),
+        "vectors_bytes": int(snapshot["storage"]["vectors_bytes"]),
+        "graph_bytes": int(snapshot["storage"]["graph_bytes"]),
+    }
+    with connection:
+        job_id = _open_job_run(connection, "status_report", "dry-run" if dry_run else "live")
+        _close_job_run(connection, job_id, status="ok", stats=stats)
+    connection.close()
+    return JobRunResult(job_name="status_report", status="ok", stats=stats, review_items_created=[])
 
 
 def _retrieval_miss_rows(connection) -> list[dict[str, object]]:
@@ -339,6 +745,15 @@ def _stale_rows_from_freshness(connection) -> list[dict[str, str]]:
 
 
 def run_job(config: AppConfig, *, job_name: str, dry_run: bool = False) -> JobRunResult:
+    if job_name == "process_promotion_queue":
+        return _process_promotion_queue(config, dry_run=dry_run)
+    if job_name == "backfill_promotion_queue":
+        return _backfill_promotion_queue(config, dry_run=dry_run)
+    if job_name == "embed_backfill":
+        return _embed_backfill(config, dry_run=dry_run)
+    if job_name == "status_report":
+        return _status_report_job(config, dry_run=dry_run)
+
     connection = connect_db(config.paths.db_path)
     run_migrations(connection, config.paths.workspace_root / "migrations")
     review_items_created: list[str] = []

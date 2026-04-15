@@ -70,6 +70,16 @@ class BridgeConfig:
 
 
 @dataclass(slots=True)
+class DaemonConfig:
+    socket_path: Path
+    pid_path: Path
+    log_path: Path
+    schedules: dict[str, str] = field(default_factory=dict)
+    max_pending: int = 200
+    max_oldest_age_minutes: int = 1440
+
+
+@dataclass(slots=True)
 class AppConfig:
     paths: PathsConfig
     retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
@@ -77,6 +87,7 @@ class AppConfig:
     embeddings: EmbeddingsConfig = field(default_factory=EmbeddingsConfig)
     graph: GraphConfig = field(default_factory=GraphConfig)
     trust: TrustConfig = field(default_factory=TrustConfig)
+    daemon: DaemonConfig | None = None
     bridges: dict[str, BridgeConfig] = field(default_factory=dict)
     config_path: Path | None = None
 
@@ -151,6 +162,17 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
         section_limit=int(trust_data.get("section_limit", 5)),
     )
 
+    daemon_data = data.get("daemon", {})
+    daemon_schedules = daemon_data.get("schedules", {})
+    daemon = DaemonConfig(
+        socket_path=_resolve_path(root, str(daemon_data.get("socket_path", "brain/data/mnemonic.sock"))),
+        pid_path=_resolve_path(root, str(daemon_data.get("pid_path", "brain/data/mnemonic.pid"))),
+        log_path=_resolve_path(root, str(daemon_data.get("log_path", "brain/logs/daemon.log"))),
+        schedules={str(name): str(schedule) for name, schedule in daemon_schedules.items()},
+        max_pending=int(daemon_data.get("max_pending", 200)),
+        max_oldest_age_minutes=int(daemon_data.get("max_oldest_age_minutes", 1440)),
+    )
+
     bridges: dict[str, BridgeConfig] = {}
     bridges_data = data.get("bridges")
     if bridges_data is None:
@@ -168,6 +190,7 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
         embeddings=embeddings,
         graph=graph,
         trust=trust,
+        daemon=daemon,
         bridges=bridges,
         config_path=resolved_config,
     )

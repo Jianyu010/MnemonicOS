@@ -76,6 +76,7 @@ class _Candidate:
     title: str
     type: str
     status: str | None
+    chain_id: str | None
     lifecycle_state: str | None
     body_path: str
     summary: str
@@ -141,7 +142,7 @@ def _classify_query(query: str, hint: str | None) -> tuple[str | None, float | N
 def _exact_hits(connection: sqlite3.Connection, query: str) -> list[sqlite3.Row]:
     rows = connection.execute(
         """
-        SELECT DISTINCT n.id, n.title, n.type, n.status, n.lifecycle_state, n.body_path, n.summary, ns.body,
+        SELECT DISTINCT n.id, n.title, n.type, n.status, n.chain_id, n.lifecycle_state, n.body_path, n.summary, ns.body,
                n.updated_at, n.created_at, n.last_verified_at
         FROM notes n
         JOIN notes_search ns ON ns.note_id = n.id
@@ -169,6 +170,7 @@ def _bm25_hits(connection: sqlite3.Connection, query: str, limit: int) -> list[s
             n.title,
             n.type,
             n.status,
+            n.chain_id,
             n.lifecycle_state,
             n.body_path,
             n.summary,
@@ -202,6 +204,7 @@ def _semantic_hits(connection: sqlite3.Connection, config: AppConfig, query: str
             n.title,
             n.type,
             n.status,
+            n.chain_id,
             n.lifecycle_state,
             n.body_path,
             n.summary,
@@ -305,6 +308,7 @@ def retrieve(
             title=str(row["title"]),
             type=str(row["type"]),
             status=str(row["status"]) if row["status"] is not None else None,
+            chain_id=str(row["chain_id"]) if row["chain_id"] is not None else None,
             lifecycle_state=str(row["lifecycle_state"]) if row["lifecycle_state"] is not None else None,
             body_path=str(row["body_path"]),
             summary=str(row["summary"] or ""),
@@ -331,6 +335,7 @@ def retrieve(
             title=str(row["title"]),
             type=str(row["type"]),
             status=str(row["status"]) if row["status"] is not None else None,
+            chain_id=str(row["chain_id"]) if row["chain_id"] is not None else None,
             lifecycle_state=str(row["lifecycle_state"]) if row["lifecycle_state"] is not None else None,
             body_path=str(row["body_path"]),
             summary=str(row["summary"] or ""),
@@ -358,6 +363,7 @@ def retrieve(
             title=str(row["title"]),
             type=str(row["type"]),
             status=str(row["status"]) if row["status"] is not None else None,
+            chain_id=str(row["chain_id"]) if row["chain_id"] is not None else None,
             lifecycle_state=str(row["lifecycle_state"]) if row["lifecycle_state"] is not None else None,
             body_path=str(row["body_path"]),
             summary=str(row["summary"] or ""),
@@ -387,6 +393,7 @@ def retrieve(
                 title=graph_hit.title,
                 type=graph_hit.type,
                 status=graph_hit.status,
+                chain_id=None,
                 lifecycle_state=None,
                 body_path=graph_hit.body_path,
                 summary=graph_hit.summary,
@@ -481,6 +488,7 @@ def retrieve(
                 title=candidate.title,
                 type=candidate.type,
                 status=candidate.status,
+                chain_id=candidate.chain_id,
                 freshness_state=freshness_state,
                 lifecycle_state=candidate.lifecycle_state,
                 body_path=candidate.body_path,
@@ -506,6 +514,7 @@ def retrieve(
                     title=f"Archive chunk {row['chunk_index']}",
                     type="archive_chunk",
                     status=None,
+                    chain_id=None,
                     freshness_state=None,
                     lifecycle_state=None,
                     body_path=str(row["archive_path"]),
