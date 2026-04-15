@@ -78,7 +78,7 @@ Promotion rules in brief:
 
 ## Agent Interface Layer
 
-The current README needed this layer called out explicitly: agents mostly talk to MnemonicOS through the orchestrator facade, not by stitching together low-level operations themselves.
+Agents mostly talk to MnemonicOS through the orchestrator facade, not by stitching together low-level operations themselves.
 
 ```mermaid
 sequenceDiagram
@@ -227,6 +227,76 @@ Typical setup:
 ```bash
 cp config/memory.example.toml config/memory.toml
 ```
+
+### Agent Adapters
+
+Claude Code and Codex do not currently integrate with MnemonicOS in the same way.
+
+Claude Code:
+
+- the Claude hooks are wired globally through `~/.claude/settings.json`
+- both the `claude` CLI and Claude Desktop use that same settings file
+- once the hooks are installed, MnemonicOS behavior is available automatically in new Claude sessions
+- restarting Claude Desktop is enough for hook changes to take effect
+
+Codex:
+
+- Codex uses the `mnemonicos-bridge` skill installed into `~/.codex/skills/` or `$CODEX_HOME/skills/`
+- install or refresh it with:
+
+```bash
+scripts/install_codex_skill.sh
+```
+
+- after installing or refreshing the skill, starting a new Codex session is the safest way to pick it up
+- if you use a custom `CODEX_HOME`, the installer and the Codex runtime must use the same `CODEX_HOME`
+- the current Codex skill expects the repo-local shared scripts under `scripts/`
+- in practice, Codex should be started in this repo, or in another workspace that also contains the same `scripts/mnemonic_*.sh` files
+
+Current Codex caveat:
+
+- the Codex skill is script-based, not hook-based
+- that means the current MnemonicOS on/off switch does not fully disable direct Codex skill usage
+- for Codex testing, disabling MnemonicOS currently means either not invoking the skill or running in a workspace where those shared scripts are not wired in
+
+### Adapter Switch
+
+The current MnemonicOS testing switch is implemented in the Claude hook adapters:
+
+- `scripts/mnemonic_hook_preflight.sh`
+- `scripts/mnemonic_stop_hook.sh`
+
+It supports two mechanisms.
+
+Persistent file flag:
+
+```bash
+touch config/mnemo_disabled
+rm config/mnemo_disabled
+```
+
+Per-session environment variable:
+
+```bash
+MNEMO_ENABLED=0 claude
+```
+
+Behavior:
+
+- when disabled, both Claude hooks exit `0` immediately
+- retrieval is skipped
+- writeback is skipped
+- `MNEMO_ENABLED=0` takes precedence and is the cleaner per-session testing option
+
+Practical summary:
+
+- Claude normal use, CLI: run `claude`
+- Claude normal use, Desktop: open the app
+- Claude disable for one session: `MNEMO_ENABLED=0 claude`
+- Claude disable persistently: create `config/mnemo_disabled`
+- Claude re-enable: remove `config/mnemo_disabled`
+- Codex normal use: install `mnemonicos-bridge`, start Codex in this repo, and invoke the skill
+- Codex caveat: the current switch does not automatically disable direct skill/script calls
 
 ### Main CLI: installed entrypoints
 
