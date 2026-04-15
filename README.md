@@ -92,9 +92,14 @@ sequenceDiagram
     RT->>DB: retrieve + assess
     RT-->>Orch: memory packet
     Orch-->>Agent: context_markdown + query_id + task_id
-    Agent->>Orch: mark_failure(...) or finish_task(...)
-    Orch->>RT: record_outcome(...) + decide_writeback(...)
-    Orch-->>Agent: refreshed context or writeback decision
+    Agent->>Orch: mark_failure(...)
+    Orch->>RT: record_outcome(...)
+    Orch->>RT: resolve_task_context(...)
+    Orch-->>Agent: refreshed context
+    Agent->>Orch: finish_task(...)
+    Orch->>RT: record_outcome(...)
+    Orch->>RT: decide_writeback(...)
+    Orch-->>Agent: writeback decision
 ```
 
 This layer currently gives agents:
@@ -103,9 +108,22 @@ This layer currently gives agents:
 - `mark_failure`: record a failed attempt and re-resolve context with the same `task_id`
 - `finish_task`: record the final outcome and return a writeback decision
 
-## API Surface
+## Integration Surfaces
 
-Local HTTP endpoints in `api/openapi.yaml` and `server.py`:
+MnemonicOS has one core logical API and several transports/adapters around it.
+
+Core logical API:
+
+- runtime operations in `runtime.py`: `resolve_task_context`, `record_outcome`, `decide_writeback`, `run_maintenance`
+- agent-facing orchestration in `orchestrator.py`: `begin_task`, `mark_failure`, `finish_task`
+
+Common access paths:
+
+- CLI: `mnemonicos ...`
+- shared scripts in `scripts/`
+- local HTTP server in `server.py`
+
+HTTP transport:
 
 - `GET /v1/health`
 - `POST /v1/retrieve`
@@ -146,8 +164,9 @@ Practical rule:
 - `src/second_brain/retrieval.py`: hybrid retrieval and reranking
 - `src/second_brain/ingest.py`: archive intake and promotion helpers
 - `src/second_brain/bridge.py`: summary parsing, chain inference, and candidate selection
+- `src/second_brain/daemon_jobs.py`: cron schedule parsing and job registry
 - `src/second_brain/jobs.py`: queue workers, backfill, consolidation, hygiene, status
-- `src/second_brain/daemon.py`: Unix-socket daemon and scheduler
+- `src/second_brain/daemon.py`: Unix-socket daemon and service lifecycle
 - `src/second_brain/server.py`: local HTTP transport
 
 ## How To Use
@@ -224,7 +243,14 @@ mnemonicos daemon run-job process_promotion_queue
 mnemonicos server --host 127.0.0.1 --port 8000
 ```
 
-Daemon-only shortcut:
+Daemon behavior:
+
+- `mnemonicos daemon start` starts the daemon in the background
+- `mnemonicos daemon status` checks whether the background daemon is reachable
+- `mnemonicos daemon stop` stops the background daemon
+- `mnemonicos-daemon` runs the daemon in the foreground in the current terminal
+
+Foreground daemon entrypoint:
 
 ```bash
 mnemonicos-daemon
@@ -251,22 +277,13 @@ Start the local API server:
 mnemonicos server --host 127.0.0.1 --port 8000
 ```
 
-Main HTTP endpoints:
-
-- `GET /v1/health`
-- `POST /v1/retrieve`
-- `POST /v1/ingest/session`
-- `POST /v1/sync/vault`
-- `POST /v1/jobs/run`
-- `POST /v1/orchestrator/begin-task`
-- `POST /v1/orchestrator/mark-failure`
-- `POST /v1/orchestrator/finish-task`
+The canonical HTTP endpoint list is in **Integration Surfaces** above and the schema lives in `api/openapi.yaml`.
 
 ## Where To Look Next
 
-- [docs/RUNTIME_PROTOCOL.md](/Users/jianyulong/ai_memory/docs/RUNTIME_PROTOCOL.md:1)
-- [api/openapi.yaml](/Users/jianyulong/ai_memory/api/openapi.yaml:1)
-- [src/second_brain/orchestrator.py](/Users/jianyulong/ai_memory/src/second_brain/orchestrator.py:1)
-- [src/second_brain/runtime.py](/Users/jianyulong/ai_memory/src/second_brain/runtime.py:1)
-- [src/second_brain/ingest.py](/Users/jianyulong/ai_memory/src/second_brain/ingest.py:1)
-- [src/second_brain/jobs.py](/Users/jianyulong/ai_memory/src/second_brain/jobs.py:1)
+- [docs/RUNTIME_PROTOCOL.md](docs/RUNTIME_PROTOCOL.md)
+- [api/openapi.yaml](api/openapi.yaml)
+- [src/second_brain/orchestrator.py](src/second_brain/orchestrator.py)
+- [src/second_brain/runtime.py](src/second_brain/runtime.py)
+- [src/second_brain/ingest.py](src/second_brain/ingest.py)
+- [src/second_brain/jobs.py](src/second_brain/jobs.py)

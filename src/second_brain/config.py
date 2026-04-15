@@ -5,6 +5,9 @@ from pathlib import Path
 import tomllib
 
 
+_MODULE_ROOT = Path(__file__).resolve().parents[2]
+
+
 @dataclass(slots=True)
 class PathsConfig:
     workspace_root: Path
@@ -99,17 +102,47 @@ def _resolve_path(base_dir: Path, raw_value: str) -> Path:
     return (base_dir / path).resolve()
 
 
-def default_config_path(workspace_root: str | Path | None = None) -> Path:
-    root = Path(workspace_root or Path.cwd()).resolve()
+def _config_in_workspace(root: Path) -> Path | None:
     primary = root / "config" / "memory.toml"
     if primary.exists():
         return primary.resolve()
+    example = root / "config" / "memory.example.toml"
+    if example.exists():
+        return example.resolve()
+    return None
+
+
+def _discover_workspace_root(start: str | Path | None = None) -> Path:
+    start_root = Path(start or Path.cwd()).resolve()
+    for candidate in (start_root, *start_root.parents):
+        if _config_in_workspace(candidate) is not None:
+            return candidate
+    if _config_in_workspace(_MODULE_ROOT) is not None:
+        return _MODULE_ROOT
+    return start_root
+
+
+def _workspace_root_from_config_path(config_path: Path) -> Path:
+    if config_path.parent.name == "config":
+        return config_path.parent.parent.resolve()
+    return config_path.parent.resolve()
+
+
+def default_config_path(workspace_root: str | Path | None = None) -> Path:
+    root = Path(workspace_root).resolve() if workspace_root is not None else _discover_workspace_root()
+    config = _config_in_workspace(root)
+    if config is not None:
+        return config
     return (root / "config" / "memory.example.toml").resolve()
 
 
 def load_config(config_path: str | Path | None = None, workspace_root: str | Path | None = None) -> AppConfig:
-    root = Path(workspace_root or Path.cwd()).resolve()
-    resolved_config = Path(config_path).resolve() if config_path is not None else default_config_path(root)
+    if config_path is None:
+        root = Path(workspace_root).resolve() if workspace_root is not None else _discover_workspace_root()
+        resolved_config = default_config_path(root)
+    else:
+        resolved_config = Path(config_path).resolve()
+        root = Path(workspace_root).resolve() if workspace_root is not None else _workspace_root_from_config_path(resolved_config)
     data = tomllib.loads(resolved_config.read_text())
 
     paths_data = data.get("paths", {})
