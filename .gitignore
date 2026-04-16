@@ -19,6 +19,15 @@ development/
 /brain/data/mnemonic.sock
 /brain/logs/
 
+# Local MnemonicOS live state and knowledge vault
+/brain/system/ACTIVE.md
+/brain/wiki/**
+!/brain/wiki/**/
+!/brain/wiki/**/.gitkeep
+/brain/raw/**
+!/brain/raw/**/
+!/brain/raw/**/.gitkeep
+
 # Obsidian local config
 /.obsidian/
 
