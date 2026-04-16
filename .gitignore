@@ -4,3 +4,24 @@ brain/data/archive.db
 brain/data/archive.db-shm
 brain/data/archive.db-wal
 development/
+
+# Build artifacts
+/src/mnemonicos.egg-info/
+
+# Claude Code worktrees
+/.claude/worktrees/
+
+# Local Claude settings
+/.claude/settings.local.json
+
+# Runtime artifacts
+/brain/data/mnemonic.pid
+/brain/data/mnemonic.sock
+/brain/logs/
+
+# Obsidian local config
+/.obsidian/
+
+# Empty scratch canvases
+/Untitled.canvas
+/Untitled *.canvas
