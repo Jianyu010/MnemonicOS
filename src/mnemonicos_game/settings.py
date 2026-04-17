@@ -24,4 +24,4 @@ class GameSettings:
 
     @property
     def title(self) -> str:
-        return "MnemonicOS Library RPG"
+        return "MenomicOS"

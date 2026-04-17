@@ -16,12 +16,13 @@ if str(SRC) not in sys.path:
 from mnemonicos_game.data.loader import BrainLoader
 from mnemonicos_game.data.watcher import WorldWatcher
 from mnemonicos_game.entities.daemon_npc import daemon_effective_state, daemon_state_label, daemon_status_line
-from mnemonicos_game.runtime import GameRuntime, PlayerState
-from mnemonicos_game.scene_helpers import choose_primary_thread_target, move_with_collision, scene_risk_profile
+from mnemonicos_game.main import build_bookmarks_overlay, build_onboarding_overlay, confirm_intake, dismiss_onboarding, handle_inspector_keys, handle_keydown, landmark_hint_key, landmark_hint_text, maybe_refresh_live_overlay, maybe_show_landmark_hint, open_bookmark_item, render_intake_session_markdown, run_board_action, run_board_maintenance_action, set_daemon_state, write_intake_session
+from mnemonicos_game.persistence import load_bookmarks, load_prefs, restore_runtime_state, save_bookmarks, save_prefs, save_runtime_state
+from mnemonicos_game.runtime import GamePrefs, GameRuntime, IntakeDraft, PlayerState
+from mnemonicos_game.scene_helpers import choose_primary_thread_target, daemon_greeting_active, decompose_capped_triangular_piles, move_with_collision, portal_pulse_strength, scene_risk_profile, sorting_carry_offset
 from mnemonicos_game.services.digest import build_indexes
-from mnemonicos_game.main import handle_inspector_keys, maybe_refresh_live_overlay, run_board_action, run_board_maintenance_action, set_daemon_state
 from mnemonicos_game.ui.markdown_renderer import render_lines
-from mnemonicos_game.world.tilemap import LayoutObject, build_library_layout
+from mnemonicos_game.world.tilemap import LayoutObject, build_dungeon_layout, build_library_layout
 from mnemonicos_game.world.routing import related_section_keys
 from mnemonicos_game.scene_helpers import decompose_triangular_piles
 
@@ -150,6 +151,30 @@ class LibraryRpgMechanicsTest(unittest.TestCase):
             self.assertEqual(runtime.follow_thread_source, "procedure/open-daemon-counter")
             self.assertTrue(runtime.follow_thread_sections)
             self.assertEqual(runtime.daemon_state, "guiding")
+            self.assertEqual(runtime.overlay.title, "Thread Trail")
+            self.assertIn("Example notes:", runtime.overlay.body)
+
+    def test_global_f_clears_follow_thread_without_returning_to_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            _seed_workspace(workspace)
+            snapshot = BrainLoader(workspace).load()
+            runtime = GameRuntime(
+                settings=types.SimpleNamespace(window_width=1280, window_height=720, workspace_root=workspace),
+                snapshot=snapshot,
+                indexes=build_indexes(snapshot),
+                scenes={"library": build_library_layout(snapshot)},
+                current_scene="library",
+                player=PlayerState(100, 100),
+            )
+            runtime.follow_thread_source = "procedure/open-daemon-counter"
+            runtime.follow_thread_sections = ["concepts"]
+            runtime.overlay.mode = "none"
+            fake_pygame = types.SimpleNamespace(K_f=70)
+            handle_keydown(runtime, fake_pygame.K_f, fake_pygame)
+            self.assertIsNone(runtime.follow_thread_source)
+            self.assertEqual(runtime.follow_thread_sections, [])
+            self.assertEqual(runtime.status_line, "Thread trail cleared.")
 
     def test_daemon_state_label_prefers_runtime_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -166,6 +191,332 @@ class LibraryRpgMechanicsTest(unittest.TestCase):
             self.assertEqual(daemon_state_label(runtime, "Maintaining the stacks"), "Tracing a thread")
             set_daemon_state(runtime, "consulting", 1.0)
             self.assertEqual(runtime.daemon_state, "consulting")
+
+    def test_bookmarks_persist_and_drop_stale_refs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            _seed_workspace(workspace)
+            snapshot = BrainLoader(workspace).load()
+            indexes = build_indexes(snapshot)
+            save_bookmarks(
+                workspace,
+                [
+                    "procedure/open-daemon-counter",
+                    "2026-04-16-120000-codex-task-build-library",
+                    "missing/ref",
+                ],
+            )
+            loaded = load_bookmarks(
+                workspace,
+                valid_refs=set(indexes.note_by_id) | set(indexes.session_by_slug),
+            )
+            self.assertEqual(
+                loaded,
+                [
+                    "procedure/open-daemon-counter",
+                    "2026-04-16-120000-codex-task-build-library",
+                ],
+            )
+
+    def test_restore_runtime_state_applies_valid_saved_position(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            _seed_workspace(workspace)
+            snapshot = BrainLoader(workspace).load()
+            scenes = {
+                "library": build_library_layout(snapshot),
+                "vault": build_dungeon_layout(snapshot),
+            }
+            runtime = GameRuntime(
+                settings=types.SimpleNamespace(window_width=1280, window_height=720, workspace_root=workspace),
+                snapshot=snapshot,
+                indexes=build_indexes(snapshot),
+                scenes=scenes,
+                current_scene="library",
+                player=PlayerState(*scenes["library"].player_start),
+            )
+            runtime.current_scene = "vault"
+            runtime.player.x = 88
+            runtime.player.y = 144
+            runtime.bookmarks = ["procedure/open-daemon-counter"]
+            save_runtime_state(runtime)
+            restored = GameRuntime(
+                settings=types.SimpleNamespace(window_width=1280, window_height=720, workspace_root=workspace),
+                snapshot=snapshot,
+                indexes=build_indexes(snapshot),
+                scenes=scenes,
+                current_scene="library",
+                player=PlayerState(*scenes["library"].player_start),
+            )
+            self.assertTrue(restore_runtime_state(restored))
+            self.assertEqual(restored.current_scene, "vault")
+            self.assertEqual((restored.player.x, restored.player.y), (88.0, 144.0))
+            self.assertEqual(restored.bookmarks, ["procedure/open-daemon-counter"])
+
+    def test_restore_runtime_state_rejects_invalid_scene(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            _seed_workspace(workspace)
+            snapshot = BrainLoader(workspace).load()
+            scenes = {"library": build_library_layout(snapshot)}
+            runtime = GameRuntime(
+                settings=types.SimpleNamespace(window_width=1280, window_height=720, workspace_root=workspace),
+                snapshot=snapshot,
+                indexes=build_indexes(snapshot),
+                scenes=scenes,
+                current_scene="library",
+                player=PlayerState(*scenes["library"].player_start),
+            )
+            (workspace / "brain/game").mkdir(parents=True, exist_ok=True)
+            (workspace / "brain/game/state.json").write_text(
+                '{\n  "scene": "vault",\n  "x": 10,\n  "y": 10,\n  "bookmarks": ["procedure/open-daemon-counter"]\n}\n'
+            )
+            self.assertFalse(restore_runtime_state(runtime))
+            self.assertEqual(runtime.current_scene, "library")
+            self.assertEqual((runtime.player.x, runtime.player.y), scenes["library"].player_start)
+
+    def test_bookmarks_panel_supports_remove_and_jump(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            _seed_workspace(workspace)
+            snapshot = BrainLoader(workspace).load()
+            scenes = {
+                "library": build_library_layout(snapshot),
+                "vault": build_dungeon_layout(snapshot),
+            }
+            runtime = GameRuntime(
+                settings=types.SimpleNamespace(window_width=1280, window_height=720, workspace_root=workspace),
+                snapshot=snapshot,
+                indexes=build_indexes(snapshot),
+                scenes=scenes,
+                current_scene="library",
+                player=PlayerState(100, 100),
+            )
+            runtime.bookmarks = [
+                "procedure/open-daemon-counter",
+                "2026-04-16-120000-codex-task-build-library",
+            ]
+            save_bookmarks(workspace, runtime.bookmarks)
+            runtime.overlay = build_bookmarks_overlay(runtime)
+            fake_pygame = types.SimpleNamespace(
+                K_ESCAPE=27,
+                K_TAB=9,
+                K_DOWN=40,
+                K_s=83,
+                K_UP=38,
+                K_w=87,
+                K_RETURN=13,
+                K_SPACE=32,
+                K_d=68,
+                K_DELETE=127,
+                K_BACKSPACE=8,
+            )
+            handle_keydown(runtime, fake_pygame.K_d, fake_pygame)
+            self.assertEqual(runtime.bookmarks, ["2026-04-16-120000-codex-task-build-library"])
+            runtime.overlay = build_bookmarks_overlay(runtime)
+            open_bookmark_item(runtime, runtime.overlay.browser_items[0])
+            self.assertEqual(runtime.current_scene, "vault")
+            self.assertIn("2026-04-16-120000-codex-task-build-library", runtime.overlay.title)
+
+    def test_jump_to_source_opens_session_overlay(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            _seed_workspace(workspace)
+            snapshot = BrainLoader(workspace).load()
+            runtime = GameRuntime(
+                settings=types.SimpleNamespace(window_width=1280, window_height=720, workspace_root=workspace),
+                snapshot=snapshot,
+                indexes=build_indexes(snapshot),
+                scenes={"library": build_library_layout(snapshot), "vault": build_dungeon_layout(snapshot)},
+                current_scene="library",
+                player=PlayerState(100, 100),
+            )
+            runtime.focused_entry_id = "procedure/open-daemon-counter"
+            runtime.overlay.mode = "inspect"
+            fake_pygame = types.SimpleNamespace(K_DOWN=-1, K_s=-1, K_UP=-1, K_w=-1, K_b=-1, K_j=74, K_f=-1)
+            handle_inspector_keys(runtime, fake_pygame.K_j, fake_pygame)
+            self.assertEqual(runtime.current_scene, "vault")
+            self.assertEqual(runtime.overlay.mode, "inspect")
+            self.assertIn("2026-04-16-120000-codex-task-build-library", runtime.overlay.title)
+
+    def test_bookmark_hotkey_saves_open_session_inspector(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            _seed_workspace(workspace)
+            snapshot = BrainLoader(workspace).load()
+            runtime = GameRuntime(
+                settings=types.SimpleNamespace(window_width=1280, window_height=720, workspace_root=workspace),
+                snapshot=snapshot,
+                indexes=build_indexes(snapshot),
+                scenes={"vault": build_dungeon_layout(snapshot)},
+                current_scene="vault",
+                player=PlayerState(100, 100),
+            )
+            runtime.focused_session_slug = "2026-04-16-120000-codex-task-build-library"
+            runtime.overlay.mode = "inspect"
+            fake_pygame = types.SimpleNamespace(K_DOWN=-1, K_s=-1, K_UP=-1, K_w=-1, K_b=66, K_j=-1, K_f=-1)
+            handle_inspector_keys(runtime, fake_pygame.K_b, fake_pygame)
+            self.assertEqual(runtime.bookmarks, ["2026-04-16-120000-codex-task-build-library"])
+
+    def test_escape_return_keeps_overlay_in_place(self) -> None:
+        runtime = GameRuntime(
+            settings=types.SimpleNamespace(window_width=1280, window_height=720, workspace_root=Path("/tmp")),
+            snapshot=types.SimpleNamespace(),
+            indexes=types.SimpleNamespace(note_by_id={}, session_by_slug={}),
+            scenes={},
+            current_scene="library",
+            player=PlayerState(0, 0),
+        )
+        runtime.overlay = types.SimpleNamespace(mode="inspect")
+        runtime.overlay_return = types.SimpleNamespace(mode="daemon")
+        runtime.overlay_slide = 0.35
+        fake_pygame = types.SimpleNamespace(K_ESCAPE=27)
+        handle_keydown(runtime, fake_pygame.K_ESCAPE, fake_pygame)
+        self.assertEqual(runtime.overlay.mode, "daemon")
+        self.assertEqual(runtime.overlay_slide, 1.0)
+
+    def test_library_layout_uses_compact_rules_wall_with_four_posts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            _seed_workspace(workspace)
+            snapshot = BrainLoader(workspace).load()
+            layout = build_library_layout(snapshot)
+            wall = next(obj for obj in layout.objects if obj.kind == "bulletin-wall")
+            notes = [obj for obj in layout.objects if obj.kind == "bulletin-note"]
+            self.assertEqual(wall.label, "RULES")
+            self.assertLessEqual(wall.width, 88)
+            self.assertEqual(len(notes), 4)
+
+    def test_capped_scroll_piles_never_exceed_three_layers(self) -> None:
+        self.assertEqual(decompose_capped_triangular_piles(6, max_base=3), [3])
+        self.assertEqual(decompose_capped_triangular_piles(7, max_base=3), [3, 1])
+        piles = decompose_capped_triangular_piles(20, max_base=3)
+        self.assertTrue(all(base <= 3 for base in piles))
+        self.assertEqual(sum(base * (base + 1) // 2 for base in piles), 20)
+
+    def test_daemon_greeting_uses_spatial_distance(self) -> None:
+        runtime = types.SimpleNamespace(player=PlayerState(100, 100))
+        near_rect = _Rect(150, 120, 80, 60)
+        far_rect = _Rect(400, 400, 80, 60)
+        self.assertTrue(daemon_greeting_active(runtime, near_rect))
+        self.assertFalse(daemon_greeting_active(runtime, far_rect))
+
+    def test_sorting_carry_offset_stays_small(self) -> None:
+        dx, dy = sorting_carry_offset(1.25)
+        self.assertLessEqual(abs(dx), 5)
+        self.assertLessEqual(abs(dy), 2)
+
+    def test_portal_pulse_strength_prefers_library_scene(self) -> None:
+        self.assertGreater(portal_pulse_strength("library", 0.0), portal_pulse_strength("vault", 0.0))
+        self.assertNotEqual(portal_pulse_strength("library", 0.0), portal_pulse_strength("library", 0.5))
+
+    def test_offer_scroll_starts_intake_ritual(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            _seed_workspace(workspace)
+            snapshot = BrainLoader(workspace).load()
+            runtime = GameRuntime(
+                settings=types.SimpleNamespace(window_width=1280, window_height=720, workspace_root=workspace),
+                snapshot=snapshot,
+                indexes=build_indexes(snapshot),
+                scenes={"library": build_library_layout(snapshot)},
+                current_scene="library",
+                player=PlayerState(100, 100),
+            )
+            runtime.overlay.mode = "daemon"
+            runtime.overlay.menu_index = 4
+            from mnemonicos_game.main import run_daemon_action
+            run_daemon_action(runtime)
+            self.assertEqual(runtime.overlay.mode, "intake")
+            self.assertEqual(runtime.intake.step, 0)
+
+    def test_intake_writer_archives_raw_session_markdown(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            draft = IntakeDraft(source="meeting notes", title="Library Intake", summary="A short bounded ritual summary.", item_type="concept")
+            path = write_intake_session(workspace, draft)
+            self.assertTrue(path.exists())
+            content = path.read_text()
+            self.assertIn("title: Library Intake", content)
+            self.assertIn("intake_type: concept", content)
+            self.assertIn("intake_source: meeting notes", content)
+            self.assertIn("A short bounded ritual summary.", content)
+
+    def test_confirm_intake_updates_runtime_and_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            _seed_workspace(workspace)
+            snapshot = BrainLoader(workspace).load()
+            runtime = GameRuntime(
+                settings=types.SimpleNamespace(window_width=1280, window_height=720, workspace_root=workspace),
+                snapshot=snapshot,
+                indexes=build_indexes(snapshot),
+                scenes={"library": build_library_layout(snapshot)},
+                current_scene="library",
+                player=PlayerState(100, 100),
+            )
+            runtime.intake = IntakeDraft(
+                step=4,
+                source="chat log",
+                title="Daemon Counter Followup",
+                summary="Captured a followup from the counter ritual.",
+                item_type="incident",
+            )
+            path = confirm_intake(runtime)
+            self.assertIsNotNone(path)
+            self.assertEqual(runtime.intake.status, "archived")
+            self.assertEqual(runtime.intake.step, 5)
+            self.assertEqual(runtime.daemon_state, "sorting")
+
+    def test_render_intake_session_markdown_preview(self) -> None:
+        draft = IntakeDraft(source="field report", title="Rules Board", summary="Summary text here.", item_type="procedure")
+        preview = render_intake_session_markdown(draft, "2026-04-17-120000")
+        self.assertIn("created_at: 2026-04-17", preview)
+        self.assertIn("Suggested type: procedure", preview)
+
+    def test_prefs_round_trip_onboarding_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            save_prefs(workspace, GamePrefs(onboarding_dismissed=True))
+            prefs = load_prefs(workspace)
+            self.assertTrue(prefs.onboarding_dismissed)
+
+    def test_dismiss_onboarding_updates_prefs_and_overlay(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            runtime = GameRuntime(
+                settings=types.SimpleNamespace(window_width=1280, window_height=720, workspace_root=workspace),
+                snapshot=types.SimpleNamespace(),
+                indexes=types.SimpleNamespace(note_by_id={}, session_by_slug={}),
+                scenes={},
+                current_scene="library",
+                player=PlayerState(0, 0),
+            )
+            runtime.overlay = build_onboarding_overlay()
+            dismiss_onboarding(runtime)
+            self.assertEqual(runtime.overlay.mode, "none")
+            self.assertTrue(load_prefs(workspace).onboarding_dismissed)
+
+    def test_landmark_hint_shows_once_for_daemon(self) -> None:
+        daemon = types.SimpleNamespace(kind="daemon")
+        runtime = GameRuntime(
+            settings=types.SimpleNamespace(window_width=1280, window_height=720, workspace_root=Path("/tmp")),
+            snapshot=types.SimpleNamespace(),
+            indexes=types.SimpleNamespace(note_by_id={}, session_by_slug={}),
+            scenes={},
+            current_scene="library",
+            player=PlayerState(0, 0),
+        )
+        runtime.overlay = types.SimpleNamespace(mode="none")
+        runtime.nearest_object_id = "daemon:counter"
+        from mnemonicos_game.main import current_object as _unused
+        runtime.scenes = {"library": types.SimpleNamespace(objects=[types.SimpleNamespace(object_id="daemon:counter", kind="daemon")])}
+        maybe_show_landmark_hint(runtime)
+        first = runtime.status_line
+        maybe_show_landmark_hint(runtime)
+        self.assertEqual(first, landmark_hint_text("daemon"))
+        self.assertEqual(runtime.status_line, first)
+        self.assertIn("daemon", runtime.seen_landmark_hints)
 
     def test_notice_board_status_action_opens_formatted_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

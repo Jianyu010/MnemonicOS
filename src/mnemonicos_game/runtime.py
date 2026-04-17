@@ -28,6 +28,14 @@ BOARD_MAINTENANCE_MENU = [
     "Run status report",
 ]
 
+INTAKE_TYPES = [
+    "concept",
+    "procedure",
+    "incident",
+    "decision",
+    "people",
+]
+
 
 @dataclass(slots=True)
 class PlayerState:
@@ -63,6 +71,23 @@ class OverlayState:
 
 
 @dataclass(slots=True)
+class IntakeDraft:
+    step: int = 0
+    source: str = ""
+    title: str = ""
+    summary: str = ""
+    item_type: str = INTAKE_TYPES[0]
+    status: str = "draft"
+    last_written_path: str | None = None
+    error: str = ""
+
+
+@dataclass(slots=True)
+class GamePrefs:
+    onboarding_dismissed: bool = False
+
+
+@dataclass(slots=True)
 class GameRuntime:
     settings: GameSettings
     snapshot: WorldSnapshot
@@ -72,6 +97,7 @@ class GameRuntime:
     player: PlayerState
     overlay: OverlayState = field(default_factory=OverlayState)
     focused_entry_id: str | None = None
+    focused_session_slug: str | None = None
     nearest_object_id: str | None = None
     bookmarks: list[str] = field(default_factory=list)
     status_line: str = "Explore the library. Press Space to inspect, TAB for bookmarks, ESC to quit."
@@ -97,6 +123,10 @@ class GameRuntime:
     overlay_live_refreshed_at: float = 0.0
     daemon_socket_state: str = "unconfigured"
     daemon_socket_checked_at: float = 0.0
+    intake: IntakeDraft = field(default_factory=IntakeDraft)
+    prefs: GamePrefs = field(default_factory=GamePrefs)
+    seen_landmark_hints: set[str] = field(default_factory=set)
+    pending_world_reload: bool = False
 
 
 def switch_scene(runtime: GameRuntime, scene_name: str) -> None:

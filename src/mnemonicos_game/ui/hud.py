@@ -2,7 +2,11 @@ from __future__ import annotations
 
 
 def draw_hud_legend(surface, tiny_font, pygame) -> None:
-    panel = pygame.Rect(18, 72, 260, 112)
+    width = surface.get_width()
+    height = surface.get_height()
+    panel_width = 260 if width >= 1200 else 220
+    panel_height = 112 if height >= 720 else 100
+    panel = pygame.Rect(18, 72, panel_width, panel_height)
     pygame.draw.rect(surface, (33, 27, 22), panel, border_radius=10)
     pygame.draw.rect(surface, (90, 75, 60), panel, 2, border_radius=10)
     title = tiny_font.render("Trust / Freshness", True, (226, 214, 189))
@@ -15,7 +19,8 @@ def draw_hud_legend(surface, tiny_font, pygame) -> None:
         ((120, 120, 120), "stale / weak provenance"),
     ]
     for index, (color, label) in enumerate(items):
-        cy = panel.y + 32 + index * 15
+        spacing = 15 if panel_height >= 112 else 13
+        cy = panel.y + 32 + index * spacing
         pygame.draw.circle(surface, color, (panel.x + 16, cy + 4), 4)
         text = tiny_font.render(label, True, (214, 204, 188))
         surface.blit(text, (panel.x + 28, cy - 2))

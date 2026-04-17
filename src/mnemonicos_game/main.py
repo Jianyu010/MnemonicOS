@@ -4,8 +4,10 @@ import argparse
 import sys
 from time import monotonic
 from pathlib import Path
+from datetime import datetime
 
 from second_brain.config import default_config_path, load_config
+from second_brain.review import slugify
 
 from .assets import load_assets
 from .data.loader import BrainLoader
@@ -14,7 +16,8 @@ from .data.watcher import WorldWatcher
 from .engine import AnimationClock, SoundManager, ease_out_quad
 from .entities.daemon_npc import read_daemon_log, read_daemon_status_report, run_daemon_status_report_job
 from .entities.marker import entry_color, freshness_label
-from .runtime import BOARD_MAINTENANCE_MENU, BOARD_MENU, BrowserItem, DAEMON_MENU, GameRuntime, OverlayState, PlayerState, switch_scene
+from .persistence import load_bookmarks, load_prefs, restore_runtime_state, save_bookmarks, save_prefs, save_runtime_state, sync_bookmarks
+from .runtime import BOARD_MAINTENANCE_MENU, BOARD_MENU, BrowserItem, DAEMON_MENU, GameRuntime, INTAKE_TYPES, IntakeDraft, OverlayState, PlayerState, switch_scene
 from .scenes import DungeonScene, LibraryScene
 from .services.digest import build_guidance, build_indexes, build_linked_digest, build_provenance, resolve_jump_candidates
 from .settings import GameSettings
@@ -24,7 +27,7 @@ from .world.tilemap import build_dungeon_layout, build_library_layout
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="MnemonicOS Library RPG")
+    parser = argparse.ArgumentParser(description="MenomicOS")
     parser.add_argument("--root", type=Path, default=None, help="Workspace root containing brain/")
     parser.add_argument("--dump-world", action="store_true", help="Print a world summary and exit")
     parser.add_argument("--check", action="store_true", help="Validate the game data wiring and exit")
@@ -58,7 +61,7 @@ def run_game(settings: GameSettings, snapshot: WorldSnapshot) -> int:
         import pygame
     except ModuleNotFoundError:
         print(
-            "pygame-ce is required to launch the MnemonicOS Library RPG window.\n"
+            "pygame-ce is required to launch the MenomicOS window.\n"
             "Install project dependencies, then rerun `mnemonicos-game`.",
             file=sys.stderr,
         )
@@ -81,6 +84,18 @@ def run_game(settings: GameSettings, snapshot: WorldSnapshot) -> int:
         player=PlayerState(*layouts["library"].player_start),
         watcher=WorldWatcher(settings.workspace_root),
     )
+    runtime.prefs = load_prefs(settings.workspace_root)
+    valid_refs = set(runtime.indexes.note_by_id) | set(runtime.indexes.session_by_slug)
+    saved_state = restore_runtime_state(runtime)
+    runtime.bookmarks = load_bookmarks(
+        settings.workspace_root,
+        valid_refs=valid_refs,
+        fallback_refs=list(runtime.bookmarks if saved_state else []),
+    )
+    if not runtime.prefs.onboarding_dismissed:
+        runtime.overlay = build_onboarding_overlay()
+        runtime.overlay_slide = 1.0
+        runtime.status_line = "Welcome to MenomicOS."
     maybe_refresh_daemon_socket(runtime, force=True)
     if runtime.watcher is not None:
         runtime.watcher.prime()
@@ -93,11 +108,10 @@ def run_game(settings: GameSettings, snapshot: WorldSnapshot) -> int:
         animation_clock = AnimationClock()
         sound_manager = SoundManager(pygame, runtime.assets)
         sound_manager.music_start(runtime.current_scene)
-        font = pygame.font.Font(None, 32)
-        small_font = pygame.font.Font(None, 24)
-        tiny_font = pygame.font.Font(None, 20)
+        font, small_font, tiny_font = build_ui_fonts(settings, pygame)
         clock = pygame.time.Clock()
         running = True
+        save_on_exit = False
         while running:
             dt = clock.tick(settings.fps) / 1000.0
             animation_clock.update(runtime, dt)
@@ -106,9 +120,10 @@ def run_game(settings: GameSettings, snapshot: WorldSnapshot) -> int:
                     running = False
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE and runtime.overlay.mode == "none":
+                        save_on_exit = True
                         running = False
                     else:
-                        handle_keydown(runtime, event.key, pygame, sound_manager)
+                        handle_keydown(runtime, event.key, pygame, sound_manager, getattr(event, "unicode", ""))
                 if event.type == pygame.MOUSEWHEEL:
                     handle_mouse_wheel(runtime, event.y)
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -123,11 +138,15 @@ def run_game(settings: GameSettings, snapshot: WorldSnapshot) -> int:
             else:
                 runtime.player_is_moving = False
                 scenes[runtime.current_scene].update(runtime, 0.0, pygame)
+            maybe_show_landmark_hint(runtime)
             update_step_audio(runtime, dt, sound_manager)
             scenes[runtime.current_scene].draw(screen, runtime, font, small_font, tiny_font, pygame)
             if runtime.overlay.mode != "none":
                 draw_overlay(screen, runtime, small_font, tiny_font, pygame)
             pygame.display.flip()
+        if save_on_exit:
+            save_bookmarks(settings.workspace_root, runtime.bookmarks)
+            save_runtime_state(runtime)
     finally:
         pygame.quit()
     return 0
@@ -135,7 +154,7 @@ def run_game(settings: GameSettings, snapshot: WorldSnapshot) -> int:
 
 def format_summary(snapshot: WorldSnapshot) -> str:
     lines = [
-        "MnemonicOS Library RPG",
+        "MenomicOS",
         f"Workspace: {snapshot.workspace_root}",
         f"Brain root: {snapshot.brain_root}",
         f"Notes: {len(snapshot.note_entries)}",
@@ -151,13 +170,39 @@ def format_summary(snapshot: WorldSnapshot) -> str:
     return "\n".join(lines)
 
 
-def handle_keydown(runtime: GameRuntime, key: int, pygame, sound_manager: SoundManager | None = None) -> None:
+def build_ui_fonts(settings: GameSettings, pygame):
+    scale = max(0.9, min(1.25, settings.window_height / 720.0))
+    title_size = max(28, int(round(32 * scale)))
+    small_size = max(22, int(round(24 * scale)))
+    tiny_size = max(18, int(round(20 * scale)))
+    return (
+        pygame.font.Font(None, title_size),
+        pygame.font.Font(None, small_size),
+        pygame.font.Font(None, tiny_size),
+    )
+
+
+def handle_keydown(runtime: GameRuntime, key: int, pygame, sound_manager: SoundManager | None = None, text: str = "") -> None:
+    if runtime.overlay.mode == "onboarding":
+        dismiss_onboarding(runtime)
+        if sound_manager is not None:
+            sound_manager.play("inspect_close")
+        return
+    if runtime.overlay.mode == "none" and key == pygame.K_f and runtime.follow_thread_source:
+        clear_follow_thread(runtime)
+        if sound_manager is not None:
+            sound_manager.play("inspect_close")
+        return
+    if runtime.overlay.mode == "intake":
+        handled = handle_intake_keys(runtime, key, pygame, sound_manager, text)
+        if handled:
+            return
     if key == pygame.K_ESCAPE:
         if runtime.overlay_return is not None:
             runtime.overlay = runtime.overlay_return
             runtime.overlay_return = None
             runtime.status_line = "Returned."
-            runtime.overlay_slide = 0.0
+            runtime.overlay_slide = 1.0
         else:
             runtime.overlay = OverlayState()
             runtime.status_line = "Closed overlay."
@@ -168,8 +213,31 @@ def handle_keydown(runtime: GameRuntime, key: int, pygame, sound_manager: SoundM
         handle_inspector_keys(runtime, key, pygame, sound_manager)
         return
     if runtime.overlay.mode == "bookmarks":
+        items = runtime.overlay.browser_items
         if key == pygame.K_TAB:
             runtime.overlay = OverlayState()
+        elif key in (pygame.K_DOWN, pygame.K_s) and items:
+            runtime.overlay.browser_cursor = min(runtime.overlay.browser_cursor + 1, len(items) - 1)
+            if runtime.overlay.browser_cursor >= runtime.overlay.browser_scroll + _shelf_page_size_for_runtime(runtime):
+                runtime.overlay.browser_scroll += 1
+            if sound_manager is not None:
+                sound_manager.play("menu_move")
+        elif key in (pygame.K_UP, pygame.K_w) and items:
+            runtime.overlay.browser_cursor = max(runtime.overlay.browser_cursor - 1, 0)
+            if runtime.overlay.browser_cursor < runtime.overlay.browser_scroll:
+                runtime.overlay.browser_scroll = runtime.overlay.browser_cursor
+            if sound_manager is not None:
+                sound_manager.play("menu_move")
+        elif key in (pygame.K_RETURN, pygame.K_SPACE) and items:
+            open_bookmark_item(runtime, items[runtime.overlay.browser_cursor])
+            if sound_manager is not None:
+                sound_manager.play("menu_confirm")
+        elif key in (pygame.K_d, pygame.K_DELETE, pygame.K_BACKSPACE) and items:
+            bookmark = items[runtime.overlay.browser_cursor].item_id
+            remove_bookmark(runtime, bookmark)
+            runtime.overlay = build_bookmarks_overlay(runtime)
+            if sound_manager is not None:
+                sound_manager.play("inspect_close")
         return
     if runtime.overlay.mode == "shelf":
         items = runtime.overlay.browser_items
@@ -252,7 +320,7 @@ def handle_keydown(runtime: GameRuntime, key: int, pygame, sound_manager: SoundM
     if key == pygame.K_SPACE:
         interact(runtime, sound_manager)
     elif key == pygame.K_TAB:
-        runtime.overlay = OverlayState(mode="bookmarks", title="Bookmarks", body="\n".join(runtime.bookmarks) or "No bookmarks yet.")
+        runtime.overlay = build_bookmarks_overlay(runtime)
 
 
 def handle_inspector_keys(runtime: GameRuntime, key: int, pygame, sound_manager: SoundManager | None = None) -> None:
@@ -264,10 +332,10 @@ def handle_inspector_keys(runtime: GameRuntime, key: int, pygame, sound_manager:
         runtime.overlay.scroll = max(0, runtime.overlay.scroll - 1)
         runtime.scroll_hold_direction = -1
         runtime.scroll_hold_elapsed = 0.0
-    elif key == pygame.K_b and runtime.focused_entry_id:
-        if runtime.focused_entry_id not in runtime.bookmarks:
-            runtime.bookmarks.append(runtime.focused_entry_id)
-        runtime.status_line = f"Bookmarked {runtime.focused_entry_id}."
+    elif key == pygame.K_b and (runtime.focused_entry_id or runtime.focused_session_slug):
+        bookmark_id = runtime.focused_entry_id or runtime.focused_session_slug
+        add_bookmark(runtime, bookmark_id)
+        runtime.status_line = f"Saved bookmark for {bookmark_id}. Press TAB to reopen it later."
         if sound_manager is not None:
             sound_manager.play("bookmark")
     elif key == pygame.K_j and runtime.focused_entry_id:
@@ -275,7 +343,7 @@ def handle_inspector_keys(runtime: GameRuntime, key: int, pygame, sound_manager:
         if entry is not None:
             candidates, reason = resolve_jump_candidates(entry, runtime.snapshot, runtime.indexes)
             if len(candidates) == 1:
-                jump_to_session(runtime, candidates[0])
+                jump_to_session(runtime, candidates[0], open_overlay=True)
                 set_daemon_state(runtime, "guiding", 4.0)
                 if sound_manager is not None:
                     sound_manager.play("jump_source")
@@ -293,11 +361,7 @@ def handle_inspector_keys(runtime: GameRuntime, key: int, pygame, sound_manager:
         entry = runtime.indexes.note_by_id.get(runtime.focused_entry_id)
         if entry is not None:
             if runtime.follow_thread_source == entry.note_id:
-                runtime.follow_thread_source = None
-                runtime.follow_thread_sections.clear()
-                runtime.status_line = "Thread trail cleared."
-                runtime.daemon_state = "idle"
-                runtime.daemon_state_until = 0.0
+                clear_follow_thread(runtime)
             else:
                 sections = related_section_keys(entry, runtime.snapshot)[:3]
                 if not sections:
@@ -307,6 +371,21 @@ def handle_inspector_keys(runtime: GameRuntime, key: int, pygame, sound_manager:
                     runtime.follow_thread_sections = sections
                     runtime.status_line = f"Thread trail projected toward {section_display_name(runtime, sections[0])}."
                     set_daemon_state(runtime, "guiding", 5.0)
+                    runtime.overlay_return = copy_overlay(runtime.overlay)
+                    runtime.overlay = OverlayState(
+                        mode="inspect",
+                        title="Thread Trail",
+                        body=build_follow_thread_report(entry, runtime),
+                    )
+                    runtime.overlay_slide = 1.0
+
+
+def clear_follow_thread(runtime: GameRuntime) -> None:
+    runtime.follow_thread_source = None
+    runtime.follow_thread_sections.clear()
+    runtime.status_line = "Thread trail cleared."
+    runtime.daemon_state = "idle"
+    runtime.daemon_state_until = 0.0
 
 
 def update_overlay_hold(runtime: GameRuntime, dt: float, pygame) -> None:
@@ -365,8 +444,11 @@ def maybe_reload_world(runtime: GameRuntime) -> None:
     if now - runtime.last_reload_poll_at < 1.0:
         return
     runtime.last_reload_poll_at = now
-    if not runtime.watcher.poll_changed():
+    if not runtime.pending_world_reload and runtime.watcher.poll_changed():
+        runtime.pending_world_reload = True
+    if not runtime.pending_world_reload:
         return
+    runtime.pending_world_reload = False
     loader = BrainLoader(runtime.settings.workspace_root)
     snapshot = loader.load()
     current_scene = runtime.current_scene
@@ -382,14 +464,21 @@ def maybe_reload_world(runtime: GameRuntime) -> None:
         runtime.current_scene = current_scene
     if current_entry and current_entry in runtime.indexes.note_by_id:
         runtime.focused_entry_id = current_entry
+    else:
+        runtime.focused_entry_id = None
+    if current_slug and current_slug in runtime.indexes.session_by_slug:
+        runtime.focused_session_slug = current_slug
     if current_slug and current_slug in runtime.indexes.session_by_slug:
         runtime.highlighted_session_slug = current_slug
+    else:
+        runtime.focused_session_slug = None
     if runtime.follow_thread_source and runtime.follow_thread_source in runtime.indexes.note_by_id:
         follow_entry = runtime.indexes.note_by_id[runtime.follow_thread_source]
         runtime.follow_thread_sections = related_section_keys(follow_entry, runtime.snapshot)[:3]
     elif runtime.follow_thread_source:
         runtime.follow_thread_source = None
         runtime.follow_thread_sections.clear()
+    sync_bookmarks(runtime)
     runtime.status_line = "The library shifted as the vault changed."
     set_daemon_state(runtime, "reloading", 4.0)
 
@@ -463,32 +552,35 @@ def find_anchor(runtime: GameRuntime, anchor_id: str):
     return None
 
 
-def jump_to_session(runtime: GameRuntime, book: GameBook) -> None:
+def jump_to_session(runtime: GameRuntime, book: GameBook, *, open_overlay: bool = False) -> None:
     runtime.current_scene = "vault"
     scene = runtime.scenes["vault"]
     target = next((obj for obj in scene.objects if obj.session_slug == book.session_slug), None)
+    runtime.focused_entry_id = None
+    runtime.focused_session_slug = book.session_slug
     if target is not None:
         runtime.player.x = max(20, target.x - 60)
         runtime.player.y = max(20, target.y - 20)
         runtime.highlighted_session_slug = book.session_slug
     else:
         runtime.player.x, runtime.player.y = scene.player_start
-    runtime.overlay = OverlayState()
-    runtime.status_line = f"Jumped to source session {book.session_slug}."
+    if open_overlay:
+        runtime.overlay = OverlayState(mode="inspect", title=book.title, body=book.body_path.read_text())
+        runtime.overlay_slide = 1.0
+        runtime.status_line = f"Jumped to source session {book.session_slug} and opened it."
+    else:
+        runtime.overlay = OverlayState()
+        runtime.status_line = f"Jumped to source session {book.session_slug}."
 
 
 def run_daemon_action(runtime: GameRuntime) -> None:
     selected = DAEMON_MENU[runtime.overlay.menu_index]
     entry = runtime.indexes.note_by_id.get(runtime.selected_daemon_target or runtime.focused_entry_id or "")
     if selected == "Offer a scroll":
-        body = (
-            "Offer a scroll\n\n"
-            "This ritual is intentionally bounded. In the roadmap it archives first, "
-            "routes through MnemonicOS intake, and avoids direct canonical editing.\n\n"
-            "Implementation note: write-path UI is not enabled in this vertical slice."
-        )
         runtime.overlay_return = copy_overlay(runtime.overlay)
-        runtime.overlay = OverlayState(mode="inspect", title="Offer A Scroll", body=body)
+        runtime.intake = IntakeDraft()
+        runtime.overlay = OverlayState(mode="intake", title="Offer A Scroll", body="")
+        runtime.status_line = "The daemon waits for the source of the offered scroll."
         return
     if entry is None:
         runtime.overlay_return = copy_overlay(runtime.overlay)
@@ -620,6 +712,9 @@ def draw_overlay(surface, runtime: GameRuntime, small_font, tiny_font, pygame) -
     if runtime.overlay.mode == "shelf":
         draw_shelf_overlay(surface, runtime, panel, small_font, tiny_font, pygame)
         return
+    if runtime.overlay.mode == "bookmarks":
+        draw_bookmarks_overlay(surface, runtime, panel, small_font, tiny_font, pygame)
+        return
 
     if runtime.overlay.mode == "picker":
         for index, item in enumerate(runtime.overlay.picker_candidates):
@@ -630,10 +725,13 @@ def draw_overlay(surface, runtime: GameRuntime, small_font, tiny_font, pygame) -
         help_line = tiny_font.render("Choose a raw session source. ENTER or Space to jump, ESC to cancel.", True, (90, 80, 70))
         surface.blit(help_line, (panel.x + 24, panel.bottom - 36))
         return
+    if runtime.overlay.mode == "intake":
+        draw_intake_overlay(surface, runtime, panel, small_font, tiny_font, pygame)
+        return
 
     lines = render_lines(runtime.overlay.body, 92)
     start = runtime.overlay.scroll
-    visible = lines[start : start + 24]
+    visible = lines[start : start + _overlay_body_line_capacity(panel)]
     for index, line in enumerate(visible):
         text = _render_markdown_line(line, small_font, tiny_font)
         surface.blit(text, (panel.x + 24, panel.y + 64 + index * 22))
@@ -641,7 +739,7 @@ def draw_overlay(surface, runtime: GameRuntime, small_font, tiny_font, pygame) -
     if runtime.overlay.mode == "inspect":
         footer_text += " | hold UP/DOWN scroll"
         if runtime.focused_entry_id:
-            footer_text += " | J jump-source | F follow-thread | B bookmark"
+            footer_text += " | J jump-source | F follow-thread | B save-bookmark"
     footer = tiny_font.render(footer_text, True, (90, 80, 70))
     surface.blit(footer, (panel.x + 24, panel.bottom - 36))
 
@@ -659,6 +757,15 @@ def _render_markdown_line(line, small_font, tiny_font):
     }
     color, font = style_colors.get(line.style, ((50, 40, 35), tiny_font))
     return font.render(line.text, True, color)
+
+
+def _overlay_body_line_capacity(panel) -> int:
+    top = panel.y + 64
+    footer_y = panel.bottom - 36
+    line_height = 22
+    reserved_gap = 16
+    available = max(0, footer_y - top - reserved_gap)
+    return max(1, available // line_height)
 
 
 def open_shelf_browser(runtime: GameRuntime, section_key: str) -> None:
@@ -693,6 +800,7 @@ def _open_browser_item(runtime: GameRuntime, hit: BrowserItem) -> None:
     if hit.kind == "entry":
         entry = runtime.indexes.note_by_id[hit.item_id]
         runtime.focused_entry_id = entry.note_id
+        runtime.focused_session_slug = None
         runtime.selected_daemon_target = entry.note_id
         runtime.overlay_return = copy_overlay(runtime.overlay)
         runtime.overlay = OverlayState(mode="inspect", title=entry.title, body=entry_body(entry))
@@ -702,6 +810,8 @@ def _open_browser_item(runtime: GameRuntime, hit: BrowserItem) -> None:
             set_daemon_state(runtime, "reviewing", 4.0)
     elif hit.kind == "book":
         book = runtime.indexes.session_by_slug[hit.item_id]
+        runtime.focused_entry_id = None
+        runtime.focused_session_slug = book.session_slug
         runtime.overlay_return = copy_overlay(runtime.overlay)
         runtime.overlay = OverlayState(mode="inspect", title=book.title, body=book.body_path.read_text())
         runtime.overlay_slide = 0.0
@@ -709,12 +819,15 @@ def _open_browser_item(runtime: GameRuntime, hit: BrowserItem) -> None:
 
 
 def handle_mouse_down(runtime: GameRuntime, pos: tuple[int, int], pygame) -> None:
-    if runtime.overlay.mode != "shelf":
+    if runtime.overlay.mode not in {"shelf", "bookmarks"}:
         return
     hit = shelf_item_at_pos(runtime, pos, pygame)
     if hit is None:
         return
-    _open_browser_item(runtime, hit)
+    if runtime.overlay.mode == "bookmarks":
+        open_bookmark_item(runtime, hit)
+    else:
+        _open_browser_item(runtime, hit)
 
 
 def handle_mouse_wheel(runtime: GameRuntime, delta_y: int) -> None:
@@ -724,7 +837,7 @@ def handle_mouse_wheel(runtime: GameRuntime, delta_y: int) -> None:
         elif delta_y > 0:
             runtime.overlay.scroll = max(0, runtime.overlay.scroll - 3)
         return
-    if runtime.overlay.mode == "shelf":
+    if runtime.overlay.mode in {"shelf", "bookmarks"}:
         if delta_y < 0:
             runtime.overlay.browser_scroll += 2
         elif delta_y > 0:
@@ -778,8 +891,408 @@ def section_display_name(runtime: GameRuntime, section_key: str) -> str:
     return section_key
 
 
+def build_bookmarks_overlay(runtime: GameRuntime) -> OverlayState:
+    items = []
+    stale_found = False
+    for bookmark in runtime.bookmarks:
+        if bookmark in runtime.indexes.note_by_id:
+            entry = runtime.indexes.note_by_id[bookmark]
+            items.append(BrowserItem(item_id=bookmark, kind="entry", label=entry.title, subtitle=f"{entry.note_type} • {bookmark}"))
+        elif bookmark in runtime.indexes.session_by_slug:
+            book = runtime.indexes.session_by_slug[bookmark]
+            items.append(BrowserItem(item_id=bookmark, kind="book", label=book.title, subtitle=f"session • {bookmark}"))
+        else:
+            stale_found = True
+    if stale_found:
+        sync_bookmarks(runtime)
+    body = "Saved routes through the stacks." if items else "No bookmarks yet."
+    return OverlayState(mode="bookmarks", title="Bookmarks", body=body, browser_items=items)
+
+
+def build_onboarding_overlay() -> OverlayState:
+    body = (
+        "Welcome to MenomicOS\n\n"
+        "Walk: WASD or arrow keys move through the library.\n"
+        "Inspect: Space opens the nearby shelf, board, stair, or note.\n"
+        "Trace: J jumps to a source session, and F projects a follow-thread trail.\n"
+        "Consult: Step to the daemon counter and press Space for bounded services.\n"
+        "Bookmark: B saves the current note or session, and TAB opens saved routes.\n\n"
+        "Press any key to begin."
+    )
+    return OverlayState(mode="onboarding", title="Welcome", body=body)
+
+
+def dismiss_onboarding(runtime: GameRuntime) -> None:
+    runtime.prefs.onboarding_dismissed = True
+    save_prefs(runtime.settings.workspace_root, runtime.prefs)
+    runtime.overlay = OverlayState()
+    runtime.overlay_slide = 0.0
+    runtime.status_line = "Explore the library."
+
+
+def maybe_show_landmark_hint(runtime: GameRuntime) -> None:
+    if runtime.overlay.mode != "none":
+        return
+    obj = current_object(runtime)
+    if obj is None:
+        return
+    hint_key = landmark_hint_key(obj)
+    if hint_key is None or hint_key in runtime.seen_landmark_hints:
+        return
+    runtime.seen_landmark_hints.add(hint_key)
+    runtime.status_line = landmark_hint_text(hint_key)
+
+
+def landmark_hint_key(obj) -> str | None:
+    if obj.kind == "shelf":
+        return "shelf"
+    if obj.kind == "bulletin-wall":
+        return "system-wall"
+    if obj.kind == "daemon":
+        return "daemon"
+    if obj.kind == "stairs":
+        return "portal"
+    if obj.kind == "vault-shelf":
+        return "vault-shelf"
+    return None
+
+
+def landmark_hint_text(hint_key: str) -> str:
+    hints = {
+        "shelf": "Shelf: press Space to browse notes in this section.",
+        "system-wall": "Rules wall: press Space to read the posted system memory.",
+        "daemon": "Daemon counter: press Space to ask for a bounded service.",
+        "portal": "Stairs: press Space to move between library and vault.",
+        "vault-shelf": "Archive shelf: press Space to browse raw session books.",
+    }
+    return hints.get(hint_key, "Press Space to inspect.")
+
+
+def handle_intake_keys(runtime: GameRuntime, key: int, pygame, sound_manager: SoundManager | None, text: str) -> bool:
+    draft = runtime.intake
+    if key == pygame.K_ESCAPE:
+        if draft.step == 0:
+            runtime.overlay = runtime.overlay_return or OverlayState()
+            runtime.overlay_return = None
+            runtime.status_line = "Cancelled the intake ritual."
+        elif draft.step >= 5:
+            draft.step = 4
+            draft.status = "draft"
+            draft.error = ""
+            runtime.status_line = "Returned to confirmation."
+        else:
+            draft.step -= 1
+            runtime.status_line = "Stepped back in the intake ritual."
+        runtime.overlay_slide = 1.0 if runtime.overlay.mode != "none" else 0.0
+        if sound_manager is not None:
+            sound_manager.play("inspect_close")
+        return True
+    if draft.step in {0, 1, 2}:
+        field_name = ("source", "title", "summary")[draft.step]
+        current = getattr(draft, field_name)
+        if key == pygame.K_BACKSPACE:
+            setattr(draft, field_name, current[:-1])
+            return True
+        if key in (pygame.K_RETURN, pygame.K_SPACE) and key != pygame.K_SPACE:
+            if not current.strip():
+                runtime.status_line = "This field cannot be empty."
+                return True
+            draft.step += 1
+            runtime.status_line = intake_step_prompt(draft.step)
+            if sound_manager is not None:
+                sound_manager.play("menu_confirm")
+            return True
+        if key == pygame.K_RETURN:
+            return True
+        if text and text.isprintable() and text not in {"\r", "\n", "\t"}:
+            if len(current) < 160:
+                setattr(draft, field_name, current + text)
+            return True
+        return key in {pygame.K_RETURN, pygame.K_BACKSPACE}
+    if draft.step == 3:
+        current_index = INTAKE_TYPES.index(draft.item_type)
+        if key in (pygame.K_DOWN, pygame.K_s, pygame.K_RIGHT, pygame.K_d):
+            draft.item_type = INTAKE_TYPES[(current_index + 1) % len(INTAKE_TYPES)]
+            if sound_manager is not None:
+                sound_manager.play("menu_move")
+            return True
+        if key in (pygame.K_UP, pygame.K_w, pygame.K_LEFT, pygame.K_a):
+            draft.item_type = INTAKE_TYPES[(current_index - 1) % len(INTAKE_TYPES)]
+            if sound_manager is not None:
+                sound_manager.play("menu_move")
+            return True
+        if key in (pygame.K_RETURN, pygame.K_SPACE):
+            draft.step = 4
+            runtime.status_line = "The daemon reads the draft back for confirmation."
+            if sound_manager is not None:
+                sound_manager.play("menu_confirm")
+            return True
+        return False
+    if draft.step == 4:
+        if key in (pygame.K_RETURN, pygame.K_SPACE):
+            path = confirm_intake(runtime)
+            if path is not None:
+                runtime.status_line = f"Archived scroll to {path.name}."
+                if sound_manager is not None:
+                    sound_manager.play("menu_confirm")
+            return True
+        return False
+    if draft.step == 5:
+        if key in (pygame.K_RETURN, pygame.K_SPACE):
+            runtime.overlay = OverlayState()
+            runtime.overlay_return = None
+            runtime.status_line = "Closed the intake ritual."
+            if sound_manager is not None:
+                sound_manager.play("inspect_close")
+            return True
+        return False
+
+
+def intake_step_prompt(step: int) -> str:
+    prompts = {
+        1: "The daemon asks for a working title.",
+        2: "The daemon asks for a short summary.",
+        3: "Choose what kind of scroll this is.",
+        4: "Review the draft and confirm if it should be archived.",
+    }
+    return prompts.get(step, "Continue the intake ritual.")
+
+
+def draw_intake_overlay(surface, runtime: GameRuntime, panel, small_font, tiny_font, pygame) -> None:
+    draft = runtime.intake
+    surface.blit(tiny_font.render(intake_step_label(draft), True, (90, 80, 70)), (panel.x + 24, panel.y + 54))
+    if draft.step in {0, 1, 2}:
+        prompt = {
+            0: "Where did this material come from?",
+            1: "What is the working title?",
+            2: "Give a 2-4 sentence summary.",
+        }[draft.step]
+        current = {
+            0: draft.source,
+            1: draft.title,
+            2: draft.summary,
+        }[draft.step]
+        lines = render_lines(prompt, 88)
+        for index, line in enumerate(lines):
+            text = _render_markdown_line(line, small_font, tiny_font)
+            surface.blit(text, (panel.x + 24, panel.y + 92 + index * 22))
+        input_rect = pygame.Rect(panel.x + 24, panel.y + 170, panel.width - 48, 58)
+        pygame.draw.rect(surface, (255, 248, 232), input_rect, border_radius=8)
+        pygame.draw.rect(surface, (110, 88, 62), input_rect, 2, border_radius=8)
+        caret = "_" if int(monotonic() * 2) % 2 == 0 else ""
+        input_text = tiny_font.render((current or "") + caret, True, (45, 35, 30))
+        surface.blit(input_text, (input_rect.x + 12, input_rect.y + 18))
+        help_line = tiny_font.render("Type to fill the field. ENTER continues, ESC steps back.", True, (90, 80, 70))
+        surface.blit(help_line, (panel.x + 24, panel.bottom - 36))
+        return
+    if draft.step == 3:
+        for index, item_type in enumerate(INTAKE_TYPES):
+            color = (30, 20, 18) if item_type == draft.item_type else (90, 80, 70)
+            prefix = "> " if item_type == draft.item_type else "  "
+            line = small_font.render(prefix + item_type, True, color)
+            surface.blit(line, (panel.x + 36, panel.y + 96 + index * 34))
+        help_line = tiny_font.render("UP/DOWN choose type. ENTER confirms, ESC steps back.", True, (90, 80, 70))
+        surface.blit(help_line, (panel.x + 24, panel.bottom - 36))
+        return
+    if draft.step in {4, 5}:
+        markdown = render_intake_markdown(draft)
+        lines = render_lines(markdown, 92)
+        for index, line in enumerate(lines[: _overlay_body_line_capacity(panel)]):
+            text = _render_markdown_line(line, small_font, tiny_font)
+            surface.blit(text, (panel.x + 24, panel.y + 82 + index * 21))
+        footer_text = "ENTER archives | ESC steps back" if draft.step == 4 else "ENTER closes | ESC steps back"
+        if draft.status == "archived" and draft.last_written_path:
+            footer_text = "ENTER closes | archived to raw/sessions"
+        elif draft.status == "error":
+            footer_text = "ENTER retries | ESC steps back"
+        footer = tiny_font.render(footer_text, True, (90, 80, 70))
+        surface.blit(footer, (panel.x + 24, panel.bottom - 36))
+
+
+def intake_step_label(draft: IntakeDraft) -> str:
+    labels = {
+        0: "Step 1 of 5 • Source",
+        1: "Step 2 of 5 • Title",
+        2: "Step 3 of 5 • Summary",
+        3: "Step 4 of 5 • Type",
+        4: "Step 5 of 5 • Confirmation",
+        5: "Archived",
+    }
+    if draft.status == "error":
+        return "Archive Error"
+    return labels.get(draft.step, "Offer A Scroll")
+
+
+def render_intake_markdown(draft: IntakeDraft) -> str:
+    if draft.status == "archived":
+        return (
+            "Archived\n\n"
+            f"Source: {draft.source}\n"
+            f"Title: {draft.title}\n"
+            f"Type: {draft.item_type}\n\n"
+            f"The daemon archived this scroll to `{draft.last_written_path or 'raw/sessions'}` and turns toward the vault stairs."
+        )
+    if draft.status == "error":
+        return (
+            "Error\n\n"
+            f"The daemon could not archive this scroll.\n\n{draft.error}\n\n"
+            "No partial file was kept. Adjust the draft or retry."
+        )
+    preview = render_intake_session_markdown(draft, "PREVIEW-TIMESTAMP")
+    return f"Confirmation\n\nThe daemon reads back the draft that will be archived:\n\n```md\n{preview}\n```"
+
+
+def confirm_intake(runtime: GameRuntime) -> Path | None:
+    draft = runtime.intake
+    try:
+        path = write_intake_session(runtime.settings.workspace_root, draft)
+    except OSError as exc:
+        draft.status = "error"
+        draft.error = str(exc)
+        draft.step = 5
+        return None
+    draft.status = "archived"
+    draft.last_written_path = str(path.relative_to(runtime.settings.workspace_root))
+    draft.step = 5
+    set_daemon_state(runtime, "sorting", 5.0)
+    return path
+
+
+def write_intake_session(workspace_root: Path, draft: IntakeDraft) -> Path:
+    now = datetime.now()
+    timestamp = now.strftime("%Y-%m-%d-%H%M%S")
+    slug = slugify(draft.title) or "untitled-scroll"
+    path = workspace_root / "brain" / "raw" / "sessions" / f"{timestamp}-claude-intake-{slug}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = render_intake_session_markdown(draft, timestamp)
+    path.write_text(body + "\n", encoding="utf-8")
+    return path
+
+
+def render_intake_session_markdown(draft: IntakeDraft, timestamp: str) -> str:
+    created_at = timestamp[:10]
+    return (
+        "---\n"
+        f"title: {draft.title}\n"
+        "type: session\n"
+        f"created_at: {created_at}\n"
+        f"intake_type: {draft.item_type}\n"
+        f"intake_source: {draft.source}\n"
+        "---\n\n"
+        "# Intake Scroll\n\n"
+        f"Source: {draft.source}\n\n"
+        f"Working title: {draft.title}\n\n"
+        f"Suggested type: {draft.item_type}\n\n"
+        "Summary:\n"
+        f"{draft.summary}\n"
+    )
+
+
+def build_follow_thread_report(entry: GameEntry, runtime: GameRuntime) -> str:
+    lines = [
+        f"Thread trail for {entry.title}",
+        "",
+        "The daemon found related sections and marked them in the room.",
+        "",
+    ]
+    for index, section_key in enumerate(runtime.follow_thread_sections, start=1):
+        section_name = section_display_name(runtime, section_key)
+        related_titles = [
+            candidate.title
+            for candidate in runtime.snapshot.note_entries
+            if candidate.section_key == section_key
+        ][:3]
+        lines.append(f"{index}. {section_name}")
+        lines.append(f"   Example notes: {', '.join(related_titles) if related_titles else 'none visible in this section'}")
+    lines.append("")
+    lines.append("Close this panel and look for the amber trail/highlight in the room.")
+    return "\n".join(lines)
+
+
+def add_bookmark(runtime: GameRuntime, item_id: str) -> None:
+    if item_id in runtime.bookmarks:
+        return
+    runtime.bookmarks.append(item_id)
+    save_bookmarks(runtime.settings.workspace_root, runtime.bookmarks)
+
+
+def remove_bookmark(runtime: GameRuntime, item_id: str) -> None:
+    runtime.bookmarks = [bookmark for bookmark in runtime.bookmarks if bookmark != item_id]
+    save_bookmarks(runtime.settings.workspace_root, runtime.bookmarks)
+    runtime.status_line = f"Removed bookmark {item_id}."
+
+
+def open_bookmark_item(runtime: GameRuntime, item: BrowserItem) -> None:
+    if item.kind == "entry":
+        entry = runtime.indexes.note_by_id.get(item.item_id)
+        if entry is None:
+            remove_bookmark(runtime, item.item_id)
+            runtime.overlay = build_bookmarks_overlay(runtime)
+            return
+        runtime.current_scene = "library"
+        _move_player_to_section(runtime, entry.section_key)
+        runtime.focused_entry_id = entry.note_id
+        runtime.focused_session_slug = None
+        runtime.selected_daemon_target = entry.note_id
+        runtime.overlay = OverlayState(mode="inspect", title=entry.title, body=entry_body(entry))
+        runtime.overlay_slide = 0.0
+        runtime.status_line = f"Opened bookmark {entry.title}."
+        return
+    book = runtime.indexes.session_by_slug.get(item.item_id)
+    if book is None:
+        remove_bookmark(runtime, item.item_id)
+        runtime.overlay = build_bookmarks_overlay(runtime)
+        return
+    jump_to_session(runtime, book)
+    runtime.overlay = OverlayState(mode="inspect", title=book.title, body=book.body_path.read_text())
+    runtime.overlay_slide = 0.0
+    runtime.status_line = f"Opened bookmark {book.title}."
+
+
+def _move_player_to_section(runtime: GameRuntime, section_key: str) -> None:
+    scene = runtime.scenes[runtime.current_scene]
+    target = next((obj for obj in scene.objects if obj.section_key == section_key and obj.kind in {"shelf", "vault-shelf", "bulletin-wall"}), None)
+    if target is None:
+        runtime.player.x, runtime.player.y = scene.player_start
+        return
+    runtime.player.x = max(20, target.x - 72)
+    runtime.player.y = max(20, target.y + 16)
+
+
+def draw_bookmarks_overlay(surface, runtime: GameRuntime, panel, small_font, tiny_font, pygame) -> None:
+    if not runtime.overlay.browser_items:
+        lines = render_lines(runtime.overlay.body, 92)
+        for index, line in enumerate(lines[:8]):
+            text = _render_markdown_line(line, small_font, tiny_font)
+            surface.blit(text, (panel.x + 24, panel.y + 84 + index * 22))
+        help_line = tiny_font.render("TAB or ESC close.", True, (90, 80, 70))
+        surface.blit(help_line, (panel.x + 24, panel.bottom - 36))
+        return
+    _draw_browser_overlay(
+        surface,
+        runtime,
+        panel,
+        small_font,
+        tiny_font,
+        pygame,
+        help_text="UP/DOWN navigate, ENTER jump, D remove, click to open, ESC closes.",
+    )
+
+
 def draw_shelf_overlay(surface, runtime: GameRuntime, panel, small_font, tiny_font, pygame) -> None:
-    info = tiny_font.render("UP/DOWN navigate, ENTER open, click to open, ESC returns.", True, (90, 80, 70))
+    _draw_browser_overlay(
+        surface,
+        runtime,
+        panel,
+        small_font,
+        tiny_font,
+        pygame,
+        help_text="UP/DOWN navigate, ENTER open, click to open, ESC returns.",
+    )
+
+
+def _draw_browser_overlay(surface, runtime: GameRuntime, panel, small_font, tiny_font, pygame, *, help_text: str) -> None:
+    info = tiny_font.render(help_text, True, (90, 80, 70))
     surface.blit(info, (panel.x + 24, panel.y + 52))
     for vis_index, (item, rect) in enumerate(shelf_item_rects(runtime, panel, pygame)):
         item_index = runtime.overlay.browser_scroll + vis_index
@@ -813,6 +1326,13 @@ def _shelf_page_size(panel) -> int:
     item_slot = 62  # height(52) + gap(10)
     bottom = getattr(panel, "bottom", panel.y + panel.height)
     available = (bottom - 36) - (panel.y + 84)
+    return max(1, available // item_slot)
+
+
+def _shelf_page_size_for_runtime(runtime: GameRuntime) -> int:
+    usable_height = runtime.settings.window_height - 160
+    item_slot = 62
+    available = usable_height - 120
     return max(1, available // item_slot)
 
 

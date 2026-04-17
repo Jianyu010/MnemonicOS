@@ -13,7 +13,7 @@ if str(SRC) not in sys.path:
 
 from mnemonicos_game.assets.loader import load_assets
 from mnemonicos_game.engine.animation import AnimationClock
-from mnemonicos_game.main import update_overlay_slide
+from mnemonicos_game.main import build_ui_fonts, update_overlay_slide
 from mnemonicos_game.runtime import GameRuntime, OverlayState, PlayerState
 from mnemonicos_game.services.digest import build_indexes
 from mnemonicos_game.settings import GameSettings
@@ -73,6 +73,21 @@ class LibraryRpgPhase10Test(unittest.TestCase):
             self.assertEqual(runtime.anim_frame, 0)
             self.assertEqual(runtime.player_facing, "south")
             self.assertIsNone(runtime.assets)
+
+    def test_build_ui_fonts_scales_with_window_height(self) -> None:
+        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+        import pygame
+
+        pygame.init()
+        try:
+            small = GameSettings(workspace_root=Path("/tmp"), window_height=720)
+            large = GameSettings(workspace_root=Path("/tmp"), window_height=1080)
+            _font1, small_font1, tiny_font1 = build_ui_fonts(small, pygame)
+            _font2, small_font2, tiny_font2 = build_ui_fonts(large, pygame)
+            self.assertGreater(small_font2.get_height(), small_font1.get_height())
+            self.assertGreater(tiny_font2.get_height(), tiny_font1.get_height())
+        finally:
+            pygame.quit()
 
 
 def _seed_workspace(workspace: Path) -> None:

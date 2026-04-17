@@ -21,7 +21,9 @@ def compute_minimap_rects(runtime, panel_rect: tuple[int, int, int, int]) -> dic
 
 
 def draw_minimap(surface, runtime, tiny_font, pygame) -> None:
-    panel = pygame.Rect(runtime.settings.window_width - 220, 18, 190, 150)
+    panel_width = 190 if runtime.settings.window_width >= 1200 else 160
+    panel_height = 150 if runtime.settings.window_height >= 720 else 126
+    panel = pygame.Rect(runtime.settings.window_width - panel_width - 30, 18, panel_width, panel_height)
     pygame.draw.rect(surface, (33, 27, 22), panel, border_radius=10)
     pygame.draw.rect(surface, (90, 75, 60), panel, 2, border_radius=10)
     title = tiny_font.render("Minimap", True, (226, 214, 189))

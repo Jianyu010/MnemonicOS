@@ -121,12 +121,7 @@ def draw_scene(surface, runtime, font, small_font, tiny_font, pygame) -> None:
             entries = [entry for entry in runtime.snapshot.note_entries if entry.section_key == obj.section_key]
             draw_scroll_pile(surface, rect, entries, runtime, pygame)
         elif obj.kind == "bulletin-note":
-            pygame.draw.rect(surface, (230, 216, 185), rect, border_radius=3)
-            pygame.draw.rect(surface, (140, 110, 78), rect, 1, border_radius=3)
-            # Pin at top-center
-            pygame.draw.circle(surface, (190, 50, 50), (rect.centerx, rect.y + 3), 3)
-            label = tiny_font.render(obj.label[:13], True, (55, 40, 28))
-            surface.blit(label, (rect.x + 5, rect.y + 7))
+            draw_bulletin_post(surface, rect, pygame)
         elif obj.kind == "book":
             book_colors = [(100, 72, 44), (80, 60, 38), (112, 80, 50)]
             fill = book_colors[hash(obj.session_slug or "") % 3] if obj.session_slug else book_colors[0]
@@ -142,7 +137,7 @@ def draw_scene(surface, runtime, font, small_font, tiny_font, pygame) -> None:
         elif obj.kind == "board":
             draw_notice_board(surface, rect, colors, pygame)
         elif obj.kind == "stairs":
-            draw_stairs(surface, rect, runtime.current_scene, colors, pygame)
+            draw_stairs(surface, rect, runtime.current_scene, runtime.anim_tick, colors, pygame)
         elif obj.kind == "entrance":
             pygame.draw.rect(surface, colors["wall"], rect, border_radius=14)
             pygame.draw.rect(surface, colors["parchment"], rect, 3, border_radius=14)
@@ -183,10 +178,15 @@ def draw_scene(surface, runtime, font, small_font, tiny_font, pygame) -> None:
         pygame.draw.rect(surface, colors["player"], player_rect, border_radius=8)
         draw_player_facing(surface, runtime, player_rect, colors, pygame)
 
-    header = font.render(f"MnemonicOS Library RPG - {scene.name.title()}", True, colors["text"])
+    header = font.render(f"MenomicOS - {scene.name.title()}", True, colors["text"])
     surface.blit(header, (20, 16))
-    hint = tiny_font.render("WASD/Arrows move, Shift sprint, Space interact, J jump-source, B bookmark, TAB bookmarks", True, colors["muted"])
-    surface.blit(hint, (20, 48))
+    if runtime.anim_tick < 3.0:
+        hint = tiny_font.render(
+            "WASD/Arrows move, Shift sprint, Space interact, J jump-source, B bookmark, TAB bookmarks",
+            True,
+            (255, 255, 255),
+        )
+        surface.blit(hint, (20, 48))
     if runtime.player_is_moving:
         draw_minimap(surface, runtime, tiny_font, pygame)
     if runtime.overlay.mode == "inspect" and runtime.focused_entry_id:
@@ -384,13 +384,13 @@ def draw_scroll_pile(surface, rect, entries, runtime, pygame) -> None:
     total = len(entries)
     if total <= 0:
         return
-    pile_bases = decompose_triangular_piles(total)
+    pile_bases = decompose_capped_triangular_piles(total, max_base=3)
     index = 0
-    scroll_w = 18
-    scroll_h = 26
-    col_step = 14
-    row_step = 8
-    pile_gap = 18
+    scroll_w = 14
+    scroll_h = 20
+    col_step = 11
+    row_step = 6
+    pile_gap = 16
     pile_widths = [(base - 1) * col_step + scroll_w for base in pile_bases]
     total_width = sum(pile_widths) + pile_gap * max(0, len(pile_widths) - 1)
     pile_x = rect.x + max(0, (rect.width - total_width) // 2)
@@ -425,11 +425,28 @@ def draw_scroll_pile(surface, rect, entries, runtime, pygame) -> None:
         pile_x += this_width + pile_gap
 
 
-def draw_stairs(surface, rect, scene_name: str, colors, pygame) -> None:
+def decompose_capped_triangular_piles(total: int, *, max_base: int) -> list[int]:
+    if total <= 0:
+        return []
+    bases: list[int] = []
+    remaining = total
+    while remaining > 0:
+        base = min(max_base, _smallest_triangular_base(remaining))
+        while triangular_number(base) > remaining and base > 1:
+            base -= 1
+        if remaining > triangular_number(max_base):
+            base = max_base
+        bases.append(base)
+        remaining -= triangular_number(base)
+    return bases
+
+
+def draw_stairs(surface, rect, scene_name: str, anim_tick: float, colors, pygame) -> None:
     """Compact staircase: top-down perspective with receding steps."""
     wall_color = colors["wall"] if scene_name == "library" else colors["vault_wall"]
     floor_color = colors["floor"] if scene_name == "library" else colors["vault_floor"]
     shadow_color = colors["shadow"]
+    pulse = portal_pulse_strength(scene_name, anim_tick)
     step_count = 5
     step_h = max(6, rect.height // step_count)
 
@@ -449,13 +466,18 @@ def draw_stairs(surface, rect, scene_name: str, colors, pygame) -> None:
         pygame.draw.line(surface, shadow_color, (rect.x + inset_x, step_y), (rect.x + inset_x + step_w, step_y), 1)
 
     # Direction arrow
-    arrow_color = colors["parchment"]
+    arrow_color = tuple(min(255, int(component + pulse * boost)) for component, boost in zip(colors["parchment"], (12, 10, 0)))
     cx, cy = rect.centerx, rect.centery
     if scene_name == "library":   # pointing down (into vault)
         pts = [(cx, cy + 6), (cx - 5, cy - 2), (cx + 5, cy - 2)]
     else:                          # pointing up (back to library)
         pts = [(cx, cy - 6), (cx - 5, cy + 2), (cx + 5, cy + 2)]
     pygame.draw.polygon(surface, arrow_color, pts)
+    glow = pygame.Surface((rect.width + 18, rect.height + 18), pygame.SRCALPHA)
+    glow_alpha = int(18 + pulse * 24)
+    glow_color = colors["orange"] if scene_name == "library" else colors["parchment"]
+    pygame.draw.rect(glow, (*glow_color, glow_alpha), (0, 0, glow.get_width(), glow.get_height()), 2, border_radius=10)
+    surface.blit(glow, (rect.x - 9, rect.y - 9))
 
     # Outer border
     pygame.draw.rect(surface, shadow_color, rect, 2, border_radius=6)
@@ -564,6 +586,20 @@ def draw_bulletin_board(surface, rect, colors, pygame) -> None:
     pygame.draw.rect(surface, (22, 12, 6), rect, 3, border_radius=6)
 
 
+def draw_bulletin_post(surface, rect, pygame) -> None:
+    paper = pygame.Rect(rect.x + 1, rect.y + 2, rect.width - 2, rect.height - 3)
+    pygame.draw.rect(surface, (236, 223, 198), paper, border_radius=3)
+    pygame.draw.rect(surface, (141, 112, 82), paper, 1, border_radius=3)
+    fold = [(paper.right - 7, paper.y), (paper.right, paper.y), (paper.right, paper.y + 7)]
+    pygame.draw.polygon(surface, (214, 198, 170), fold)
+    pygame.draw.line(surface, (164, 136, 102), (paper.right - 7, paper.y), (paper.right - 1, paper.y + 6), 1)
+    pygame.draw.circle(surface, (188, 54, 50), (paper.centerx, paper.y + 2), 2)
+    line_left = paper.x + 4
+    line_right = paper.right - 5
+    for offset in (9, 13, 17):
+        pygame.draw.line(surface, (116, 96, 78), (line_left, paper.y + offset), (line_right, paper.y + offset), 1)
+
+
 def draw_notice_board(surface, rect, colors, pygame) -> None:
     """Daemon notice board: narrow side-perspective board viewed from the top-right."""
     frame_dark = (44, 28, 14)
@@ -599,8 +635,8 @@ def draw_notice_board(surface, rect, colors, pygame) -> None:
 
 def draw_daemon_npc(surface, rect, runtime, colors, tiny_font, pygame) -> None:
     """Reception counter with a small girl librarian NPC behind it."""
-    sway_x = int(round(math.sin(runtime.anim_tick * math.pi * 0.7) * 2))
-    breath = int(round(math.sin(runtime.anim_tick * math.pi * 1.1)))
+    shake_x = int(round(math.sin(runtime.anim_tick * math.pi * 5.5) * 0.8))
+    shake_y = int(round(math.cos(runtime.anim_tick * math.pi * 6.2) * 0.8))
     # Use cached socket state — avoids 3–4 blocking socket calls per frame (was ~20 ms/frame).
     socket_state = getattr(runtime, "daemon_socket_state", "unconfigured")
     daemon_online = socket_state in {"online", "starting"}
@@ -626,8 +662,8 @@ def draw_daemon_npc(surface, rect, runtime, colors, tiny_font, pygame) -> None:
     surface.blit(lbl, (rect.x + 8, desk_y + 12))
 
     # ── Girl NPC (behind the counter) ───────────────────────────────────
-    player_near_daemon = bool(runtime.nearest_object_id and "daemon" in runtime.nearest_object_id)
-    cx = rect.centerx + sway_x
+    player_near_daemon = daemon_greeting_active(runtime, rect)
+    cx = rect.centerx + shake_x
 
     skin  = (238, 198, 162)
     hair  = (68, 42, 20)
@@ -643,7 +679,7 @@ def draw_daemon_npc(surface, rect, runtime, colors, tiny_font, pygame) -> None:
     dress = dress_map.get(daemon_state, (162, 90, 132)) if daemon_online else (108, 106, 108)
     eye   = (48, 32, 22)
     body_w, body_h = 16, 26
-    body_top = desk_y - 24 + breath
+    body_top = desk_y - 24 + shake_y
     body_bottom = desk_y + 10
     pygame.draw.rect(surface, dress, (cx - body_w // 2, body_top, body_w, body_h), border_radius=5)
     pygame.draw.rect(surface, (238, 228, 208), (cx - 3, body_top + 4, 6, 14), border_radius=2)
@@ -654,7 +690,15 @@ def draw_daemon_npc(surface, rect, runtime, colors, tiny_font, pygame) -> None:
         # Slumped: arms hanging limp at sides
         pygame.draw.line(surface, dress, (cx - 7, arm_y), (cx - 10, desk_y + 4), 3)
         pygame.draw.line(surface, dress, (cx + 7, arm_y), (cx + 10, desk_y + 4), 3)
-    elif daemon_state in {"sorting", "consulting"} or (daemon_state == "idle" and player_near_daemon):
+    elif daemon_state == "sorting":
+        carry_dx, carry_dy = sorting_carry_offset(runtime.anim_tick)
+        pygame.draw.line(surface, dress, (cx - 7, arm_y), (cx - 12, desk_y + 1), 4)
+        pygame.draw.line(surface, dress, (cx + 7, arm_y), (cx + 13, arm_y - 6), 4)
+        carry_rect = pygame.Rect(cx + 9 + carry_dx, arm_y - 9 + carry_dy, 16, 10)
+        pygame.draw.rect(surface, colors["parchment"], carry_rect, border_radius=2)
+        pygame.draw.line(surface, desk_shadow, (carry_rect.x + 3, carry_rect.y + 3), (carry_rect.right - 3, carry_rect.y + 3), 1)
+        pygame.draw.line(surface, desk_shadow, (carry_rect.x + 3, carry_rect.y + 6), (carry_rect.right - 5, carry_rect.y + 6), 1)
+    elif daemon_state == "consulting" or (daemon_state == "idle" and player_near_daemon):
         # Stamping or waving: one arm raised — greeting visitor or stamping a scroll
         pygame.draw.line(surface, dress, (cx - 7, arm_y), (cx - 11, desk_y + 2), 4)
         pygame.draw.line(surface, dress, (cx + 7, arm_y), (cx + 15, arm_y - 9), 4)
@@ -688,6 +732,27 @@ def draw_daemon_npc(surface, rect, runtime, colors, tiny_font, pygame) -> None:
     pygame.draw.circle(surface, eye, (cx - 3, head_cy + 2), 2)
     pygame.draw.circle(surface, eye, (cx + 3, head_cy + 2), 2)
     pygame.draw.circle(surface, (255, 255, 255), (cx - 2, head_cy + 1), 1)
+
+
+def daemon_greeting_active(runtime, daemon_rect) -> bool:
+    px = runtime.player.x + runtime.player.width / 2
+    py = runtime.player.y + runtime.player.height / 2
+    distance = rect_edge_distance(px, py, (daemon_rect.x, daemon_rect.y, daemon_rect.width, daemon_rect.height))
+    return distance <= 128
+
+
+def sorting_carry_offset(anim_tick: float) -> tuple[int, int]:
+    return (
+        int(round(math.sin(anim_tick * math.pi * 1.8) * 5)),
+        int(round(math.cos(anim_tick * math.pi * 1.3) * 2)),
+    )
+
+
+def portal_pulse_strength(scene_name: str, anim_tick: float) -> float:
+    wave = (math.sin(anim_tick * math.pi * 1.35) + 1.0) / 2.0
+    base = 0.46 if scene_name == "library" else 0.28
+    amplitude = 0.34 if scene_name == "library" else 0.24
+    return base + wave * amplitude
     pygame.draw.circle(surface, (255, 255, 255), (cx + 4, head_cy + 1), 1)
     # Smile — flat/neutral when dormant, curved when active
     if daemon_state == "dormant":

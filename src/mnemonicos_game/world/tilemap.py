@@ -116,14 +116,14 @@ def build_library_layout(snapshot: WorldSnapshot) -> SceneLayout:
     if system_section is not None:
         # Keep the system wall in the left-side daemon cluster so it remains visible
         # near spawn and distinct from the daemon notice board.
-        wall_x = 36
+        wall_x = 44
         wall_y = 670
-        wall_width = 132
-        wall_height = 224
+        wall_width = 88
+        wall_height = 206
         objects.append(
             LayoutObject(
                 object_id=f"shelf:{system_section.key}",
-                label=f"{system_section.label} ({len(system_section.entries)})",
+                label="RULES",
                 kind="bulletin-wall",
                 x=wall_x,
                 y=wall_y,
@@ -134,18 +134,22 @@ def build_library_layout(snapshot: WorldSnapshot) -> SceneLayout:
                 solid=True,
             )
         )
-        for note_index, entry in enumerate(system_section.entries[:5]):
-            note_x = wall_x + 12
-            note_y = wall_y + 28 + note_index * 28
+        note_positions = [
+            (wall_x + 12, wall_y + 36),
+            (wall_x + 44, wall_y + 30),
+            (wall_x + 14, wall_y + 92),
+            (wall_x + 42, wall_y + 98),
+        ]
+        for note_index, (note_x, note_y) in enumerate(note_positions):
             objects.append(
                 LayoutObject(
                     object_id=f"bulletin-note:{system_section.key}:{note_index}",
-                    label=entry.title,
+                    label="",
                     kind="bulletin-note",
                     x=note_x,
                     y=note_y,
-                    width=76,
-                    height=22,
+                    width=24,
+                    height=28,
                     scene_name="library",
                     section_key=system_section.key,
                 )

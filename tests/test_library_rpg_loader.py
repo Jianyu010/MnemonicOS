@@ -155,5 +155,5 @@ class LibraryRpgLoaderTest(unittest.TestCase):
 
             output = buffer.getvalue()
             self.assertEqual(exit_code, 0)
-            self.assertIn("MnemonicOS Library RPG", output)
+            self.assertIn("MenomicOS", output)
             self.assertIn("System Wall", output)
