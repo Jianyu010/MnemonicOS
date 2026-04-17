@@ -2,12 +2,13 @@
 
 ## How It Works
 
-MnemonicOS is wired into Claude Code via two hooks and a `CLAUDE.md`:
+MnemonicOS is wired into Claude Code via three hooks and a `CLAUDE.md`:
 
 | Component | Role |
 |---|---|
 | `UserPromptSubmit` hook | Automatically runs retrieval before Claude reads your prompt |
 | `Stop` hook | Automatically ingests the session summary when Claude ends |
+| `PreCompact` hook | Dumps the pending summary to `brain/raw/sessions/` before compaction discards context |
 | `CLAUDE.md` | Standing instructions: when Claude retrieves again, when and how to write summaries |
 
 Claude Desktop uses the same hooks and settings — no separate config needed.
@@ -46,6 +47,16 @@ Claude evaluates: meaningful failure or reusable success?
     ↓ (yes)
 Claude writes structured summary to /tmp/mnemo_pending_summary.md
     ↓
+         ┌─── context window approaches limit ───┐
+         │                                       │
+         │  PreCompact hook fires                │
+         │  mnemonic_precompact_dump.sh          │
+         │  copies pending summary →             │
+         │  brain/raw/sessions/TIMESTAMP-        │
+         │  claude-precompact-{trigger}.md       │
+         │  (skips cleanly if no summary exists) │
+         └───────────────────────────────────────┘
+    ↓
 Session ends → Stop hook fires
     ↓
 mnemonic_stop_hook.sh checks for pending summary
@@ -57,6 +68,8 @@ mnemonic_postflight.sh:
     ↓
 /tmp/mnemo_pending_summary.md deleted
 ```
+
+> **Note:** The `PreCompact` hook fires for all agents, but only the `claude` agent writes `/tmp/mnemo_pending_summary.md`. If no pending summary exists, the hook now skips writing a raw session file.
 
 ---
 
@@ -142,3 +155,4 @@ mnemonicos retrieve "what I learned about auth" --top-k 5
 | `mnemonic_should_upsert.sh` | Yes | Dedupe/update decision before ingest |
 | `mnemonic_hook_preflight.sh` | Claude Code only | `UserPromptSubmit` hook entry point |
 | `mnemonic_stop_hook.sh` | Claude Code only | `Stop` hook entry point |
+| `mnemonic_precompact_dump.sh` | Claude Code only | `PreCompact` hook — raw dump before compaction |
