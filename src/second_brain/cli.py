@@ -10,6 +10,7 @@ import sys
 import time
 
 from .config import default_config_path, load_config
+from .daemon_status import daemon_status_summary, daemon_unreachable_summary, read_pid, socket_send
 from .db import connect_db, run_migrations
 from .ingest import ingest_session, ingest_session_promote
 from .jobs import run_job
@@ -614,33 +615,8 @@ def _server_start(config_path: str, host: str, port: int) -> int:
     return 0
 
 
-def _socket_send(socket_path: os.PathLike[str] | str, payload: dict[str, object]) -> dict[str, object] | None:
-    try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-            client.settimeout(2.0)
-            client.connect(str(socket_path))
-            client.sendall((json.dumps(payload) + "\n").encode("utf-8"))
-            response = b""
-            while b"\n" not in response:
-                chunk = client.recv(4096)
-                if not chunk:
-                    break
-                response += chunk
-        return json.loads(response.decode("utf-8").strip() or "{}")
-    except OSError:
-        return None
-
-
-def _read_pid(pid_path: os.PathLike[str] | str) -> int | None:
-    try:
-        raw = open(pid_path, encoding="utf-8").read().strip()
-    except FileNotFoundError:
-        return None
-    return int(raw) if raw else None
-
-
 def _daemon_is_alive(pid_path: os.PathLike[str] | str) -> bool:
-    pid = _read_pid(pid_path)
+    pid = read_pid(pid_path)
     if pid is None:
         return False
     try:
@@ -668,7 +644,7 @@ def _daemon_start(config_path: str) -> int:
     for _ in range(20):
         time.sleep(0.1)
         if _daemon_is_alive(config.daemon.pid_path):
-            print(f"daemon_started pid={_read_pid(config.daemon.pid_path)}")
+            print(f"daemon_started pid={read_pid(config.daemon.pid_path)}")
             return 0
     print("failed_to_start daemon")
     return 1
@@ -678,7 +654,7 @@ def _daemon_stop(config_path: str) -> int:
     config = load_config(config_path)
     if config.daemon is None:
         raise SystemExit("daemon configuration is not available")
-    pid = _read_pid(config.daemon.pid_path)
+    pid = read_pid(config.daemon.pid_path)
     if pid is None or not _daemon_is_alive(config.daemon.pid_path):
         print("daemon_not_running")
         return 0
@@ -692,96 +668,23 @@ def _daemon_stop(config_path: str) -> int:
     return 1
 
 
-def _format_bytes(num_bytes: int | None) -> str:
-    if num_bytes is None:
-        return "unknown"
-    units = ["B", "KB", "MB", "GB", "TB"]
-    value = float(num_bytes)
-    unit = units[0]
-    for candidate in units:
-        unit = candidate
-        if value < 1024.0 or candidate == units[-1]:
-            break
-        value /= 1024.0
-    if unit == "B":
-        return f"{int(value)} {unit}"
-    return f"{value:.1f} {unit}"
-
-
-def _daemon_status_summary(response: dict[str, object]) -> str:
-    status = str(response.get("status") or "unknown")
-    service = response.get("service") if isinstance(response.get("service"), dict) else {}
-    health = response.get("health") if isinstance(response.get("health"), dict) else {}
-    queue = health.get("queue") if isinstance(health, dict) and isinstance(health.get("queue"), dict) else {}
-    storage = health.get("storage") if isinstance(health, dict) and isinstance(health.get("storage"), dict) else {}
-    recent_runs = health.get("recent_job_runs") if isinstance(health, dict) and isinstance(health.get("recent_job_runs"), list) else []
-    scheduled_jobs = service.get("scheduled_jobs") if isinstance(service, dict) and isinstance(service.get("scheduled_jobs"), list) else []
-
-    pending_count = int(queue.get("pending_count", 0) or 0) if isinstance(queue, dict) else 0
-    error_count = int(queue.get("error_count", 0) or 0) if isinstance(queue, dict) else 0
-    oldest_age = queue.get("oldest_pending_age_minutes") if isinstance(queue, dict) else None
-    running_job = service.get("running_job") if isinstance(service, dict) else None
-    warnings = queue.get("warnings") if isinstance(queue, dict) and isinstance(queue.get("warnings"), list) else []
-    db_bytes = storage.get("db_bytes") if isinstance(storage, dict) else None
-    vault_bytes = storage.get("vault_bytes") if isinstance(storage, dict) else None
-
-    next_promotion_run = None
-    if isinstance(scheduled_jobs, list):
-        for item in scheduled_jobs:
-            if isinstance(item, dict) and item.get("name") == "process_promotion_queue":
-                next_promotion_run = item.get("next_run_utc")
-                break
-
-    last_job_line = "none"
-    if isinstance(recent_runs, list) and recent_runs:
-        first = recent_runs[0]
-        if isinstance(first, dict):
-            last_job_line = f"{first.get('job_name', 'unknown')} ({first.get('status', 'unknown')}) at {first.get('finished_at', 'unknown')}"
-
-    lines = [
-        f"Daemon: {status}",
-        f"Running job: {running_job or 'idle'}",
-        "",
-        "Promotion Queue",
-        f"  pending: {pending_count}",
-        f"  errors: {error_count}",
-        f"  oldest pending age: {oldest_age if oldest_age is not None else 'none'}",
-        f"  next promotion run: {next_promotion_run or 'unknown'}",
-        "",
-        "Storage",
-        f"  db: {_format_bytes(db_bytes if isinstance(db_bytes, int) else None)}",
-        f"  vault: {_format_bytes(vault_bytes if isinstance(vault_bytes, int) else None)}",
-        "",
-        "Recent Activity",
-        f"  last completed job: {last_job_line}",
-    ]
-
-    if isinstance(warnings, list) and warnings:
-        lines.extend(["", "Warnings"])
-        for warning in warnings:
-            lines.append(f"  - {warning}")
-
-    return "\n".join(lines)
-
-
 def _daemon_status(config_path: str, emit_json: bool) -> int:
     config = load_config(config_path)
     if config.daemon is None:
         raise SystemExit("daemon configuration is not available")
-    response = _socket_send(config.daemon.socket_path, {"cmd": "status"})
+    response = socket_send(config.daemon.socket_path, {"cmd": "status"})
     if response is None:
-        pid = _read_pid(config.daemon.pid_path)
+        pid = read_pid(config.daemon.pid_path)
         error_response = {"status": "error", "error": "daemon_unreachable", "pid": pid}
         if emit_json:
             print(json.dumps(error_response, sort_keys=True))
         else:
-            print("Daemon: unreachable")
-            print(f"PID file: {pid if pid is not None else 'none'}")
+            print(daemon_unreachable_summary(pid))
         return 1
     if emit_json:
         print(json.dumps(response, sort_keys=True))
     else:
-        print(_daemon_status_summary(response))
+        print(daemon_status_summary(response))
     return 0 if response.get("status") == "ok" else 1
 
 
@@ -789,7 +692,7 @@ def _daemon_run_job(config_path: str, job_name: str) -> int:
     config = load_config(config_path)
     if config.daemon is None:
         raise SystemExit("daemon configuration is not available")
-    response = _socket_send(config.daemon.socket_path, {"cmd": "run-job", "job": job_name})
+    response = socket_send(config.daemon.socket_path, {"cmd": "run-job", "job": job_name})
     if response is None:
         result = run_job(config, job_name=job_name, dry_run=False)
         print(json.dumps({"status": "ok", "job": result.job_name, "result": result.stats}, sort_keys=True))

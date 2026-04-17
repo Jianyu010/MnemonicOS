@@ -11,9 +11,15 @@ dependencies = [
   "PyYAML>=6.0",
 ]
 
+[project.optional-dependencies]
+game = [
+  "pygame-ce>=2.5",
+]
+
 [project.scripts]
 mnemonicos = "second_brain.cli:main"
 mnemonicos-daemon = "second_brain.daemon:main"
+mnemonicos-game = "mnemonicos_game.main:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

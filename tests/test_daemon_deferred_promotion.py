@@ -13,6 +13,7 @@ if str(SRC) not in sys.path:
 
 from second_brain.config import load_config
 from second_brain.daemon import Daemon
+from second_brain.daemon_status import daemon_status_summary
 from second_brain.db import connect_db, run_migrations
 from second_brain.ingest import ingest_session
 from second_brain.jobs import run_job
@@ -218,6 +219,40 @@ class DaemonDeferredPromotionTest(unittest.TestCase):
             finally:
                 daemon.job_lock.release()
             self.assertEqual(busy["status"], "busy")
+
+    def test_daemon_status_summary_includes_units(self) -> None:
+        response = {
+            "status": "ok",
+            "service": {
+                "running_job": None,
+                "scheduled_jobs": [
+                    {"name": "process_promotion_queue", "next_run_utc": "2026-04-17T12:00:00Z", "schedule": "*/5 * * * *"},
+                ],
+            },
+            "health": {
+                "queue": {
+                    "pending_count": 3,
+                    "error_count": 1,
+                    "oldest_pending_age_minutes": 125,
+                    "warnings": ["queue depth warning"],
+                },
+                "storage": {
+                    "db_bytes": 1536,
+                    "vault_bytes": 4096,
+                    "vectors_bytes": 8192,
+                    "graph_bytes": 512,
+                },
+                "recent_job_runs": [
+                    {"job_name": "process_promotion_queue", "status": "ok", "finished_at": "2026-04-17 11:00:00"},
+                ],
+            },
+        }
+        text = daemon_status_summary(response)
+        self.assertIn("pending: 3 item(s)", text)
+        self.assertIn("errors: 1 item(s)", text)
+        self.assertIn("oldest pending age: 2 hr 5 min", text)
+        self.assertIn("db: 1.5 KB", text)
+        self.assertIn("vectors: 8.0 KB", text)
 
 
     def test_stuck_processing_row_is_recovered(self) -> None:
