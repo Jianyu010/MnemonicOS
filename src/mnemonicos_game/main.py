@@ -5,13 +5,14 @@ import sys
 from time import monotonic
 from pathlib import Path
 
+from second_brain.config import default_config_path, load_config
+
 from .assets import load_assets
 from .data.loader import BrainLoader
 from .data.models import GameBook, GameEntry, WorldSnapshot
 from .data.watcher import WorldWatcher
 from .engine import AnimationClock, SoundManager, ease_out_quad
 from .entities.daemon_npc import read_daemon_log, read_daemon_status_report, run_daemon_status_report_job
-from .entities import daemon_is_available
 from .entities.marker import entry_color, freshness_label
 from .runtime import BOARD_MAINTENANCE_MENU, BOARD_MENU, BrowserItem, DAEMON_MENU, GameRuntime, OverlayState, PlayerState, switch_scene
 from .scenes import DungeonScene, LibraryScene
@@ -24,7 +25,7 @@ from .world.tilemap import build_dungeon_layout, build_library_layout
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="MnemonicOS Library RPG")
-    parser.add_argument("--root", type=Path, default=Path.cwd(), help="Workspace root containing brain/")
+    parser.add_argument("--root", type=Path, default=None, help="Workspace root containing brain/")
     parser.add_argument("--dump-world", action="store_true", help="Print a world summary and exit")
     parser.add_argument("--check", action="store_true", help="Validate the game data wiring and exit")
     return parser
@@ -32,7 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    settings = GameSettings(workspace_root=args.root.resolve())
+    settings = GameSettings(workspace_root=_resolve_game_root(args.root))
     snapshot = BrainLoader(settings.workspace_root).load()
 
     if args.dump_world or args.check:
@@ -40,6 +41,16 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     return run_game(settings, snapshot)
+
+
+def _resolve_game_root(explicit_root: Path | None) -> Path:
+    if explicit_root is not None:
+        return explicit_root.resolve()
+    try:
+        config_path = default_config_path()
+        return load_config(config_path).paths.workspace_root.resolve()
+    except Exception:
+        return Path.cwd().resolve()
 
 
 def run_game(settings: GameSettings, snapshot: WorldSnapshot) -> int:
@@ -70,6 +81,7 @@ def run_game(settings: GameSettings, snapshot: WorldSnapshot) -> int:
         player=PlayerState(*layouts["library"].player_start),
         watcher=WorldWatcher(settings.workspace_root),
     )
+    maybe_refresh_daemon_socket(runtime, force=True)
     if runtime.watcher is not None:
         runtime.watcher.prime()
 
@@ -104,6 +116,7 @@ def run_game(settings: GameSettings, snapshot: WorldSnapshot) -> int:
             update_overlay_hold(runtime, dt, pygame)
             update_overlay_slide(runtime, dt)
             maybe_reload_world(runtime)
+            maybe_refresh_daemon_socket(runtime)
             maybe_refresh_live_overlay(runtime)
             if runtime.overlay.mode == "none":
                 scenes[runtime.current_scene].update(runtime, dt, pygame)
@@ -133,7 +146,7 @@ def format_summary(snapshot: WorldSnapshot) -> str:
     for zone in snapshot.zones:
         lines.append(f"- {zone.label}: {zone.item_count} items / {len(zone.sections)} sections")
         for section in zone.sections:
-            marker = " [reserved]" if section.reserved else ""
+            marker = " [under construction]" if section.under_construction else ""
             lines.append(f"  - {section.label}: {section.item_count}{marker}")
     return "\n".join(lines)
 
@@ -328,6 +341,23 @@ def update_overlay_hold(runtime: GameRuntime, dt: float, pygame) -> None:
         runtime.scroll_hold_elapsed -= repeat_rate
 
 
+def maybe_refresh_daemon_socket(runtime: GameRuntime, *, force: bool = False) -> None:
+    """Refresh the cached daemon socket state without hammering the daemon socket.
+
+    This prevents draw_daemon_npc() from calling daemon_reachability() (a blocking
+    socket round-trip taking ~5 ms) on every render frame, which was costing ~20 ms/frame
+    and collapsing the game to ~1–3 fps.
+    """
+    now = monotonic()
+    refresh_interval = 5.0 if runtime.daemon_socket_state == "online" else 1.0
+    if not force and now - runtime.daemon_socket_checked_at < refresh_interval:
+        return
+    from second_brain.daemon_status import daemon_reachability
+    state, _pid = daemon_reachability(runtime.settings.workspace_root)
+    runtime.daemon_socket_state = state
+    runtime.daemon_socket_checked_at = now
+
+
 def maybe_reload_world(runtime: GameRuntime) -> None:
     if runtime.watcher is None:
         return
@@ -381,7 +411,7 @@ def interact(runtime: GameRuntime, sound_manager: SoundManager | None = None) ->
             sound_manager.music_start(runtime.current_scene)
         return
     if obj.kind == "daemon":
-        if not daemon_is_available(runtime.settings.workspace_root):
+        if runtime.daemon_socket_state not in {"online", "starting"}:
             runtime.overlay = OverlayState(
                 mode="inspect",
                 title="Daemon Counter",

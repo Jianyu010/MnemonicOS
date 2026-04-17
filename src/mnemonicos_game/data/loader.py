@@ -23,6 +23,36 @@ CANONICAL_ZONE_ORDER = (
 
 RESERVED_WIKI_CATEGORIES = ("decisions", "people", "projects", "repos", "sources")
 
+DEFAULT_ZONE_SECTIONS: dict[str, tuple[tuple[str, str, str], ...]] = {
+    "concepts": (
+        ("concepts", "Concepts Shelf", "wiki/concepts"),
+    ),
+    "procedures": (
+        ("procedures:active", "Procedures Wing: Active", "wiki/procedures/active"),
+        ("procedures:drafts", "Procedures Wing: Drafts", "wiki/procedures/drafts"),
+        ("procedures:retired", "Procedures Wing: Retired", "wiki/procedures/retired"),
+    ),
+    "incidents": (
+        ("incidents", "Incidents Shelf", "wiki/incidents"),
+    ),
+    "review": (
+        ("review", "Review Desk", "wiki/review"),
+    ),
+    "journals": (
+        ("journals", "Journal Corner", "wiki/journals"),
+        ("overviews", "Overview Alcove", "wiki/overviews"),
+    ),
+    "system": (
+        ("system-wall", "System Wall", "system"),
+    ),
+    "vault": (
+        ("vault:assets", "Raw Assets", "raw/assets"),
+        ("vault:docs", "Raw Docs", "raw/docs"),
+        ("vault:sessions", "Raw Sessions", "raw/sessions"),
+        ("vault:web-clips", "Web Clips", "raw/web_clips"),
+    ),
+}
+
 
 class BrainLoader:
     def __init__(self, workspace_root: Path) -> None:
@@ -239,12 +269,27 @@ class BrainLoader:
                 )
             )
 
+        for zone_key, defaults in DEFAULT_ZONE_SECTIONS.items():
+            existing = {section.key for section in zone_sections[zone_key]}
+            for section_key, section_label, source_dir in defaults:
+                if section_key in existing:
+                    continue
+                zone_sections[zone_key].append(
+                    ZoneSection(
+                        key=section_key,
+                        label=section_label,
+                        source_dir=source_dir,
+                        under_construction=True,
+                    )
+                )
+
         reserved_sections = [
             ZoneSection(
                 key=f"reserved:{name}",
                 label=f"{name.title()} (Under Construction)",
                 source_dir=f"wiki/{name}",
                 reserved=True,
+                under_construction=True,
             )
             for name in RESERVED_WIKI_CATEGORIES
         ]

@@ -201,6 +201,8 @@ class LibraryRpgPresentationTest(unittest.TestCase):
             self.assertIsNotNone(vault_anchor)
             self.assertEqual(vault_anchor.kind, "anchor")
             self.assertLessEqual(vault_anchor.width, 24)
+            self.assertLessEqual(vault_anchor.x, 96)
+            self.assertGreaterEqual(vault_anchor.y, vault.height - 120)
             runtime.current_scene = "library"
             library_anchor = find_anchor(runtime, "anchor:library-return")
             self.assertIsNotNone(library_anchor)
@@ -213,6 +215,17 @@ class LibraryRpgPresentationTest(unittest.TestCase):
             snapshot = BrainLoader(workspace).load()
             vault = build_dungeon_layout(snapshot)
             self.assertLess(vault.player_start[1], 1100)
+
+    def test_vault_stairs_sit_in_bottom_left_corner_with_tile_margin(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            _seed_workspace(workspace)
+            snapshot = BrainLoader(workspace).load()
+            vault = build_dungeon_layout(snapshot)
+            stairs = next(obj for obj in vault.objects if obj.object_id == "portal:library")
+            self.assertEqual(stairs.x, 32)
+            self.assertEqual(stairs.y, vault.height - 32 - stairs.height)
+            self.assertEqual(stairs.label, "")
 
     def test_opening_shelf_browser_lists_section_items(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

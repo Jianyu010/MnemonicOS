@@ -126,8 +126,17 @@ class LibraryRpgLoaderTest(unittest.TestCase):
             self.assertIn("Sources (Under Construction)", reserved_labels)
 
             vault_zone = snapshot.zone("vault")
-            self.assertEqual(len(vault_zone.sections), 1)
-            self.assertEqual(vault_zone.sections[0].label, "codex / 2026-04")
+            vault_labels = [section.label for section in vault_zone.sections]
+            self.assertEqual(
+                vault_labels,
+                [
+                    "codex / 2026-04",
+                    "Raw Assets",
+                    "Raw Docs",
+                    "Raw Sessions",
+                    "Web Clips",
+                ],
+            )
             self.assertEqual(snapshot.zone("concepts").item_count, 1)
             indexes = build_indexes(snapshot)
             self.assertIn("system/memory", indexes.note_by_id)

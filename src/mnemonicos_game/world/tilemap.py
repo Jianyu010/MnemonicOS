@@ -65,11 +65,12 @@ def build_library_layout(snapshot: WorldSnapshot) -> SceneLayout:
         y = shelf_row_y[row]
         shelf_width = 240
         shelf_height = 132
+        under_construction = section.reserved or section.under_construction
         object_kind = "shelf"
         objects.append(
             LayoutObject(
                 object_id=f"shelf:{section.key}",
-                label="" if section.reserved else f"{section.label} ({len(section.entries)})",
+                label="" if under_construction else f"{section.label} ({len(section.entries)})",
                 kind=object_kind,
                 x=x,
                 y=y,
@@ -77,7 +78,7 @@ def build_library_layout(snapshot: WorldSnapshot) -> SceneLayout:
                 height=shelf_height,
                 scene_name="library",
                 section_key=section.key,
-                reserved=section.reserved,
+                reserved=under_construction,
                 solid=True,
             )
         )
@@ -113,6 +114,8 @@ def build_library_layout(snapshot: WorldSnapshot) -> SceneLayout:
                 )
 
     if system_section is not None:
+        # Keep the system wall in the left-side daemon cluster so it remains visible
+        # near spawn and distinct from the daemon notice board.
         wall_x = 36
         wall_y = 670
         wall_width = 132
@@ -194,7 +197,7 @@ def build_library_layout(snapshot: WorldSnapshot) -> SceneLayout:
             ),
             LayoutObject(
                 object_id="portal:vault",
-                label="Stairs Down",
+                label="",
                 kind="stairs",
                 x=220,
                 y=642,
@@ -223,10 +226,11 @@ def build_dungeon_layout(snapshot: WorldSnapshot) -> SceneLayout:
         row = index // len(section_x)
         x = section_x[col]
         y = top_y + row * 220
+        under_construction = section.reserved or section.under_construction
         objects.append(
             LayoutObject(
                 object_id=f"vault-shelf:{section.key}",
-                label=section.label,
+                label="" if under_construction else section.label,
                 kind="vault-shelf",
                 x=x,
                 y=y,
@@ -234,6 +238,7 @@ def build_dungeon_layout(snapshot: WorldSnapshot) -> SceneLayout:
                 height=section_height,
                 scene_name="vault",
                 section_key=section.key,
+                reserved=under_construction,
                 solid=True,
             )
         )
@@ -262,8 +267,8 @@ def build_dungeon_layout(snapshot: WorldSnapshot) -> SceneLayout:
             object_id="anchor:vault-return",
             label="Vault Stair Landing",
             kind="anchor",
-            x=234,
-            y=824,
+            x=64,
+            y=972,
             width=16,
             height=16,
             scene_name="vault",
@@ -273,10 +278,10 @@ def build_dungeon_layout(snapshot: WorldSnapshot) -> SceneLayout:
     objects.append(
         LayoutObject(
             object_id="portal:library",
-            label="Stairs Up",
+            label="",
             kind="stairs",
-            x=178,
-            y=782,
+            x=32,
+            y=946,
             width=64,
             height=72,
             scene_name="vault",

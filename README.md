@@ -176,13 +176,22 @@ Practical rule:
 From the repo root:
 
 ```bash
-python3 -m pip install -e .
+./scripts/install_mnemonicos.sh
 ```
 
-This installs the user-facing commands:
+This wrapper installs MnemonicOS and the Library RPG together.
+
+What it installs:
 
 - `mnemonicos`
 - `mnemonicos-daemon`
+- `mnemonicos-game`
+
+What the wrapper runs internally:
+
+```bash
+python3 -m pip install -e ".[game]"
+```
 
 Config discovery is automatic:
 
@@ -227,6 +236,65 @@ Typical setup:
 ```bash
 cp config/memory.example.toml config/memory.toml
 ```
+
+### Install the Game
+
+The recommended install path is the wrapper:
+
+```bash
+./scripts/install_mnemonicos.sh
+```
+
+It installs both the core MnemonicOS commands and the game launcher in one step.
+
+How to launch it:
+
+```bash
+mnemonicos-game
+```
+
+Safest launch command when you want to be explicit about which workspace the game should read:
+
+```bash
+mnemonicos-game --root /absolute/path/to/your/mnemonicos/workspace
+```
+
+For this repo specifically:
+
+```bash
+mnemonicos-game --root /Users/jianyulong/ai_memory
+```
+
+Quick verification:
+
+```bash
+mnemonicos-game --check
+```
+
+That prints the world summary without opening the game window, which is useful for confirming that the game sees the expected notes, system files, vault sessions, and daemon workspace.
+
+If you want a standalone desktop app bundle instead of launching from the CLI:
+
+```bash
+./scripts/build_mnemonicos_game_app.sh
+```
+
+What the app-build script does:
+
+- installs the package with the `game` extra
+- installs `pyinstaller`
+- builds a windowed app named `MnemonicOSLibraryRPG`
+
+Build outputs:
+
+- app bundle: `dist/MnemonicOSLibraryRPG`
+- temporary build files: `build/`
+
+Troubleshooting:
+
+- If the game opens with empty shelves, no vault books, or a dormant daemon while your real MnemonicOS workspace has data, you are almost certainly pointing the game at the wrong workspace root.
+- Run `mnemonicos-game --check --root /path/to/workspace` first and confirm the reported note/session counts match your real system.
+- Reinstalling MnemonicOS is usually not necessary; fixing the workspace path is usually enough.
 
 ### Agent Adapters
 

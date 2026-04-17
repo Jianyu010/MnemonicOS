@@ -48,20 +48,31 @@ def daemon_effective_state(runtime) -> str:
     daemon_state_until = getattr(runtime, "daemon_state_until", 0.0)
     if getattr(runtime, "daemon_state", "idle") != "idle" and daemon_state_until and daemon_state_until > monotonic():
         return runtime.daemon_state
-    state, _pid = daemon_reachability(runtime.settings.workspace_root)
-    if state == "offline" or state == "unconfigured":
-        return "dormant"
+    # Use cached socket state — refreshed once every 5 s by maybe_refresh_daemon_socket()
+    # rather than calling daemon_reachability() on every frame.
+    state = getattr(runtime, "daemon_socket_state", "unconfigured")
     if getattr(runtime, "follow_thread_sections", []):
         return "guiding"
     if review_slip_count(runtime.snapshot):
         return "reviewing"
+    if state == "offline" or state == "unconfigured":
+        return "dormant"
     if state == "starting":
         return "starting"
     return "idle"
 
 
-def daemon_status_line(workspace_root: Path, snapshot: WorldSnapshot, focused_entry_title: str | None = None) -> str:
-    state, _pid = daemon_reachability(workspace_root)
+def daemon_status_line(
+    workspace_root: Path,
+    snapshot: WorldSnapshot,
+    focused_entry_title: str | None = None,
+    *,
+    socket_state: str | None = None,
+) -> str:
+    if socket_state is not None:
+        state = socket_state
+    else:
+        state, _pid = daemon_reachability(workspace_root)
     if state == "offline" or state == "unconfigured":
         return "Dormant"
     review_count = review_slip_count(snapshot)

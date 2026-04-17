@@ -95,6 +95,8 @@ class GameRuntime:
     daemon_state: str = "idle"
     daemon_state_until: float = 0.0
     overlay_live_refreshed_at: float = 0.0
+    daemon_socket_state: str = "unconfigured"
+    daemon_socket_checked_at: float = 0.0
 
 
 def switch_scene(runtime: GameRuntime, scene_name: str) -> None:

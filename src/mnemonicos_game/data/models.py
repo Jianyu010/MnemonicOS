@@ -43,6 +43,7 @@ class ZoneSection:
     entries: list[GameEntry] = field(default_factory=list)
     books: list[GameBook] = field(default_factory=list)
     reserved: bool = False
+    under_construction: bool = False
 
     @property
     def item_count(self) -> int:

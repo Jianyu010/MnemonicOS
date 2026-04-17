@@ -3,7 +3,8 @@ from __future__ import annotations
 import math
 
 from mnemonicos_game.assets import color
-from mnemonicos_game.entities import daemon_is_available, daemon_rect_color, draw_scroll, entry_color, lifecycle_color
+from mnemonicos_game.entities import draw_scroll, entry_color, lifecycle_color
+from mnemonicos_game.entities.marker import freshness_label
 from mnemonicos_game.entities.daemon_npc import daemon_effective_state, daemon_state_label, daemon_status_line, review_slip_count
 from mnemonicos_game.entities.scroll import scroll_is_fresh
 from mnemonicos_game.ui import draw_hud_legend, draw_minimap
@@ -108,8 +109,11 @@ def draw_scene(surface, runtime, font, small_font, tiny_font, pygame) -> None:
                 draw_risk_halo(surface, rect, section_entries(runtime, obj.section_key), colors, pygame)
                 draw_bookshelf(surface, rect, colors, pygame)
         elif obj.kind == "vault-shelf":
-            draw_risk_halo(surface, rect, [], colors, pygame)
-            draw_vault_shelf(surface, rect, colors, pygame)
+            if obj.reserved:
+                draw_construction_shelf(surface, rect, colors, pygame)
+            else:
+                draw_risk_halo(surface, rect, [], colors, pygame)
+                draw_vault_shelf(surface, rect, colors, pygame)
         elif obj.kind == "bulletin-wall":
             draw_risk_halo(surface, rect, section_entries(runtime, obj.section_key), colors, pygame)
             draw_bulletin_board(surface, rect, colors, pygame)
@@ -145,7 +149,7 @@ def draw_scene(surface, runtime, font, small_font, tiny_font, pygame) -> None:
         elif obj.kind == "anchor":
             continue
 
-        if obj.kind in {"shelf", "vault-shelf", "bulletin-wall", "stairs", "entrance"}:
+        if obj.kind in {"shelf", "vault-shelf", "bulletin-wall", "entrance"}:
             label = tiny_font.render(obj.label, True, colors["text"])
             surface.blit(label, (rect.x + 8, rect.y + 8))
 
@@ -458,11 +462,13 @@ def draw_stairs(surface, rect, scene_name: str, colors, pygame) -> None:
 
 
 def draw_bookshelf(surface, rect, colors, pygame) -> None:
-    """Library bookshelf: brighter shallow front-top view with clear shelf boards."""
+    """Library bookshelf: warm wood case with a clearly readable dark-oak interior."""
     wood_dark = (52, 30, 12)
     wood_med = (118, 76, 38)
     wood_light = (164, 112, 62)
-    back_panel = (64, 40, 18)
+    # back_panel must be noticeably lighter than the scene bg (44,24,16) so the
+    # shelf interior is visible.  (64,40,18) was too close to bg — use a warmer mid-brown.
+    back_panel = (92, 62, 30)
     top_depth = 10
     side_w = 12
     inner = pygame.Rect(rect.x + side_w, rect.y + top_depth + 4, rect.width - 2 * side_w, rect.height - top_depth - 14)
@@ -473,14 +479,16 @@ def draw_bookshelf(surface, rect, colors, pygame) -> None:
         (rect.right - 8, rect.y),
         (rect.x + 8, rect.y),
     ]
-    pygame.draw.polygon(surface, wood_light, top)
+    # Fill the body first, then draw the 3-D top face so it isn't overwritten.
     pygame.draw.rect(surface, wood_med, rect, border_radius=4)
+    pygame.draw.polygon(surface, wood_light, top)
     pygame.draw.rect(surface, back_panel, inner, border_radius=3)
 
-    shelf_levels = [inner.y + 28, inner.y + 60, inner.y + 92]
+    # Shelf boards — slightly taller (10 px) for better readability.
+    shelf_levels = [inner.y + 26, inner.y + 56, inner.y + 86]
     for by in shelf_levels:
-        pygame.draw.rect(surface, wood_light, (inner.x - 2, by, inner.width + 4, 8), border_radius=2)
-        pygame.draw.line(surface, wood_dark, (inner.x - 2, by + 8), (inner.right + 2, by + 8), 2)
+        pygame.draw.rect(surface, wood_light, (inner.x - 2, by, inner.width + 4, 10), border_radius=2)
+        pygame.draw.line(surface, wood_dark, (inner.x - 2, by + 10), (inner.right + 2, by + 10), 2)
 
     pygame.draw.rect(surface, wood_med, (rect.x, rect.y + top_depth, side_w, rect.height - top_depth), border_radius=3)
     pygame.draw.rect(surface, wood_med, (rect.right - side_w, rect.y + top_depth, side_w, rect.height - top_depth), border_radius=3)
@@ -593,7 +601,9 @@ def draw_daemon_npc(surface, rect, runtime, colors, tiny_font, pygame) -> None:
     """Reception counter with a small girl librarian NPC behind it."""
     sway_x = int(round(math.sin(runtime.anim_tick * math.pi * 0.7) * 2))
     breath = int(round(math.sin(runtime.anim_tick * math.pi * 1.1)))
-    daemon_online = daemon_is_available(runtime.settings.workspace_root)
+    # Use cached socket state — avoids 3–4 blocking socket calls per frame (was ~20 ms/frame).
+    socket_state = getattr(runtime, "daemon_socket_state", "unconfigured")
+    daemon_online = socket_state in {"online", "starting"}
     daemon_state = daemon_effective_state(runtime)
 
     # ── Counter / desk (lower 34px) ──────────────────────────────────────
@@ -699,7 +709,7 @@ def draw_daemon_npc(surface, rect, runtime, colors, tiny_font, pygame) -> None:
     if runtime.focused_entry_id:
         focused = runtime.indexes.note_by_id.get(runtime.focused_entry_id)
         focused_title = focused.title if focused is not None else None
-    status = daemon_status_line(runtime.settings.workspace_root, runtime.snapshot, focused_title)
+    status = daemon_status_line(runtime.settings.workspace_root, runtime.snapshot, focused_title, socket_state=socket_state)
     status = daemon_state_label(runtime, status)
     bubble = tiny_font.render(status[:30], True, colors["shadow"])
     bubble_rect = bubble.get_rect()
