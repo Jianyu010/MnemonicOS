@@ -118,11 +118,17 @@ def draw_scene(surface, runtime, font, small_font, tiny_font, pygame) -> None:
             draw_risk_halo(surface, rect, section_entries(runtime, obj.section_key), colors, pygame)
             draw_bulletin_board(surface, rect, colors, pygame)
         elif obj.kind == "entry-pile":
-            entries = [entry for entry in runtime.snapshot.note_entries if entry.section_key == obj.section_key]
+            entries = [
+                entry
+                for entry in runtime.snapshot.note_entries
+                if entry.section_key == obj.section_key and entry.note_id != runtime.carried_entry_id
+            ]
             draw_scroll_pile(surface, rect, entries, runtime, pygame)
         elif obj.kind == "bulletin-note":
             draw_bulletin_post(surface, rect, pygame)
         elif obj.kind == "book":
+            if obj.session_slug == runtime.carried_session_slug:
+                continue
             book_colors = [(100, 72, 44), (80, 60, 38), (112, 80, 50)]
             fill = book_colors[hash(obj.session_slug or "") % 3] if obj.session_slug else book_colors[0]
             if runtime.highlighted_session_slug == obj.session_slug:
@@ -177,16 +183,20 @@ def draw_scene(surface, runtime, font, small_font, tiny_font, pygame) -> None:
     else:
         pygame.draw.rect(surface, colors["player"], player_rect, border_radius=8)
         draw_player_facing(surface, runtime, player_rect, colors, pygame)
+    draw_carried_scroll(surface, runtime, player_rect, pygame)
 
     header = font.render(f"MenomicOS - {scene.name.title()}", True, colors["text"])
     surface.blit(header, (20, 16))
     if runtime.anim_tick < 3.0:
         hint = tiny_font.render(
-            "WASD/Arrows move, Shift sprint, Space interact, J jump-source, B bookmark, TAB bookmarks",
+            "WASD/Arrows move, Shift sprint, Space interact, J jump-source, B carry, TAB bookmarks",
             True,
             (255, 255, 255),
         )
         surface.blit(hint, (20, 48))
+    elif runtime.overlay.mode == "none" and runtime.nearest_object_id == "daemon:counter" and (runtime.carried_entry_id or runtime.carried_session_slug):
+        handoff = tiny_font.render("B: handover to daemon", True, (255, 255, 255))
+        surface.blit(handoff, (20, 48))
     if runtime.player_is_moving:
         draw_minimap(surface, runtime, tiny_font, pygame)
     if runtime.overlay.mode == "inspect" and runtime.focused_entry_id:
@@ -246,6 +256,16 @@ def draw_player_facing(surface, runtime, player_rect, colors, pygame) -> None:
         marker.midright = (player_rect.right - 4, player_rect.centery)
         marker.width, marker.height = 4, 8
     pygame.draw.rect(surface, colors["parchment"], marker, border_radius=3)
+
+
+def draw_carried_scroll(surface, runtime, player_rect, pygame) -> None:
+    if not (runtime.carried_entry_id or runtime.carried_session_slug):
+        return
+    scroll = pygame.Rect(player_rect.right - 5, player_rect.y + 10, 9, 12)
+    pygame.draw.rect(surface, (247, 232, 192), scroll, border_radius=3)
+    pygame.draw.rect(surface, (124, 92, 56), scroll, 1, border_radius=3)
+    pygame.draw.line(surface, (124, 92, 56), (scroll.x + 2, scroll.y + 4), (scroll.right - 2, scroll.y + 4), 1)
+    pygame.draw.line(surface, (124, 92, 56), (scroll.x + 2, scroll.y + 7), (scroll.right - 3, scroll.y + 7), 1)
 
 
 def draw_scene_ambient(surface, runtime, colors, pygame) -> None:

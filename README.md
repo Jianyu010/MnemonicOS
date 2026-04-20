@@ -1,8 +1,10 @@
 # MnemonicOS
 
-MnemonicOS is a local-first memory runtime for agent workflows.
+> MnemonicOS is the memory contract an agent can trust, regardless of who built the agent.
 
-It is not tied to one agent shell or model. The core system owns storage, retrieval, runtime policy, promotion, and maintenance. Agent-facing adapters sit on top as interface layers.
+MnemonicOS is a local-first, agent-independent memory runtime for agent workflows.
+
+It is not tied to one agent shell or model. The core system owns storage, retrieval, runtime policy, promotion, and maintenance. Agent-facing adapters sit on top as interface layers. See [docs/boundary.md](docs/boundary.md) for what MnemonicOS is not (not a database, not an agent framework, not a memory library), and [development/roadmap-mnemonicos-competitive-positioning.md](development/roadmap-mnemonicos-competitive-positioning.md) for the competitive positioning.
 
 ## System Shape
 

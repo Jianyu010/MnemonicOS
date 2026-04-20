@@ -28,6 +28,13 @@ BOARD_MAINTENANCE_MENU = [
     "Run status report",
 ]
 
+COUNTER_MENU = [
+    "Summon all linked wikis",
+    "Summarize the scroll",
+    "Teleport to the raw material",
+    "Place back the scroll",
+]
+
 INTAKE_TYPES = [
     "concept",
     "procedure",
@@ -98,6 +105,8 @@ class GameRuntime:
     overlay: OverlayState = field(default_factory=OverlayState)
     focused_entry_id: str | None = None
     focused_session_slug: str | None = None
+    carried_entry_id: str | None = None
+    carried_session_slug: str | None = None
     nearest_object_id: str | None = None
     bookmarks: list[str] = field(default_factory=list)
     status_line: str = "Explore the library. Press Space to inspect, TAB for bookmarks, ESC to quit."
