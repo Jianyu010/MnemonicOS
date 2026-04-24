@@ -4,7 +4,9 @@
 
 MnemonicOS is a local-first, agent-independent memory runtime for agent workflows.
 
-It is not tied to one agent shell or model. The core system owns storage, retrieval, runtime policy, promotion, and maintenance. Agent-facing adapters sit on top as interface layers. See [docs/boundary.md](docs/boundary.md) for what MnemonicOS is not (not a database, not an agent framework, not a memory library), and [development/roadmap-mnemonicos-competitive-positioning.md](development/roadmap-mnemonicos-competitive-positioning.md) for the competitive positioning.
+It is not tied to one agent shell or model. The core system owns true raw intake, storage, retrieval, runtime policy, promotion, and maintenance. Agent-facing adapters sit on top as interface layers. See [docs/boundary.md](docs/boundary.md) for what MnemonicOS is not (not a database, not an agent framework, not a memory library), and [development/roadmap-mnemonicos-competitive-positioning.md](development/roadmap-mnemonicos-competitive-positioning.md) for the competitive positioning.
+
+The raw archive is intentionally broad. MnemonicOS should accept full agent sessions, PDFs, HTML, DOCX, Markdown, plain text, logs, web clips, code docs, and copied notes as true raw artifacts, then create rebuildable projections and selective canonical memory later. Agents may attach metadata, but they should not be required to pre-trim or reshape material before MnemonicOS archives it.
 
 ## System Shape
 
@@ -59,21 +61,23 @@ New material does not become canonical memory immediately by default.
 
 ```mermaid
 flowchart LR
-    A["Session summary / note / hook output"] --> B["ingest-session"]
-    B --> C["Archive raw content + chunks"]
+    A["True raw artifact<br/>session / PDF / HTML / DOCX / log / note"] --> B["west-flange intake"]
+    B --> C["Immutable raw archive<br/>original artifact + metadata"]
+    C --> K["rebuildable projections<br/>text / chunks / spans / source candidates"]
     B --> D["promotion_queue candidate"]
     D --> E["daemon: process_promotion_queue"]
     E --> F["parse summary + infer chain context"]
     F --> G["candidate match / upsert decision"]
     G --> H["create or update canonical markdown note"]
-    C --> I["embed_backfill"]
+    K --> I["embed_backfill"]
     H --> J["sync / graph / trust refresh"]
     I --> J
 ```
 
 Promotion rules in brief:
 
-- archive first, promote later
+- preserve true raw first, project and promote later
+- raw artifacts are witness material, not canonical truth
 - default intake creates a queue candidate instead of immediate canonical memory
 - `--promote-now` exists for manual or debug use, not the normal path
 - promotion prefers updating an existing note or same-chain note when that is safer than creating duplicates
@@ -148,16 +152,17 @@ These mirror the same internal layers:
 flowchart LR
     A["Pinned system memory<br/>MEMORY.md USER.md ACTIVE.md AGENTS.md"] --> D["retrieval + orchestration"]
     B["Canonical notes<br/>wiki/*"] --> D
-    C["Raw archives<br/>sessions and summaries"] --> E["promotion + analytics"]
+    C["True raw archives<br/>sessions PDFs docs logs clips"] --> E["projection + promotion + analytics"]
     D --> F["memory packets"]
     E --> B
 ```
 
 Practical rule:
 
-- markdown is the source of truth
+- markdown is the canonical memory source of truth
 - SQLite, vectors, graph, and state tables are rebuildable working indexes
-- raw archives are broad history; canonical notes stay selective
+- raw archives are broad, redundant witness material; canonical notes stay selective
+- derived projections can be regenerated; raw artifacts should not be overwritten by agent-side summaries
 
 ## Key Components
 

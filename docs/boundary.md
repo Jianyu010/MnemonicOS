@@ -9,7 +9,8 @@ See [development/roadmap-mnemonicos-competitive-positioning.md](../development/r
 MnemonicOS is a **local-first, agent-independent memory runtime**. It owns the memory contract and lifecycle machinery:
 
 - typed memory taxonomy (source, procedure, decision, incident, concept)
-- archive-first intake and provenance preservation
+- true-raw archive intake and provenance preservation
+- MnemonicOS-owned projection plugins for raw artifacts such as sessions, PDFs, HTML, DOCX, Markdown, plain text, web clips, and code docs
 - promotion queue and typed promotion policy
 - retrieve → outcome → writeback feedback loop
 - policy-aware retrieval packets (not just ranked hits)
@@ -38,9 +39,13 @@ Framework-embedded memory helpers — LangMem, LangChain memory classes, LlamaIn
 
 MnemonicOS consumes embeddings, it does not produce them. Model choice, batch policy, and backfill are implementation concerns under the `south flange`. Swapping embedding providers does not change the MnemonicOS contract.
 
-### Not A Document Converter
+### Not A General-Purpose Document Converter
 
-Parsing a PDF, HTML page, DOCX, or web clip into plain text is the job of an ingestion adapter under the `west flange`. MnemonicOS consumes the normalized output, archives the raw material immutably, and runs typed promotion — it does not ship a PDF parser of its own.
+MnemonicOS should not become a generic file-conversion product. However, the west flange is part of MnemonicOS, and it must own the raw intake contract.
+
+MnemonicOS accepts true raw artifacts first: full agent sessions, PDFs, HTML pages, DOCX files, Markdown, plain text, web clips, logs, code documents, and copied notes. These artifacts are archived immutably before any interpretation. Official west-flange plugins may then derive normalized projections such as extracted text, chunks, page ranges, metadata, spans, entities, or candidate source records. Those projections are rebuildable derivatives, not replacements for raw.
+
+Agents and external tools may submit raw artifacts and optional metadata, but they should not be required to trim, summarize, reformat, or "clean" material before MnemonicOS receives it. If upstream agents pre-process everything into a rigid convention, MnemonicOS becomes a skill protocol rather than a memory system.
 
 ### Not A Workflow Engine
 
@@ -50,15 +55,16 @@ MnemonicOS does not orchestrate multi-step business workflows. Scheduled jobs in
 
 Every feature added inside the boundary competes with something specialized outside it. Keeping the runtime narrow means:
 
-1. **Adapter churn stays external.** New document parsers, new vector stores, new agents plug into a flange without the core changing.
-2. **The contract is small enough to be trustworthy.** Agents and tools can rely on MnemonicOS because its surface is well-defined.
-3. **Competitive collisions stay on positioning, not on product scope.** When another project "adds memory," MnemonicOS either consumes its output (good) or slots underneath it (also good).
+1. **Raw authority stays inside MnemonicOS.** External agents and tools can hand over raw material, but MnemonicOS preserves the unmodified witness artifact and controls the derived projections.
+2. **Adapter churn stays behind flanges.** New document parsers, vector stores, and agents plug into a flange without changing the core memory contract.
+3. **The contract is small enough to be trustworthy.** Agents and tools can rely on MnemonicOS because its surface is well-defined.
+4. **Competitive collisions stay on positioning, not on product scope.** When another project "adds memory," MnemonicOS either consumes its raw outputs, serves it governed memory, or slots underneath it.
 
 ## Flange Summary
 
 - **North**: agent and runtime adapters (Codex, Claude Code, OpenClaw, CLI, HTTP, MCP).
 - **South**: storage and index adapters (SQLite, vector, graph, object store).
 - **East**: retrieval and context delivery (policy-aware packets).
-- **West**: raw material intake (PDF, HTML, DOCX, Markdown, plain text, web clips, code docs).
+- **West**: true raw material intake and MnemonicOS-owned projection plugins (agent sessions, PDFs, HTML, DOCX, Markdown, plain text, web clips, logs, code docs, copied notes).
 
 Anything inside the four flanges is MnemonicOS. Anything outside is a replaceable component.

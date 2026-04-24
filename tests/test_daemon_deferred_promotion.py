@@ -15,7 +15,7 @@ from second_brain.config import load_config
 from second_brain.daemon import Daemon
 from second_brain.daemon_status import daemon_status_summary
 from second_brain.db import connect_db, run_migrations
-from second_brain.ingest import ingest_session
+from second_brain.ingest import _extract_error_aliases, _read_memory_items, _synthesize_summary, ingest_session
 from second_brain.jobs import run_job
 
 
@@ -154,6 +154,102 @@ class DaemonDeferredPromotionTest(unittest.TestCase):
             connection.close()
             self.assertEqual(str(queue_status["status"]), "processed")
             self.assertEqual(int(note_count["count"]), 2)
+
+    def test_promotion_enrichment_prefers_nuance_and_next_over_steps(self) -> None:
+        content = textwrap.dedent(
+            """
+            # AI Firm tool experience: run_python
+
+            Nuance: exit 1
+            Next: Use `read_file` before retrying.
+
+            ```memory
+            items:
+              - type: procedure
+                title: "Use run_python: exit 1"
+                steps:
+                  - "Run the same command again."
+                  - "Avoid: Ignore the import path."
+                confidence: high
+            ```
+            """
+        ).strip()
+        item = _read_memory_items(content, explicit_only=False)[0]
+
+        self.assertEqual(
+            _synthesize_summary(item, content),
+            "WHEN exit 1 \u2192 Use `read_file` before retrying.",
+        )
+
+    def test_promotion_enrichment_extracts_session_wide_error_aliases(self) -> None:
+        content = textwrap.dedent(
+            """
+            # AI Firm tool experience: run_python
+
+            Nuance: ModuleNotFoundError happened outside the memory item.
+            Next: Verify sys.path before retrying.
+
+            ```memory
+            items:
+              - type: procedure
+                title: "Use run_python after failure"
+                steps:
+                  - "Inspect files before rerun."
+                confidence: high
+            ```
+            """
+        ).strip()
+        item = _read_memory_items(content, explicit_only=False)[0]
+
+        self.assertIn("ModuleNotFoundError", _extract_error_aliases(item, content))
+
+    def test_process_queue_uses_enriched_summary_and_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = self._prepare_workspace(Path(tmp_dir))
+            ingest_session(
+                config,
+                bridge_id="ai_firm",
+                session_id="nuance-enrichment",
+                content=textwrap.dedent(
+                    """
+                    # AI Firm tool experience: run_python
+
+                    Nuance: ModuleNotFoundError
+                    Next: Run tests from project root with python -m pytest.
+
+                    ```memory
+                    items:
+                      - type: procedure
+                        title: "Use run_python: ModuleNotFoundError"
+                        steps:
+                          - "Blindly edit calculator logic."
+                          - "Avoid: Repeat same test command unchanged."
+                        confidence: high
+                    ```
+                    """
+                ).strip()
+                + "\n",
+            )
+
+            run_job(config, job_name="process_promotion_queue", dry_run=False)
+
+            connection = connect_db(config.paths.db_path)
+            row = connection.execute(
+                "SELECT id, summary FROM notes WHERE title = ?",
+                ("Use run_python: ModuleNotFoundError",),
+            ).fetchone()
+            alias = connection.execute(
+                "SELECT note_id FROM aliases WHERE alias = ?",
+                ("ModuleNotFoundError",),
+            ).fetchone()
+            connection.close()
+
+            self.assertIsNotNone(row)
+            self.assertEqual(
+                str(row["summary"]),
+                "WHEN ModuleNotFoundError \u2192 Run tests from project root with python -m pytest.",
+            )
+            self.assertEqual(str(alias["note_id"]), str(row["id"]))
 
     def test_embed_backfill_populates_archive_chunk_vectors(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
