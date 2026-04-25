@@ -1,0 +1,4526 @@
+{
+  "schema": "openai.presentation.layout/v4",
+  "unit": "px",
+  "slide": {
+    "aid": "sl/qvhx4w",
+    "id": "qvhx4w",
+    "slide": 4,
+    "layoutId": "6c4375c3-e4f1-41cc-8c9a-2142c2f8ac68",
+    "layoutName": "Title Slide",
+    "layoutType": "title",
+    "masterLayoutId": "3ae0daf4-08c4-430b-bfbe-8444b207bd88",
+    "masterLayoutName": "Master",
+    "frame": {
+      "left": 0,
+      "top": 0,
+      "width": 1920,
+      "height": 1080
+    }
+  },
+  "theme": {
+    "colorSchemeName": "ChatGPT",
+    "colors": {
+      "accent1": "#156082",
+      "accent2": "#E97132",
+      "accent3": "#196B24",
+      "accent4": "#0F9ED5",
+      "accent5": "#A02B93",
+      "accent6": "#4EA72E",
+      "bg1": "#FFFFFF",
+      "bg2": "#000000",
+      "tx1": "#1F1F1F",
+      "tx2": "#FFFFFF",
+      "dk1": "#000000",
+      "lt1": "#FFFFFF",
+      "dk2": "#0E2841",
+      "lt2": "#E8E8E8",
+      "hlink": "#467886",
+      "folHlink": "#96607D"
+    },
+    "typefaces": [
+      "+mn-lt"
+    ]
+  },
+  "inheritedLayers": [
+    {
+      "scope": "layout",
+      "id": "6c4375c3-e4f1-41cc-8c9a-2142c2f8ac68",
+      "name": "Title Slide",
+      "type": "title",
+      "parentLayoutId": "3ae0daf4-08c4-430b-bfbe-8444b207bd88",
+      "elements": []
+    },
+    {
+      "scope": "master",
+      "id": "3ae0daf4-08c4-430b-bfbe-8444b207bd88",
+      "name": "Master",
+      "type": "master",
+      "elements": []
+    }
+  ],
+  "elements": [
+    {
+      "order": 1,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/47y1kre1",
+      "id": "1",
+      "name": "bg",
+      "bbox": [
+        0,
+        0,
+        1920,
+        1080
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.0"
+      },
+      "geometry": "rect",
+      "fillColor": "#F6F8FB",
+      "lineColor": "#F6F8FB",
+      "lineWidth": 0
+    },
+    {
+      "order": 2,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/bm58z25k",
+      "id": "2",
+      "bbox": [
+        84,
+        68,
+        10,
+        10
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.0.0.0"
+      },
+      "geometry": "roundRect",
+      "fillColor": "#7357FF",
+      "lineColor": "#7357FF",
+      "lineWidth": 0
+    },
+    {
+      "order": 3,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/m1cfa9w3",
+      "id": "3",
+      "bbox": [
+        104,
+        66,
+        1732,
+        16
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.0.0.1"
+      },
+      "geometry": "rect",
+      "text": "PROCESSING LOGIC + RL",
+      "textPreview": "PROCESSING LOGIC + RL",
+      "resolvedFontSize": 16,
+      "resolvedTextStyle": {
+        "fontSize": 16,
+        "typeface": "+mn-lt",
+        "bold": true,
+        "alignment": "left"
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "PROCESSING LOGIC + RL"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "PROCESSING LOGIC + RL",
+          "runs": [
+            {
+              "index": 1,
+              "text": "PROCESSING LOGIC + RL",
+              "fontSize": 16,
+              "color": "#7357FF",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 4,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/tgfmlkjm",
+      "id": "4",
+      "name": "slide-title",
+      "bbox": [
+        84,
+        100,
+        1752,
+        48
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.0.1"
+      },
+      "geometry": "rect",
+      "text": "处理核心是确定性的；哪些规则最有效，由 daemon / RL 在轨道内学习和固化",
+      "textPreview": "处理核心是确定性的；哪些规则最有效，由 daemon / RL 在轨道内学习和固化",
+      "resolvedFontSize": 48,
+      "resolvedTextStyle": {
+        "fontSize": 48,
+        "typeface": "+mn-lt",
+        "bold": true,
+        "alignment": "left"
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "处理核心是确定性的；哪些规则最有效，由 daemon / RL 在轨道内学习和固化"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "处理核心是确定性的；哪些规则最有效，由 daemon / RL 在轨道内学习和固化",
+          "runs": [
+            {
+              "index": 1,
+              "text": "处理核心是确定性的；哪些规则最有效，由 daemon / RL 在轨道内学习和固化",
+              "fontSize": 48,
+              "color": "#101828",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 5,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/4vmtwra5",
+      "id": "5",
+      "name": "slide-subtitle",
+      "bbox": [
+        84,
+        158,
+        1752,
+        24
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.0.2"
+      },
+      "geometry": "rect",
+      "text": "我们不是让大模型随意写记忆，而是让小模型 daemon 学习结构化决策，并让 runtime/schema/rule 在评估中演进。",
+      "textPreview": "我们不是让大模型随意写记忆，而是让小模型 daemon 学习结构化决策，并让 runtime/schema/rule 在评估中演进。",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "fontSize": 24,
+        "typeface": "+mn-lt",
+        "alignment": "left"
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "我们不是让大模型随意写记忆，而是让小模型 daemon 学习结构化决策，并让 runtime/schema/rule 在评估中演进。"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "我们不是让大模型随意写记忆，而是让小模型 daemon 学习结构化决策，并让 runtime/schema/rule 在评估中演进。",
+          "runs": [
+            {
+              "index": 1,
+              "text": "我们不是让大模型随意写记忆，而是让小模型 daemon 学习结构化决策，并让 runtime/schema/rule 在评估中演进。",
+              "fontSize": 24,
+              "color": "#667085"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 6,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/bat47y1k",
+      "id": "6",
+      "bbox": [
+        84,
+        204,
+        856,
+        30
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.0.0"
+      },
+      "geometry": "rect",
+      "text": "确定性 runtime 负责边界",
+      "textPreview": "确定性 runtime 负责边界",
+      "resolvedFontSize": 30,
+      "resolvedTextStyle": {
+        "fontSize": 30,
+        "typeface": "+mn-lt",
+        "bold": true,
+        "alignment": "left"
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "确定性 runtime 负责边界"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "确定性 runtime 负责边界",
+          "runs": [
+            {
+              "index": 1,
+              "text": "确定性 runtime 负责边界",
+              "fontSize": 30,
+              "color": "#101828",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 7,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/mp0bi9s3",
+      "id": "7",
+      "bbox": [
+        84,
+        252,
+        855,
+        150
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.0.1"
+      },
+      "geometry": "roundRect",
+      "fillColor": "#EAF1FF",
+      "lineColor": "#2F6BFF",
+      "lineWidth": 1
+    },
+    {
+      "order": 8,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/t83itgfm",
+      "id": "8",
+      "bbox": [
+        104,
+        270,
+        816,
+        26
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.0.1.0.0"
+      },
+      "geometry": "rect",
+      "text": "Runtime / schema / rule",
+      "textPreview": "Runtime / schema / rule",
+      "resolvedFontSize": 25,
+      "resolvedTextStyle": {
+        "fontSize": 25,
+        "typeface": "+mn-lt",
+        "bold": true,
+        "alignment": "left"
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Runtime / schema / rule"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Runtime / schema / rule",
+          "runs": [
+            {
+              "index": 1,
+              "text": "Runtime / schema / rule",
+              "fontSize": 25,
+              "color": "#2F6BFF",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 9,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/4nap4r65",
+      "id": "9",
+      "bbox": [
+        104,
+        304,
+        816,
+        40
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.0.1.0.1"
+      },
+      "geometry": "rect",
+      "text": "权限、类型、字段、promotion 状态、audit、rollback、deletion cascade、canonical write 都由工程规则执行。",
+      "textPreview": "权限、类型、字段、promotion 状态、audit、rollback、deletion cascade、canonical write 都由工程规则执行。",
+      "resolvedFontSize": 20,
+      "resolvedTextStyle": {
+        "fontSize": 20,
+        "typeface": "+mn-lt",
+        "alignment": "left"
+      },
+      "textLayout": {
+        "lineCount": 2,
+        "lines": [
+          {
+            "index": 1,
+            "text": "权限、类型、字段、promotion 状态、audit、rollback、deletion cascade、canonical write"
+          },
+          {
+            "index": 2,
+            "text": "都由工程规则执行。"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "权限、类型、字段、promotion 状态、audit、rollback、deletion cascade、canonical write 都由工程规则执行。",
+          "runs": [
+            {
+              "index": 1,
+              "text": "权限、类型、字段、promotion 状态、audit、rollback、deletion cascade、canonical write 都由工程规则执行。",
+              "fontSize": 20,
+              "color": "#101828"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 10,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/u9knih4b",
+      "id": "10",
+      "bbox": [
+        84,
+        420,
+        855,
+        150
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.0.2"
+      },
+      "geometry": "roundRect",
+      "fillColor": "#EFEAFE",
+      "lineColor": "#7357FF",
+      "lineWidth": 1
+    },
+    {
+      "order": 11,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/judg7ads",
+      "id": "11",
+      "bbox": [
+        104,
+        438,
+        816,
+        26
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.0.2.0.0"
+      },
+      "geometry": "rect",
+      "text": "Daemon 负责决策建议",
+      "textPreview": "Daemon 负责决策建议",
+      "resolvedFontSize": 25,
+      "resolvedTextStyle": {
+        "fontSize": 25,
+        "typeface": "+mn-lt",
+        "bold": true,
+        "alignment": "left"
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Daemon 负责决策建议"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Daemon 负责决策建议",
+          "runs": [
+            {
+              "index": 1,
+              "text": "Daemon 负责决策建议",
+              "fontSize": 25,
+              "color": "#7357FF",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 12,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/cfa9w3m9",
+      "id": "12",
+      "bbox": [
+        104,
+        472,
+        816,
+        40
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.0.2.0.1"
+      },
+      "geometry": "rect",
+      "text": "score / suggest：extract、link、promote、defer、merge、flag stale、serve with warning、request review。",
+      "textPreview": "score / suggest：extract、link、promote、defer、merge、flag stale、serve with warning、request review。",
+      "resolvedFontSize": 20,
+      "resolvedTextStyle": {
+        "fontSize": 20,
+        "typeface": "+mn-lt",
+        "alignment": "left"
+      },
+      "textLayout": {
+        "lineCount": 2,
+        "lines": [
+          {
+            "index": 1,
+            "text": "score / suggest：extract、link、promote、defer、merge、flag stale、serve with"
+          },
+          {
+            "index": 2,
+            "text": "warning、request review。"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "score / suggest：extract、link、promote、defer、merge、flag stale、serve with warning、request review。",
+          "runs": [
+            {
+              "index": 1,
+              "text": "score / suggest：extract、link、promote、defer、merge、flag stale、serve with warning、request review。",
+              "fontSize": 20,
+              "color": "#101828"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 13,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/1032lszq",
+      "id": "13",
+      "bbox": [
+        84,
+        588,
+        855,
+        150
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.0.3"
+      },
+      "geometry": "roundRect",
+      "fillColor": "#E9F7F1",
+      "lineColor": "#12A66A",
+      "lineWidth": 1
+    },
+    {
+      "order": 14,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/u18jqh0f",
+      "id": "14",
+      "bbox": [
+        104,
+        606,
+        816,
+        26
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.0.3.0.0"
+      },
+      "geometry": "rect",
+      "text": "LLM daemon 负责填充与解释",
+      "textPreview": "LLM daemon 负责填充与解释",
+      "resolvedFontSize": 25,
+      "resolvedTextStyle": {
+        "fontSize": 25,
+        "typeface": "+mn-lt",
+        "bold": true,
+        "alignment": "left"
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "LLM daemon 负责填充与解释"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "LLM daemon 负责填充与解释",
+          "runs": [
+            {
+              "index": 1,
+              "text": "LLM daemon 负责填充与解释",
+              "fontSize": 25,
+              "color": "#12A66A",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 15,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/jm1cfa9w",
+      "id": "15",
+      "bbox": [
+        104,
+        640,
+        816,
+        40
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.0.3.0.1"
+      },
+      "geometry": "rect",
+      "text": "从 raw / projection 中提取结构化内容，给出 proposal + explanation；runtime 决定是否落库。",
+      "textPreview": "从 raw / projection 中提取结构化内容，给出 proposal + explanation；runtime 决定是否落库。",
+      "resolvedFontSize": 20,
+      "resolvedTextStyle": {
+        "fontSize": 20,
+        "typeface": "+mn-lt",
+        "alignment": "left"
+      },
+      "textLayout": {
+        "lineCount": 2,
+        "lines": [
+          {
+            "index": 1,
+            "text": "从 raw / projection 中提取结构化内容，给出 proposal + explanation；runtime"
+          },
+          {
+            "index": 2,
+            "text": "决定是否落库。"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "从 raw / projection 中提取结构化内容，给出 proposal + explanation；runtime 决定是否落库。",
+          "runs": [
+            {
+              "index": 1,
+              "text": "从 raw / projection 中提取结构化内容，给出 proposal + explanation；runtime 决定是否落库。",
+              "fontSize": 20,
+              "color": "#101828"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 16,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/c7u54zid",
+      "id": "16",
+      "bbox": [
+        982,
+        204,
+        856,
+        30
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.1.0"
+      },
+      "geometry": "rect",
+      "text": "可学习的闭环",
+      "textPreview": "可学习的闭环",
+      "resolvedFontSize": 30,
+      "resolvedTextStyle": {
+        "fontSize": 30,
+        "typeface": "+mn-lt",
+        "bold": true,
+        "alignment": "left"
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "可学习的闭环"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "可学习的闭环",
+          "runs": [
+            {
+              "index": 1,
+              "text": "可学习的闭环",
+              "fontSize": 30,
+              "color": "#101828",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 17,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/1orytsvu",
+      "id": "17",
+      "bbox": [
+        981,
+        252,
+        855,
+        420
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.1.1"
+      },
+      "geometry": "roundRect",
+      "fillColor": "#0D1321",
+      "lineColor": "#0D1321",
+      "lineWidth": 0
+    },
+    {
+      "order": 18,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/upwb2hwf",
+      "id": "18",
+      "bbox": [
+        1009,
+        374,
+        220,
+        44
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.1.1.0.0.0"
+      },
+      "geometry": "roundRect",
+      "fillColor": "#26324A",
+      "lineColor": "#26324A",
+      "lineWidth": 1
+    },
+    {
+      "order": 19,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/nap4r65w",
+      "id": "19",
+      "bbox": [
+        1022,
+        388,
+        196,
+        16
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.1.1.0.0.0.0"
+      },
+      "geometry": "rect",
+      "text": "Raw + projection",
+      "textPreview": "Raw + projection",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "fontSize": 17,
+        "typeface": "+mn-lt",
+        "bold": true,
+        "alignment": "center"
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Raw + projection"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Raw + projection",
+          "runs": [
+            {
+              "index": 1,
+              "text": "Raw + projection",
+              "fontSize": 17,
+              "color": "#FFFFFF",
+              "bold": true,
+              "alignment": "center"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 20,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/f6dcbulw",
+      "id": "20",
+      "bbox": [
+        1242,
+        380,
+        30,
+        32
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.1.1.0.0.1"
+      },
+      "geometry": "rect",
+      "text": "→",
+      "textPreview": "→",
+      "resolvedFontSize": 30,
+      "resolvedTextStyle": {
+        "fontSize": 30,
+        "typeface": "+mn-lt",
+        "bold": true,
+        "alignment": "center"
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "→"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "→",
+          "runs": [
+            {
+              "index": 1,
+              "text": "→",
+              "fontSize": 30,
+              "color": "#8A94A6",
+              "bold": true,
+              "alignment": "center"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 21,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/mlkjm1cf",
+      "id": "21",
+      "bbox": [
+        1283,
+        374,
+        230,
+        44
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.1.1.0.0.2"
+      },
+      "geometry": "roundRect",
+      "fillColor": "#26324A",
+      "lineColor": "#26324A",
+      "lineWidth": 1
+    },
+    {
+      "order": 22,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/xc3ylc7u",
+      "id": "22",
+      "bbox": [
+        1294,
+        388,
+        208,
+        16
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.1.1.0.0.2.0"
+      },
+      "geometry": "rect",
+      "text": "Daemon proposal",
+      "textPreview": "Daemon proposal",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "fontSize": 17,
+        "typeface": "+mn-lt",
+        "bold": true,
+        "alignment": "center"
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Daemon proposal"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Daemon proposal",
+          "runs": [
+            {
+              "index": 1,
+              "text": "Daemon proposal",
+              "fontSize": 17,
+              "color": "#FFFFFF",
+              "bold": true,
+              "alignment": "center"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 23,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/4r65wjud",
+      "id": "23",
+      "bbox": [
+        1526,
+        380,
+        30,
+        32
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.1.1.0.0.3"
+      },
+      "geometry": "rect",
+      "text": "→",
+      "textPreview": "→",
+      "resolvedFontSize": 30,
+      "resolvedTextStyle": {
+        "fontSize": 30,
+        "typeface": "+mn-lt",
+        "bold": true,
+        "alignment": "center"
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "→"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "→",
+          "runs": [
+            {
+              "index": 1,
+              "text": "→",
+              "fontSize": 30,
+              "color": "#8A94A6",
+              "bold": true,
+              "alignment": "center"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 24,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/fepkzupw",
+      "id": "24",
+      "bbox": [
+        1567,
+        374,
+        210,
+        44
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.1.1.0.0.4"
+      },
+      "geometry": "roundRect",
+      "fillColor": "#26324A",
+      "lineColor": "#26324A",
+      "lineWidth": 1
+    },
+    {
+      "order": 25,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/mtwra5gb",
+      "id": "25",
+      "bbox": [
+        1578,
+        388,
+        188,
+        16
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.1.1.0.0.4.0"
+      },
+      "geometry": "rect",
+      "text": "Runtime gate",
+      "textPreview": "Runtime gate",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "fontSize": 17,
+        "typeface": "+mn-lt",
+        "bold": true,
+        "alignment": "center"
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Runtime gate"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Runtime gate",
+          "runs": [
+            {
+              "index": 1,
+              "text": "Runtime gate",
+              "fontSize": 17,
+              "color": "#FFFFFF",
+              "bold": true,
+              "alignment": "center"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 26,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/xkf6dcbu",
+      "id": "26",
+      "bbox": [
+        1009,
+        438,
+        210,
+        44
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.1.1.0.1.0"
+      },
+      "geometry": "roundRect",
+      "fillColor": "#26324A",
+      "lineColor": "#26324A",
+      "lineWidth": 1
+    },
+    {
+      "order": 27,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/4zidonyd",
+      "id": "27",
+      "bbox": [
+        1020,
+        452,
+        188,
+        16
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.1.1.0.1.0.0"
+      },
+      "geometry": "rect",
+      "text": "Policy packet",
+      "textPreview": "Policy packet",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "fontSize": 17,
+        "typeface": "+mn-lt",
+        "bold": true,
+        "alignment": "center"
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Policy packet"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Policy packet",
+          "runs": [
+            {
+              "index": 1,
+              "text": "Policy packet",
+              "fontSize": 17,
+              "color": "#FFFFFF",
+              "bold": true,
+              "alignment": "center"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 28,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/fil0rqd4",
+      "id": "28",
+      "bbox": [
+        1232,
+        444,
+        30,
+        32
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.1.1.0.1.1"
+      },
+      "geometry": "rect",
+      "text": "→",
+      "textPreview": "→",
+      "resolvedFontSize": 30,
+      "resolvedTextStyle": {
+        "fontSize": 30,
+        "typeface": "+mn-lt",
+        "bold": true,
+        "alignment": "center"
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "→"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "→",
+          "runs": [
+            {
+              "index": 1,
+              "text": "→",
+              "fontSize": 30,
+              "color": "#8A94A6",
+              "bold": true,
+              "alignment": "center"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 29,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/qxs72x4n",
+      "id": "29",
+      "bbox": [
+        1273,
+        438,
+        210,
+        44
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.1.1.0.1.2"
+      },
+      "geometry": "roundRect",
+      "fillColor": "#26324A",
+      "lineColor": "#26324A",
+      "lineWidth": 1
+    },
+    {
+      "order": 30,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/0z61032l",
+      "id": "30",
+      "bbox": [
+        1284,
+        452,
+        188,
+        16
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.1.1.0.1.2.0"
+      },
+      "geometry": "rect",
+      "text": "Task outcome",
+      "textPreview": "Task outcome",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "fontSize": 17,
+        "typeface": "+mn-lt",
+        "bold": true,
+        "alignment": "center"
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Task outcome"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Task outcome",
+          "runs": [
+            {
+              "index": 1,
+              "text": "Task outcome",
+              "fontSize": 17,
+              "color": "#FFFFFF",
+              "bold": true,
+              "alignment": "center"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 31,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/pkzupwb2",
+      "id": "31",
+      "bbox": [
+        1496,
+        444,
+        30,
+        32
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.1.1.0.1.3"
+      },
+      "geometry": "rect",
+      "text": "→",
+      "textPreview": "→",
+      "resolvedFontSize": 30,
+      "resolvedTextStyle": {
+        "fontSize": 30,
+        "typeface": "+mn-lt",
+        "bold": true,
+        "alignment": "center"
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "→"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "→",
+          "runs": [
+            {
+              "index": 1,
+              "text": "→",
+              "fontSize": 30,
+              "color": "#8A94A6",
+              "bold": true,
+              "alignment": "center"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 32,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/itgfmlkj",
+      "id": "32",
+      "bbox": [
+        1537,
+        438,
+        250,
+        44
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.1.1.0.1.4"
+      },
+      "geometry": "roundRect",
+      "fillColor": "#26324A",
+      "lineColor": "#26324A",
+      "lineWidth": 1
+    },
+    {
+      "order": 33,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/7ed8bat4",
+      "id": "33",
+      "bbox": [
+        1548,
+        452,
+        228,
+        16
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.1.1.0.1.4.0"
+      },
+      "geometry": "rect",
+      "text": "Reward / preference",
+      "textPreview": "Reward / preference",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "fontSize": 17,
+        "typeface": "+mn-lt",
+        "bold": true,
+        "alignment": "center"
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Reward / preference"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Reward / preference",
+          "runs": [
+            {
+              "index": 1,
+              "text": "Reward / preference",
+              "fontSize": 17,
+              "color": "#FFFFFF",
+              "bold": true,
+              "alignment": "center"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 34,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/0nuxc3yl",
+      "id": "34",
+      "bbox": [
+        1010,
+        502,
+        56,
+        48
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.1.1.0.2.0"
+      },
+      "geometry": "rect",
+      "text": "↺",
+      "textPreview": "↺",
+      "resolvedFontSize": 48,
+      "resolvedTextStyle": {
+        "fontSize": 48,
+        "typeface": "+mn-lt",
+        "bold": true,
+        "alignment": "center"
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "↺"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "↺",
+          "runs": [
+            {
+              "index": 1,
+              "text": "↺",
+              "fontSize": 48,
+              "color": "#BFEAF0",
+              "bold": true,
+              "alignment": "center"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 35,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/p8nqxs72",
+      "id": "35",
+      "bbox": [
+        1078,
+        502,
+        732,
+        48
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.1.1.0.2.1"
+      },
+      "geometry": "rect",
+      "text": "更新 action taxonomy / schema weights / promotion policy；高置信规则被固化进 runtime。",
+      "textPreview": "更新 action taxonomy / schema weights / promotion policy；高置信规则被固化进 runtime。",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "fontSize": 24,
+        "typeface": "+mn-lt",
+        "bold": true,
+        "alignment": "left"
+      },
+      "textLayout": {
+        "lineCount": 2,
+        "lines": [
+          {
+            "index": 1,
+            "text": "更新 action taxonomy / schema weights / promotion"
+          },
+          {
+            "index": 2,
+            "text": "policy；高置信规则被固化进 runtime。"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "更新 action taxonomy / schema weights / promotion policy；高置信规则被固化进 runtime。",
+          "runs": [
+            {
+              "index": 1,
+              "text": "更新 action taxonomy / schema weights / promotion policy；高置信规则被固化进 runtime。",
+              "fontSize": 24,
+              "color": "#E9EEF7",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 36,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/ih4byhgn",
+      "id": "36",
+      "bbox": [
+        981,
+        690,
+        855,
+        290
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.1.2"
+      },
+      "geometry": "roundRect",
+      "fillColor": "#FDECEC",
+      "lineColor": "#E85D5D",
+      "lineWidth": 1
+    },
+    {
+      "order": 37,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/72x4nap4",
+      "id": "37",
+      "bbox": [
+        1002,
+        708,
+        816,
+        26
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.1.2.0.0"
+      },
+      "geometry": "rect",
+      "text": "避免不可收敛",
+      "textPreview": "避免不可收敛",
+      "resolvedFontSize": 25,
+      "resolvedTextStyle": {
+        "fontSize": 25,
+        "typeface": "+mn-lt",
+        "bold": true,
+        "alignment": "left"
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "避免不可收敛"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "避免不可收敛",
+          "runs": [
+            {
+              "index": 1,
+              "text": "避免不可收敛",
+              "fontSize": 25,
+              "color": "#E85D5D",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 38,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/wjudg7ad",
+      "id": "38",
+      "bbox": [
+        1002,
+        742,
+        816,
+        64
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.1.2.0.1"
+      },
+      "geometry": "rect",
+      "text": "先冻结 schema v1 与 action taxonomy；先做 SFT / preference ranking；只在窄动作集合上做 offline RL；每次实验都能回滚到 deterministic baseline。",
+      "textPreview": "先冻结 schema v1 与 action taxonomy；先做 SFT / preference ranking；只在窄动作集合上做 offline RL；每次实验都能回滚到 deterministic baseline。",
+      "resolvedFontSize": 21,
+      "resolvedTextStyle": {
+        "fontSize": 21,
+        "typeface": "+mn-lt",
+        "alignment": "left"
+      },
+      "textLayout": {
+        "lineCount": 3,
+        "lines": [
+          {
+            "index": 1,
+            "text": "先冻结 schema v1 与 action taxonomy；先做 SFT / preference"
+          },
+          {
+            "index": 2,
+            "text": "ranking；只在窄动作集合上做 offline RL；每次实验都能回滚到 deterministic"
+          },
+          {
+            "index": 3,
+            "text": "baseline。"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "先冻结 schema v1 与 action taxonomy；先做 SFT / preference ranking；只在窄动作集合上做 offline RL；每次实验都能回滚到 deterministic baseline。",
+          "runs": [
+            {
+              "index": 1,
+              "text": "先冻结 schema v1 与 action taxonomy；先做 SFT / preference ranking；只在窄动作集合上做 offline RL；每次实验都能回滚到 deterministic baseline。",
+              "fontSize": 21,
+              "color": "#101828"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 39,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/p4r65wju",
+      "id": "39",
+      "bbox": [
+        84,
+        1008,
+        900,
+        12
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.2.0"
+      },
+      "geometry": "rect",
+      "text": "MnemonicOS proposal | revised narrative",
+      "textPreview": "MnemonicOS proposal | revised narrative",
+      "resolvedFontSize": 12,
+      "resolvedTextStyle": {
+        "fontSize": 12,
+        "typeface": "+mn-lt",
+        "alignment": "left"
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "MnemonicOS proposal | revised narrative"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "MnemonicOS proposal | revised narrative",
+          "runs": [
+            {
+              "index": 1,
+              "text": "MnemonicOS proposal | revised narrative",
+              "fontSize": 12,
+              "color": "#8A94A6"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 40,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/1cfa9w3m",
+      "id": "40",
+      "bbox": [
+        1576,
+        1008,
+        260,
+        12
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.2.1"
+      },
+      "geometry": "rect",
+      "text": "2026-04-24",
+      "textPreview": "2026-04-24",
+      "resolvedFontSize": 12,
+      "resolvedTextStyle": {
+        "fontSize": 12,
+        "typeface": "+mn-lt",
+        "alignment": "right"
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "2026-04-24"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "2026-04-24",
+          "runs": [
+            {
+              "index": 1,
+              "text": "2026-04-24",
+              "fontSize": 12,
+              "color": "#8A94A6",
+              "alignment": "right"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "composeRuns": [
+    {
+      "index": 1,
+      "frame": {
+        "left": 0,
+        "top": 0,
+        "width": 1920,
+        "height": 1080
+      },
+      "baseUnit": 8,
+      "root": {
+        "path": "0",
+        "kind": "layers",
+        "requestedSize": {
+          "width": {
+            "mode": "fill",
+            "value": 1
+          },
+          "height": {
+            "mode": "fill",
+            "value": 1
+          }
+        },
+        "intrinsicSize": {
+          "width": 0,
+          "height": 0
+        },
+        "frame": {
+          "left": 0,
+          "top": 0,
+          "width": 1920,
+          "height": 1080
+        },
+        "children": [
+          {
+            "path": "0.0",
+            "kind": "shape",
+            "name": "bg",
+            "requestedSize": {
+              "width": {
+                "mode": "fill",
+                "value": 1
+              },
+              "height": {
+                "mode": "fill",
+                "value": 1
+              }
+            },
+            "intrinsicSize": {
+              "width": 0,
+              "height": 0
+            },
+            "frame": {
+              "left": 0,
+              "top": 0,
+              "width": 1920,
+              "height": 1080
+            },
+            "snappedFrame": {
+              "left": 0,
+              "top": 0,
+              "width": 1920,
+              "height": 1080
+            },
+            "children": [],
+            "geometry": "rect",
+            "element": {
+              "aid": "sh/47y1kre1",
+              "id": "1",
+              "kind": "shape"
+            }
+          },
+          {
+            "path": "0.1",
+            "kind": "column",
+            "requestedSize": {
+              "width": {
+                "mode": "fill",
+                "value": 1
+              },
+              "height": {
+                "mode": "fill",
+                "value": 1
+              }
+            },
+            "intrinsicSize": {
+              "width": 168,
+              "height": 304
+            },
+            "frame": {
+              "left": 0,
+              "top": 0,
+              "width": 1920,
+              "height": 1080
+            },
+            "children": [
+              {
+                "path": "0.1.0",
+                "kind": "column",
+                "requestedSize": {
+                  "width": {
+                    "mode": "fill",
+                    "value": 1
+                  },
+                  "height": {
+                    "mode": "hug"
+                  }
+                },
+                "intrinsicSize": {
+                  "width": 0,
+                  "height": 126
+                },
+                "frame": {
+                  "left": 84,
+                  "top": 56,
+                  "width": 1752,
+                  "height": 126
+                },
+                "children": [
+                  {
+                    "path": "0.1.0.0",
+                    "kind": "row",
+                    "requestedSize": {
+                      "width": {
+                        "mode": "fill",
+                        "value": 1
+                      },
+                      "height": {
+                        "mode": "fixed",
+                        "value": 34
+                      }
+                    },
+                    "intrinsicSize": {
+                      "width": 20,
+                      "height": 16
+                    },
+                    "frame": {
+                      "left": 84,
+                      "top": 56,
+                      "width": 1752,
+                      "height": 34
+                    },
+                    "children": [
+                      {
+                        "path": "0.1.0.0.0",
+                        "kind": "shape",
+                        "requestedSize": {
+                          "width": {
+                            "mode": "fixed",
+                            "value": 10
+                          },
+                          "height": {
+                            "mode": "fixed",
+                            "value": 10
+                          }
+                        },
+                        "intrinsicSize": {
+                          "width": 10,
+                          "height": 10
+                        },
+                        "frame": {
+                          "left": 84,
+                          "top": 68,
+                          "width": 10,
+                          "height": 10
+                        },
+                        "snappedFrame": {
+                          "left": 84,
+                          "top": 68,
+                          "width": 10,
+                          "height": 10
+                        },
+                        "children": [],
+                        "geometry": "rect",
+                        "element": {
+                          "aid": "sh/bm58z25k",
+                          "id": "2",
+                          "kind": "shape"
+                        }
+                      },
+                      {
+                        "path": "0.1.0.0.1",
+                        "kind": "text",
+                        "requestedSize": {
+                          "width": {
+                            "mode": "fill",
+                            "value": 1
+                          },
+                          "height": {
+                            "mode": "hug"
+                          }
+                        },
+                        "intrinsicSize": {
+                          "width": 0,
+                          "height": 16
+                        },
+                        "frame": {
+                          "left": 104,
+                          "top": 66,
+                          "width": 1732,
+                          "height": 16
+                        },
+                        "snappedFrame": {
+                          "left": 104,
+                          "top": 66,
+                          "width": 1732,
+                          "height": 16
+                        },
+                        "children": [],
+                        "text": "PROCESSING LOGIC + RL",
+                        "transform": "none",
+                        "element": {
+                          "aid": "sh/m1cfa9w3",
+                          "id": "3",
+                          "kind": "shape"
+                        }
+                      }
+                    ],
+                    "padding": {
+                      "top": 0,
+                      "right": 0,
+                      "bottom": 0,
+                      "left": 0
+                    },
+                    "gap": 10,
+                    "effectiveGap": 10,
+                    "justifyOffset": 0,
+                    "align": "center",
+                    "justify": "start",
+                    "contentFrame": {
+                      "left": 84,
+                      "top": 56,
+                      "width": 1752,
+                      "height": 34
+                    },
+                    "items": [
+                      {
+                        "path": "0.1.0.0.0",
+                        "frame": {
+                          "left": 84,
+                          "top": 68,
+                          "width": 10,
+                          "height": 10
+                        }
+                      },
+                      {
+                        "path": "0.1.0.0.1",
+                        "frame": {
+                          "left": 104,
+                          "top": 66,
+                          "width": 1732,
+                          "height": 16
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "path": "0.1.0.1",
+                    "kind": "text",
+                    "name": "slide-title",
+                    "requestedSize": {
+                      "width": {
+                        "mode": "fill",
+                        "value": 1
+                      },
+                      "height": {
+                        "mode": "hug"
+                      }
+                    },
+                    "intrinsicSize": {
+                      "width": 0,
+                      "height": 48
+                    },
+                    "frame": {
+                      "left": 84,
+                      "top": 100,
+                      "width": 1752,
+                      "height": 48
+                    },
+                    "snappedFrame": {
+                      "left": 84,
+                      "top": 100,
+                      "width": 1752,
+                      "height": 48
+                    },
+                    "children": [],
+                    "text": "处理核心是确定性的；哪些规则最有效，由 daemon / RL 在轨道内学习和固化",
+                    "transform": "none",
+                    "element": {
+                      "aid": "sh/tgfmlkjm",
+                      "id": "4",
+                      "kind": "shape"
+                    }
+                  },
+                  {
+                    "path": "0.1.0.2",
+                    "kind": "text",
+                    "name": "slide-subtitle",
+                    "requestedSize": {
+                      "width": {
+                        "mode": "fill",
+                        "value": 1
+                      },
+                      "height": {
+                        "mode": "hug"
+                      }
+                    },
+                    "intrinsicSize": {
+                      "width": 0,
+                      "height": 24
+                    },
+                    "frame": {
+                      "left": 84,
+                      "top": 158,
+                      "width": 1752,
+                      "height": 24
+                    },
+                    "snappedFrame": {
+                      "left": 84,
+                      "top": 158,
+                      "width": 1752,
+                      "height": 24
+                    },
+                    "children": [],
+                    "text": "我们不是让大模型随意写记忆，而是让小模型 daemon 学习结构化决策，并让 runtime/schema/rule 在评估中演进。",
+                    "transform": "none",
+                    "element": {
+                      "aid": "sh/4vmtwra5",
+                      "id": "5",
+                      "kind": "shape"
+                    }
+                  }
+                ],
+                "padding": {
+                  "top": 0,
+                  "right": 0,
+                  "bottom": 0,
+                  "left": 0
+                },
+                "gap": 10,
+                "effectiveGap": 10,
+                "justifyOffset": 0,
+                "align": "start",
+                "justify": "start",
+                "contentFrame": {
+                  "left": 84,
+                  "top": 56,
+                  "width": 1752,
+                  "height": 126
+                },
+                "items": [
+                  {
+                    "path": "0.1.0.0",
+                    "frame": {
+                      "left": 84,
+                      "top": 56,
+                      "width": 1752,
+                      "height": 34
+                    }
+                  },
+                  {
+                    "path": "0.1.0.1",
+                    "frame": {
+                      "left": 84,
+                      "top": 100,
+                      "width": 1752,
+                      "height": 48
+                    }
+                  },
+                  {
+                    "path": "0.1.0.2",
+                    "frame": {
+                      "left": 84,
+                      "top": 158,
+                      "width": 1752,
+                      "height": 24
+                    }
+                  }
+                ]
+              },
+              {
+                "path": "0.1.1",
+                "kind": "grid",
+                "requestedSize": {
+                  "width": {
+                    "mode": "fill",
+                    "value": 1
+                  },
+                  "height": {
+                    "mode": "fill",
+                    "value": 1
+                  }
+                },
+                "intrinsicSize": {
+                  "width": 42,
+                  "height": 0
+                },
+                "frame": {
+                  "left": 84,
+                  "top": 204,
+                  "width": 1752,
+                  "height": 776
+                },
+                "children": [
+                  {
+                    "path": "0.1.1.0",
+                    "kind": "column",
+                    "requestedSize": {
+                      "width": {
+                        "mode": "fill",
+                        "value": 1
+                      },
+                      "height": {
+                        "mode": "fill",
+                        "value": 1
+                      }
+                    },
+                    "intrinsicSize": {
+                      "width": 0,
+                      "height": 534
+                    },
+                    "frame": {
+                      "left": 84,
+                      "top": 204,
+                      "width": 855,
+                      "height": 776
+                    },
+                    "children": [
+                      {
+                        "path": "0.1.1.0.0",
+                        "kind": "text",
+                        "requestedSize": {
+                          "width": {
+                            "mode": "fill",
+                            "value": 1
+                          },
+                          "height": {
+                            "mode": "hug"
+                          }
+                        },
+                        "intrinsicSize": {
+                          "width": 0,
+                          "height": 30
+                        },
+                        "frame": {
+                          "left": 84,
+                          "top": 204,
+                          "width": 855,
+                          "height": 30
+                        },
+                        "snappedFrame": {
+                          "left": 84,
+                          "top": 204,
+                          "width": 856,
+                          "height": 30
+                        },
+                        "children": [],
+                        "text": "确定性 runtime 负责边界",
+                        "transform": "none",
+                        "element": {
+                          "aid": "sh/bat47y1k",
+                          "id": "6",
+                          "kind": "shape"
+                        }
+                      },
+                      {
+                        "path": "0.1.1.0.1",
+                        "kind": "panel",
+                        "requestedSize": {
+                          "width": {
+                            "mode": "fill",
+                            "value": 1
+                          },
+                          "height": {
+                            "mode": "fixed",
+                            "value": 150
+                          }
+                        },
+                        "intrinsicSize": {
+                          "width": 40,
+                          "height": 36
+                        },
+                        "frame": {
+                          "left": 84,
+                          "top": 252,
+                          "width": 855,
+                          "height": 150
+                        },
+                        "snappedFrame": {
+                          "left": 84,
+                          "top": 252,
+                          "width": 855,
+                          "height": 150
+                        },
+                        "children": [
+                          {
+                            "path": "0.1.1.0.1.0",
+                            "kind": "column",
+                            "requestedSize": {
+                              "width": {
+                                "mode": "fill",
+                                "value": 1
+                              },
+                              "height": {
+                                "mode": "fill",
+                                "value": 1
+                              }
+                            },
+                            "intrinsicSize": {
+                              "width": 0,
+                              "height": 54
+                            },
+                            "frame": {
+                              "left": 104,
+                              "top": 270,
+                              "width": 815,
+                              "height": 114
+                            },
+                            "children": [
+                              {
+                                "path": "0.1.1.0.1.0.0",
+                                "kind": "text",
+                                "requestedSize": {
+                                  "width": {
+                                    "mode": "fill",
+                                    "value": 1
+                                  },
+                                  "height": {
+                                    "mode": "hug"
+                                  }
+                                },
+                                "intrinsicSize": {
+                                  "width": 0,
+                                  "height": 25
+                                },
+                                "frame": {
+                                  "left": 104,
+                                  "top": 270,
+                                  "width": 815,
+                                  "height": 25
+                                },
+                                "snappedFrame": {
+                                  "left": 104,
+                                  "top": 270,
+                                  "width": 816,
+                                  "height": 26
+                                },
+                                "children": [],
+                                "text": "Runtime / schema / rule",
+                                "transform": "none",
+                                "element": {
+                                  "aid": "sh/t83itgfm",
+                                  "id": "8",
+                                  "kind": "shape"
+                                }
+                              },
+                              {
+                                "path": "0.1.1.0.1.0.1",
+                                "kind": "text",
+                                "requestedSize": {
+                                  "width": {
+                                    "mode": "fill",
+                                    "value": 1
+                                  },
+                                  "height": {
+                                    "mode": "hug"
+                                  }
+                                },
+                                "intrinsicSize": {
+                                  "width": 0,
+                                  "height": 20
+                                },
+                                "frame": {
+                                  "left": 104,
+                                  "top": 304,
+                                  "width": 815,
+                                  "height": 40
+                                },
+                                "snappedFrame": {
+                                  "left": 104,
+                                  "top": 304,
+                                  "width": 816,
+                                  "height": 40
+                                },
+                                "children": [],
+                                "text": "权限、类型、字段、promotion 状态、audit、rollback、deletion cascade、canonical write 都由工程规则执行。",
+                                "transform": "none",
+                                "element": {
+                                  "aid": "sh/4nap4r65",
+                                  "id": "9",
+                                  "kind": "shape"
+                                }
+                              }
+                            ],
+                            "padding": {
+                              "top": 0,
+                              "right": 0,
+                              "bottom": 0,
+                              "left": 0
+                            },
+                            "gap": 9,
+                            "effectiveGap": 9,
+                            "justifyOffset": 0,
+                            "align": "start",
+                            "justify": "start",
+                            "contentFrame": {
+                              "left": 104,
+                              "top": 270,
+                              "width": 815,
+                              "height": 114
+                            },
+                            "items": [
+                              {
+                                "path": "0.1.1.0.1.0.0",
+                                "frame": {
+                                  "left": 104,
+                                  "top": 270,
+                                  "width": 815,
+                                  "height": 25
+                                }
+                              },
+                              {
+                                "path": "0.1.1.0.1.0.1",
+                                "frame": {
+                                  "left": 104,
+                                  "top": 304,
+                                  "width": 815,
+                                  "height": 40
+                                }
+                              }
+                            ]
+                          }
+                        ],
+                        "padding": {
+                          "top": 18,
+                          "right": 20,
+                          "bottom": 18,
+                          "left": 20
+                        },
+                        "align": "start",
+                        "justify": "start",
+                        "contentFrame": {
+                          "left": 104,
+                          "top": 270,
+                          "width": 815,
+                          "height": 114
+                        },
+                        "element": {
+                          "aid": "sh/mp0bi9s3",
+                          "id": "7",
+                          "kind": "shape"
+                        }
+                      },
+                      {
+                        "path": "0.1.1.0.2",
+                        "kind": "panel",
+                        "requestedSize": {
+                          "width": {
+                            "mode": "fill",
+                            "value": 1
+                          },
+                          "height": {
+                            "mode": "fixed",
+                            "value": 150
+                          }
+                        },
+                        "intrinsicSize": {
+                          "width": 40,
+                          "height": 36
+                        },
+                        "frame": {
+                          "left": 84,
+                          "top": 420,
+                          "width": 855,
+                          "height": 150
+                        },
+                        "snappedFrame": {
+                          "left": 84,
+                          "top": 420,
+                          "width": 855,
+                          "height": 150
+                        },
+                        "children": [
+                          {
+                            "path": "0.1.1.0.2.0",
+                            "kind": "column",
+                            "requestedSize": {
+                              "width": {
+                                "mode": "fill",
+                                "value": 1
+                              },
+                              "height": {
+                                "mode": "fill",
+                                "value": 1
+                              }
+                            },
+                            "intrinsicSize": {
+                              "width": 0,
+                              "height": 54
+                            },
+                            "frame": {
+                              "left": 104,
+                              "top": 438,
+                              "width": 815,
+                              "height": 114
+                            },
+                            "children": [
+                              {
+                                "path": "0.1.1.0.2.0.0",
+                                "kind": "text",
+                                "requestedSize": {
+                                  "width": {
+                                    "mode": "fill",
+                                    "value": 1
+                                  },
+                                  "height": {
+                                    "mode": "hug"
+                                  }
+                                },
+                                "intrinsicSize": {
+                                  "width": 0,
+                                  "height": 25
+                                },
+                                "frame": {
+                                  "left": 104,
+                                  "top": 438,
+                                  "width": 815,
+                                  "height": 25
+                                },
+                                "snappedFrame": {
+                                  "left": 104,
+                                  "top": 438,
+                                  "width": 816,
+                                  "height": 26
+                                },
+                                "children": [],
+                                "text": "Daemon 负责决策建议",
+                                "transform": "none",
+                                "element": {
+                                  "aid": "sh/judg7ads",
+                                  "id": "11",
+                                  "kind": "shape"
+                                }
+                              },
+                              {
+                                "path": "0.1.1.0.2.0.1",
+                                "kind": "text",
+                                "requestedSize": {
+                                  "width": {
+                                    "mode": "fill",
+                                    "value": 1
+                                  },
+                                  "height": {
+                                    "mode": "hug"
+                                  }
+                                },
+                                "intrinsicSize": {
+                                  "width": 0,
+                                  "height": 20
+                                },
+                                "frame": {
+                                  "left": 104,
+                                  "top": 472,
+                                  "width": 815,
+                                  "height": 40
+                                },
+                                "snappedFrame": {
+                                  "left": 104,
+                                  "top": 472,
+                                  "width": 816,
+                                  "height": 40
+                                },
+                                "children": [],
+                                "text": "score / suggest：extract、link、promote、defer、merge、flag stale、serve with warning、request review。",
+                                "transform": "none",
+                                "element": {
+                                  "aid": "sh/cfa9w3m9",
+                                  "id": "12",
+                                  "kind": "shape"
+                                }
+                              }
+                            ],
+                            "padding": {
+                              "top": 0,
+                              "right": 0,
+                              "bottom": 0,
+                              "left": 0
+                            },
+                            "gap": 9,
+                            "effectiveGap": 9,
+                            "justifyOffset": 0,
+                            "align": "start",
+                            "justify": "start",
+                            "contentFrame": {
+                              "left": 104,
+                              "top": 438,
+                              "width": 815,
+                              "height": 114
+                            },
+                            "items": [
+                              {
+                                "path": "0.1.1.0.2.0.0",
+                                "frame": {
+                                  "left": 104,
+                                  "top": 438,
+                                  "width": 815,
+                                  "height": 25
+                                }
+                              },
+                              {
+                                "path": "0.1.1.0.2.0.1",
+                                "frame": {
+                                  "left": 104,
+                                  "top": 472,
+                                  "width": 815,
+                                  "height": 40
+                                }
+                              }
+                            ]
+                          }
+                        ],
+                        "padding": {
+                          "top": 18,
+                          "right": 20,
+                          "bottom": 18,
+                          "left": 20
+                        },
+                        "align": "start",
+                        "justify": "start",
+                        "contentFrame": {
+                          "left": 104,
+                          "top": 438,
+                          "width": 815,
+                          "height": 114
+                        },
+                        "element": {
+                          "aid": "sh/u9knih4b",
+                          "id": "10",
+                          "kind": "shape"
+                        }
+                      },
+                      {
+                        "path": "0.1.1.0.3",
+                        "kind": "panel",
+                        "requestedSize": {
+                          "width": {
+                            "mode": "fill",
+                            "value": 1
+                          },
+                          "height": {
+                            "mode": "fixed",
+                            "value": 150
+                          }
+                        },
+                        "intrinsicSize": {
+                          "width": 40,
+                          "height": 36
+                        },
+                        "frame": {
+                          "left": 84,
+                          "top": 588,
+                          "width": 855,
+                          "height": 150
+                        },
+                        "snappedFrame": {
+                          "left": 84,
+                          "top": 588,
+                          "width": 855,
+                          "height": 150
+                        },
+                        "children": [
+                          {
+                            "path": "0.1.1.0.3.0",
+                            "kind": "column",
+                            "requestedSize": {
+                              "width": {
+                                "mode": "fill",
+                                "value": 1
+                              },
+                              "height": {
+                                "mode": "fill",
+                                "value": 1
+                              }
+                            },
+                            "intrinsicSize": {
+                              "width": 0,
+                              "height": 54
+                            },
+                            "frame": {
+                              "left": 104,
+                              "top": 606,
+                              "width": 815,
+                              "height": 114
+                            },
+                            "children": [
+                              {
+                                "path": "0.1.1.0.3.0.0",
+                                "kind": "text",
+                                "requestedSize": {
+                                  "width": {
+                                    "mode": "fill",
+                                    "value": 1
+                                  },
+                                  "height": {
+                                    "mode": "hug"
+                                  }
+                                },
+                                "intrinsicSize": {
+                                  "width": 0,
+                                  "height": 25
+                                },
+                                "frame": {
+                                  "left": 104,
+                                  "top": 606,
+                                  "width": 815,
+                                  "height": 25
+                                },
+                                "snappedFrame": {
+                                  "left": 104,
+                                  "top": 606,
+                                  "width": 816,
+                                  "height": 26
+                                },
+                                "children": [],
+                                "text": "LLM daemon 负责填充与解释",
+                                "transform": "none",
+                                "element": {
+                                  "aid": "sh/u18jqh0f",
+                                  "id": "14",
+                                  "kind": "shape"
+                                }
+                              },
+                              {
+                                "path": "0.1.1.0.3.0.1",
+                                "kind": "text",
+                                "requestedSize": {
+                                  "width": {
+                                    "mode": "fill",
+                                    "value": 1
+                                  },
+                                  "height": {
+                                    "mode": "hug"
+                                  }
+                                },
+                                "intrinsicSize": {
+                                  "width": 0,
+                                  "height": 20
+                                },
+                                "frame": {
+                                  "left": 104,
+                                  "top": 640,
+                                  "width": 815,
+                                  "height": 40
+                                },
+                                "snappedFrame": {
+                                  "left": 104,
+                                  "top": 640,
+                                  "width": 816,
+                                  "height": 40
+                                },
+                                "children": [],
+                                "text": "从 raw / projection 中提取结构化内容，给出 proposal + explanation；runtime 决定是否落库。",
+                                "transform": "none",
+                                "element": {
+                                  "aid": "sh/jm1cfa9w",
+                                  "id": "15",
+                                  "kind": "shape"
+                                }
+                              }
+                            ],
+                            "padding": {
+                              "top": 0,
+                              "right": 0,
+                              "bottom": 0,
+                              "left": 0
+                            },
+                            "gap": 9,
+                            "effectiveGap": 9,
+                            "justifyOffset": 0,
+                            "align": "start",
+                            "justify": "start",
+                            "contentFrame": {
+                              "left": 104,
+                              "top": 606,
+                              "width": 815,
+                              "height": 114
+                            },
+                            "items": [
+                              {
+                                "path": "0.1.1.0.3.0.0",
+                                "frame": {
+                                  "left": 104,
+                                  "top": 606,
+                                  "width": 815,
+                                  "height": 25
+                                }
+                              },
+                              {
+                                "path": "0.1.1.0.3.0.1",
+                                "frame": {
+                                  "left": 104,
+                                  "top": 640,
+                                  "width": 815,
+                                  "height": 40
+                                }
+                              }
+                            ]
+                          }
+                        ],
+                        "padding": {
+                          "top": 18,
+                          "right": 20,
+                          "bottom": 18,
+                          "left": 20
+                        },
+                        "align": "start",
+                        "justify": "start",
+                        "contentFrame": {
+                          "left": 104,
+                          "top": 606,
+                          "width": 815,
+                          "height": 114
+                        },
+                        "element": {
+                          "aid": "sh/1032lszq",
+                          "id": "13",
+                          "kind": "shape"
+                        }
+                      }
+                    ],
+                    "padding": {
+                      "top": 0,
+                      "right": 0,
+                      "bottom": 0,
+                      "left": 0
+                    },
+                    "gap": 18,
+                    "effectiveGap": 18,
+                    "justifyOffset": 0,
+                    "align": "start",
+                    "justify": "start",
+                    "contentFrame": {
+                      "left": 84,
+                      "top": 204,
+                      "width": 855,
+                      "height": 776
+                    },
+                    "items": [
+                      {
+                        "path": "0.1.1.0.0",
+                        "frame": {
+                          "left": 84,
+                          "top": 204,
+                          "width": 855,
+                          "height": 30
+                        }
+                      },
+                      {
+                        "path": "0.1.1.0.1",
+                        "frame": {
+                          "left": 84,
+                          "top": 252,
+                          "width": 855,
+                          "height": 150
+                        }
+                      },
+                      {
+                        "path": "0.1.1.0.2",
+                        "frame": {
+                          "left": 84,
+                          "top": 420,
+                          "width": 855,
+                          "height": 150
+                        }
+                      },
+                      {
+                        "path": "0.1.1.0.3",
+                        "frame": {
+                          "left": 84,
+                          "top": 588,
+                          "width": 855,
+                          "height": 150
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "path": "0.1.1.1",
+                    "kind": "column",
+                    "requestedSize": {
+                      "width": {
+                        "mode": "fill",
+                        "value": 1
+                      },
+                      "height": {
+                        "mode": "fill",
+                        "value": 1
+                      }
+                    },
+                    "intrinsicSize": {
+                      "width": 0,
+                      "height": 486
+                    },
+                    "frame": {
+                      "left": 981,
+                      "top": 204,
+                      "width": 855,
+                      "height": 776
+                    },
+                    "children": [
+                      {
+                        "path": "0.1.1.1.0",
+                        "kind": "text",
+                        "requestedSize": {
+                          "width": {
+                            "mode": "fill",
+                            "value": 1
+                          },
+                          "height": {
+                            "mode": "hug"
+                          }
+                        },
+                        "intrinsicSize": {
+                          "width": 0,
+                          "height": 30
+                        },
+                        "frame": {
+                          "left": 981,
+                          "top": 204,
+                          "width": 855,
+                          "height": 30
+                        },
+                        "snappedFrame": {
+                          "left": 982,
+                          "top": 204,
+                          "width": 856,
+                          "height": 30
+                        },
+                        "children": [],
+                        "text": "可学习的闭环",
+                        "transform": "none",
+                        "element": {
+                          "aid": "sh/c7u54zid",
+                          "id": "16",
+                          "kind": "shape"
+                        }
+                      },
+                      {
+                        "path": "0.1.1.1.1",
+                        "kind": "panel",
+                        "requestedSize": {
+                          "width": {
+                            "mode": "fill",
+                            "value": 1
+                          },
+                          "height": {
+                            "mode": "fixed",
+                            "value": 420
+                          }
+                        },
+                        "intrinsicSize": {
+                          "width": 56,
+                          "height": 52
+                        },
+                        "frame": {
+                          "left": 981,
+                          "top": 252,
+                          "width": 855,
+                          "height": 420
+                        },
+                        "snappedFrame": {
+                          "left": 981,
+                          "top": 252,
+                          "width": 855,
+                          "height": 420
+                        },
+                        "children": [
+                          {
+                            "path": "0.1.1.1.1.0",
+                            "kind": "column",
+                            "requestedSize": {
+                              "width": {
+                                "mode": "fill",
+                                "value": 1
+                              },
+                              "height": {
+                                "mode": "fill",
+                                "value": 1
+                              }
+                            },
+                            "intrinsicSize": {
+                              "width": 0,
+                              "height": 176
+                            },
+                            "frame": {
+                              "left": 1009,
+                              "top": 278,
+                              "width": 799,
+                              "height": 368
+                            },
+                            "children": [
+                              {
+                                "path": "0.1.1.1.1.0.0",
+                                "kind": "row",
+                                "name": "learning-loop-row-1",
+                                "requestedSize": {
+                                  "width": {
+                                    "mode": "fill",
+                                    "value": 1
+                                  },
+                                  "height": {
+                                    "mode": "hug"
+                                  }
+                                },
+                                "intrinsicSize": {
+                                  "width": 768,
+                                  "height": 44
+                                },
+                                "frame": {
+                                  "left": 1009,
+                                  "top": 374,
+                                  "width": 799,
+                                  "height": 44
+                                },
+                                "children": [
+                                  {
+                                    "path": "0.1.1.1.1.0.0.0",
+                                    "kind": "panel",
+                                    "requestedSize": {
+                                      "width": {
+                                        "mode": "fixed",
+                                        "value": 220
+                                      },
+                                      "height": {
+                                        "mode": "fixed",
+                                        "value": 44
+                                      }
+                                    },
+                                    "intrinsicSize": {
+                                      "width": 24,
+                                      "height": 33
+                                    },
+                                    "frame": {
+                                      "left": 1009,
+                                      "top": 374,
+                                      "width": 220,
+                                      "height": 44
+                                    },
+                                    "snappedFrame": {
+                                      "left": 1009,
+                                      "top": 374,
+                                      "width": 220,
+                                      "height": 44
+                                    },
+                                    "children": [
+                                      {
+                                        "path": "0.1.1.1.1.0.0.0.0",
+                                        "kind": "text",
+                                        "requestedSize": {
+                                          "width": {
+                                            "mode": "fill",
+                                            "value": 1
+                                          },
+                                          "height": {
+                                            "mode": "hug"
+                                          }
+                                        },
+                                        "intrinsicSize": {
+                                          "width": 0,
+                                          "height": 17
+                                        },
+                                        "frame": {
+                                          "left": 1022,
+                                          "top": 388,
+                                          "width": 196,
+                                          "height": 16
+                                        },
+                                        "snappedFrame": {
+                                          "left": 1022,
+                                          "top": 388,
+                                          "width": 196,
+                                          "height": 16
+                                        },
+                                        "children": [],
+                                        "text": "Raw + projection",
+                                        "transform": "none",
+                                        "element": {
+                                          "aid": "sh/nap4r65w",
+                                          "id": "19",
+                                          "kind": "shape"
+                                        }
+                                      }
+                                    ],
+                                    "padding": {
+                                      "top": 8,
+                                      "right": 12,
+                                      "bottom": 8,
+                                      "left": 12
+                                    },
+                                    "align": "center",
+                                    "justify": "center",
+                                    "contentFrame": {
+                                      "left": 1021,
+                                      "top": 382,
+                                      "width": 196,
+                                      "height": 28
+                                    },
+                                    "element": {
+                                      "aid": "sh/upwb2hwf",
+                                      "id": "18",
+                                      "kind": "shape"
+                                    }
+                                  },
+                                  {
+                                    "path": "0.1.1.1.1.0.0.1",
+                                    "kind": "text",
+                                    "requestedSize": {
+                                      "width": {
+                                        "mode": "fixed",
+                                        "value": 30
+                                      },
+                                      "height": {
+                                        "mode": "hug"
+                                      }
+                                    },
+                                    "intrinsicSize": {
+                                      "width": 30,
+                                      "height": 30
+                                    },
+                                    "frame": {
+                                      "left": 1241,
+                                      "top": 380,
+                                      "width": 30,
+                                      "height": 32
+                                    },
+                                    "snappedFrame": {
+                                      "left": 1242,
+                                      "top": 380,
+                                      "width": 30,
+                                      "height": 32
+                                    },
+                                    "children": [],
+                                    "text": "→",
+                                    "transform": "none",
+                                    "element": {
+                                      "aid": "sh/f6dcbulw",
+                                      "id": "20",
+                                      "kind": "shape"
+                                    }
+                                  },
+                                  {
+                                    "path": "0.1.1.1.1.0.0.2",
+                                    "kind": "panel",
+                                    "requestedSize": {
+                                      "width": {
+                                        "mode": "fixed",
+                                        "value": 230
+                                      },
+                                      "height": {
+                                        "mode": "fixed",
+                                        "value": 44
+                                      }
+                                    },
+                                    "intrinsicSize": {
+                                      "width": 24,
+                                      "height": 33
+                                    },
+                                    "frame": {
+                                      "left": 1283,
+                                      "top": 374,
+                                      "width": 230,
+                                      "height": 44
+                                    },
+                                    "snappedFrame": {
+                                      "left": 1283,
+                                      "top": 374,
+                                      "width": 230,
+                                      "height": 44
+                                    },
+                                    "children": [
+                                      {
+                                        "path": "0.1.1.1.1.0.0.2.0",
+                                        "kind": "text",
+                                        "requestedSize": {
+                                          "width": {
+                                            "mode": "fill",
+                                            "value": 1
+                                          },
+                                          "height": {
+                                            "mode": "hug"
+                                          }
+                                        },
+                                        "intrinsicSize": {
+                                          "width": 0,
+                                          "height": 17
+                                        },
+                                        "frame": {
+                                          "left": 1294,
+                                          "top": 388,
+                                          "width": 208,
+                                          "height": 16
+                                        },
+                                        "snappedFrame": {
+                                          "left": 1294,
+                                          "top": 388,
+                                          "width": 208,
+                                          "height": 16
+                                        },
+                                        "children": [],
+                                        "text": "Daemon proposal",
+                                        "transform": "none",
+                                        "element": {
+                                          "aid": "sh/xc3ylc7u",
+                                          "id": "22",
+                                          "kind": "shape"
+                                        }
+                                      }
+                                    ],
+                                    "padding": {
+                                      "top": 8,
+                                      "right": 12,
+                                      "bottom": 8,
+                                      "left": 12
+                                    },
+                                    "align": "center",
+                                    "justify": "center",
+                                    "contentFrame": {
+                                      "left": 1295,
+                                      "top": 382,
+                                      "width": 206,
+                                      "height": 28
+                                    },
+                                    "element": {
+                                      "aid": "sh/mlkjm1cf",
+                                      "id": "21",
+                                      "kind": "shape"
+                                    }
+                                  },
+                                  {
+                                    "path": "0.1.1.1.1.0.0.3",
+                                    "kind": "text",
+                                    "requestedSize": {
+                                      "width": {
+                                        "mode": "fixed",
+                                        "value": 30
+                                      },
+                                      "height": {
+                                        "mode": "hug"
+                                      }
+                                    },
+                                    "intrinsicSize": {
+                                      "width": 30,
+                                      "height": 30
+                                    },
+                                    "frame": {
+                                      "left": 1525,
+                                      "top": 380,
+                                      "width": 30,
+                                      "height": 32
+                                    },
+                                    "snappedFrame": {
+                                      "left": 1526,
+                                      "top": 380,
+                                      "width": 30,
+                                      "height": 32
+                                    },
+                                    "children": [],
+                                    "text": "→",
+                                    "transform": "none",
+                                    "element": {
+                                      "aid": "sh/4r65wjud",
+                                      "id": "23",
+                                      "kind": "shape"
+                                    }
+                                  },
+                                  {
+                                    "path": "0.1.1.1.1.0.0.4",
+                                    "kind": "panel",
+                                    "requestedSize": {
+                                      "width": {
+                                        "mode": "fixed",
+                                        "value": 210
+                                      },
+                                      "height": {
+                                        "mode": "fixed",
+                                        "value": 44
+                                      }
+                                    },
+                                    "intrinsicSize": {
+                                      "width": 24,
+                                      "height": 33
+                                    },
+                                    "frame": {
+                                      "left": 1567,
+                                      "top": 374,
+                                      "width": 210,
+                                      "height": 44
+                                    },
+                                    "snappedFrame": {
+                                      "left": 1567,
+                                      "top": 374,
+                                      "width": 210,
+                                      "height": 44
+                                    },
+                                    "children": [
+                                      {
+                                        "path": "0.1.1.1.1.0.0.4.0",
+                                        "kind": "text",
+                                        "requestedSize": {
+                                          "width": {
+                                            "mode": "fill",
+                                            "value": 1
+                                          },
+                                          "height": {
+                                            "mode": "hug"
+                                          }
+                                        },
+                                        "intrinsicSize": {
+                                          "width": 0,
+                                          "height": 17
+                                        },
+                                        "frame": {
+                                          "left": 1578,
+                                          "top": 388,
+                                          "width": 188,
+                                          "height": 16
+                                        },
+                                        "snappedFrame": {
+                                          "left": 1578,
+                                          "top": 388,
+                                          "width": 188,
+                                          "height": 16
+                                        },
+                                        "children": [],
+                                        "text": "Runtime gate",
+                                        "transform": "none",
+                                        "element": {
+                                          "aid": "sh/mtwra5gb",
+                                          "id": "25",
+                                          "kind": "shape"
+                                        }
+                                      }
+                                    ],
+                                    "padding": {
+                                      "top": 8,
+                                      "right": 12,
+                                      "bottom": 8,
+                                      "left": 12
+                                    },
+                                    "align": "center",
+                                    "justify": "center",
+                                    "contentFrame": {
+                                      "left": 1579,
+                                      "top": 382,
+                                      "width": 186,
+                                      "height": 28
+                                    },
+                                    "element": {
+                                      "aid": "sh/fepkzupw",
+                                      "id": "24",
+                                      "kind": "shape"
+                                    }
+                                  }
+                                ],
+                                "padding": {
+                                  "top": 0,
+                                  "right": 0,
+                                  "bottom": 0,
+                                  "left": 0
+                                },
+                                "gap": 12,
+                                "effectiveGap": 12,
+                                "justifyOffset": 0,
+                                "align": "center",
+                                "justify": "start",
+                                "contentFrame": {
+                                  "left": 1009,
+                                  "top": 374,
+                                  "width": 799,
+                                  "height": 44
+                                },
+                                "items": [
+                                  {
+                                    "path": "0.1.1.1.1.0.0.0",
+                                    "frame": {
+                                      "left": 1009,
+                                      "top": 374,
+                                      "width": 220,
+                                      "height": 44
+                                    }
+                                  },
+                                  {
+                                    "path": "0.1.1.1.1.0.0.1",
+                                    "frame": {
+                                      "left": 1241,
+                                      "top": 380,
+                                      "width": 30,
+                                      "height": 32
+                                    }
+                                  },
+                                  {
+                                    "path": "0.1.1.1.1.0.0.2",
+                                    "frame": {
+                                      "left": 1283,
+                                      "top": 374,
+                                      "width": 230,
+                                      "height": 44
+                                    }
+                                  },
+                                  {
+                                    "path": "0.1.1.1.1.0.0.3",
+                                    "frame": {
+                                      "left": 1525,
+                                      "top": 380,
+                                      "width": 30,
+                                      "height": 32
+                                    }
+                                  },
+                                  {
+                                    "path": "0.1.1.1.1.0.0.4",
+                                    "frame": {
+                                      "left": 1567,
+                                      "top": 374,
+                                      "width": 210,
+                                      "height": 44
+                                    }
+                                  }
+                                ]
+                              },
+                              {
+                                "path": "0.1.1.1.1.0.1",
+                                "kind": "row",
+                                "name": "learning-loop-row-2",
+                                "requestedSize": {
+                                  "width": {
+                                    "mode": "fill",
+                                    "value": 1
+                                  },
+                                  "height": {
+                                    "mode": "hug"
+                                  }
+                                },
+                                "intrinsicSize": {
+                                  "width": 778,
+                                  "height": 44
+                                },
+                                "frame": {
+                                  "left": 1009,
+                                  "top": 438,
+                                  "width": 799,
+                                  "height": 44
+                                },
+                                "children": [
+                                  {
+                                    "path": "0.1.1.1.1.0.1.0",
+                                    "kind": "panel",
+                                    "requestedSize": {
+                                      "width": {
+                                        "mode": "fixed",
+                                        "value": 210
+                                      },
+                                      "height": {
+                                        "mode": "fixed",
+                                        "value": 44
+                                      }
+                                    },
+                                    "intrinsicSize": {
+                                      "width": 24,
+                                      "height": 33
+                                    },
+                                    "frame": {
+                                      "left": 1009,
+                                      "top": 438,
+                                      "width": 210,
+                                      "height": 44
+                                    },
+                                    "snappedFrame": {
+                                      "left": 1009,
+                                      "top": 438,
+                                      "width": 210,
+                                      "height": 44
+                                    },
+                                    "children": [
+                                      {
+                                        "path": "0.1.1.1.1.0.1.0.0",
+                                        "kind": "text",
+                                        "requestedSize": {
+                                          "width": {
+                                            "mode": "fill",
+                                            "value": 1
+                                          },
+                                          "height": {
+                                            "mode": "hug"
+                                          }
+                                        },
+                                        "intrinsicSize": {
+                                          "width": 0,
+                                          "height": 17
+                                        },
+                                        "frame": {
+                                          "left": 1020,
+                                          "top": 452,
+                                          "width": 188,
+                                          "height": 16
+                                        },
+                                        "snappedFrame": {
+                                          "left": 1020,
+                                          "top": 452,
+                                          "width": 188,
+                                          "height": 16
+                                        },
+                                        "children": [],
+                                        "text": "Policy packet",
+                                        "transform": "none",
+                                        "element": {
+                                          "aid": "sh/4zidonyd",
+                                          "id": "27",
+                                          "kind": "shape"
+                                        }
+                                      }
+                                    ],
+                                    "padding": {
+                                      "top": 8,
+                                      "right": 12,
+                                      "bottom": 8,
+                                      "left": 12
+                                    },
+                                    "align": "center",
+                                    "justify": "center",
+                                    "contentFrame": {
+                                      "left": 1021,
+                                      "top": 446,
+                                      "width": 186,
+                                      "height": 28
+                                    },
+                                    "element": {
+                                      "aid": "sh/xkf6dcbu",
+                                      "id": "26",
+                                      "kind": "shape"
+                                    }
+                                  },
+                                  {
+                                    "path": "0.1.1.1.1.0.1.1",
+                                    "kind": "text",
+                                    "requestedSize": {
+                                      "width": {
+                                        "mode": "fixed",
+                                        "value": 30
+                                      },
+                                      "height": {
+                                        "mode": "hug"
+                                      }
+                                    },
+                                    "intrinsicSize": {
+                                      "width": 30,
+                                      "height": 30
+                                    },
+                                    "frame": {
+                                      "left": 1231,
+                                      "top": 444,
+                                      "width": 30,
+                                      "height": 32
+                                    },
+                                    "snappedFrame": {
+                                      "left": 1232,
+                                      "top": 444,
+                                      "width": 30,
+                                      "height": 32
+                                    },
+                                    "children": [],
+                                    "text": "→",
+                                    "transform": "none",
+                                    "element": {
+                                      "aid": "sh/fil0rqd4",
+                                      "id": "28",
+                                      "kind": "shape"
+                                    }
+                                  },
+                                  {
+                                    "path": "0.1.1.1.1.0.1.2",
+                                    "kind": "panel",
+                                    "requestedSize": {
+                                      "width": {
+                                        "mode": "fixed",
+                                        "value": 210
+                                      },
+                                      "height": {
+                                        "mode": "fixed",
+                                        "value": 44
+                                      }
+                                    },
+                                    "intrinsicSize": {
+                                      "width": 24,
+                                      "height": 33
+                                    },
+                                    "frame": {
+                                      "left": 1273,
+                                      "top": 438,
+                                      "width": 210,
+                                      "height": 44
+                                    },
+                                    "snappedFrame": {
+                                      "left": 1273,
+                                      "top": 438,
+                                      "width": 210,
+                                      "height": 44
+                                    },
+                                    "children": [
+                                      {
+                                        "path": "0.1.1.1.1.0.1.2.0",
+                                        "kind": "text",
+                                        "requestedSize": {
+                                          "width": {
+                                            "mode": "fill",
+                                            "value": 1
+                                          },
+                                          "height": {
+                                            "mode": "hug"
+                                          }
+                                        },
+                                        "intrinsicSize": {
+                                          "width": 0,
+                                          "height": 17
+                                        },
+                                        "frame": {
+                                          "left": 1284,
+                                          "top": 452,
+                                          "width": 188,
+                                          "height": 16
+                                        },
+                                        "snappedFrame": {
+                                          "left": 1284,
+                                          "top": 452,
+                                          "width": 188,
+                                          "height": 16
+                                        },
+                                        "children": [],
+                                        "text": "Task outcome",
+                                        "transform": "none",
+                                        "element": {
+                                          "aid": "sh/0z61032l",
+                                          "id": "30",
+                                          "kind": "shape"
+                                        }
+                                      }
+                                    ],
+                                    "padding": {
+                                      "top": 8,
+                                      "right": 12,
+                                      "bottom": 8,
+                                      "left": 12
+                                    },
+                                    "align": "center",
+                                    "justify": "center",
+                                    "contentFrame": {
+                                      "left": 1285,
+                                      "top": 446,
+                                      "width": 186,
+                                      "height": 28
+                                    },
+                                    "element": {
+                                      "aid": "sh/qxs72x4n",
+                                      "id": "29",
+                                      "kind": "shape"
+                                    }
+                                  },
+                                  {
+                                    "path": "0.1.1.1.1.0.1.3",
+                                    "kind": "text",
+                                    "requestedSize": {
+                                      "width": {
+                                        "mode": "fixed",
+                                        "value": 30
+                                      },
+                                      "height": {
+                                        "mode": "hug"
+                                      }
+                                    },
+                                    "intrinsicSize": {
+                                      "width": 30,
+                                      "height": 30
+                                    },
+                                    "frame": {
+                                      "left": 1495,
+                                      "top": 444,
+                                      "width": 30,
+                                      "height": 32
+                                    },
+                                    "snappedFrame": {
+                                      "left": 1496,
+                                      "top": 444,
+                                      "width": 30,
+                                      "height": 32
+                                    },
+                                    "children": [],
+                                    "text": "→",
+                                    "transform": "none",
+                                    "element": {
+                                      "aid": "sh/pkzupwb2",
+                                      "id": "31",
+                                      "kind": "shape"
+                                    }
+                                  },
+                                  {
+                                    "path": "0.1.1.1.1.0.1.4",
+                                    "kind": "panel",
+                                    "requestedSize": {
+                                      "width": {
+                                        "mode": "fixed",
+                                        "value": 250
+                                      },
+                                      "height": {
+                                        "mode": "fixed",
+                                        "value": 44
+                                      }
+                                    },
+                                    "intrinsicSize": {
+                                      "width": 24,
+                                      "height": 33
+                                    },
+                                    "frame": {
+                                      "left": 1537,
+                                      "top": 438,
+                                      "width": 250,
+                                      "height": 44
+                                    },
+                                    "snappedFrame": {
+                                      "left": 1537,
+                                      "top": 438,
+                                      "width": 250,
+                                      "height": 44
+                                    },
+                                    "children": [
+                                      {
+                                        "path": "0.1.1.1.1.0.1.4.0",
+                                        "kind": "text",
+                                        "requestedSize": {
+                                          "width": {
+                                            "mode": "fill",
+                                            "value": 1
+                                          },
+                                          "height": {
+                                            "mode": "hug"
+                                          }
+                                        },
+                                        "intrinsicSize": {
+                                          "width": 0,
+                                          "height": 17
+                                        },
+                                        "frame": {
+                                          "left": 1548,
+                                          "top": 452,
+                                          "width": 228,
+                                          "height": 16
+                                        },
+                                        "snappedFrame": {
+                                          "left": 1548,
+                                          "top": 452,
+                                          "width": 228,
+                                          "height": 16
+                                        },
+                                        "children": [],
+                                        "text": "Reward / preference",
+                                        "transform": "none",
+                                        "element": {
+                                          "aid": "sh/7ed8bat4",
+                                          "id": "33",
+                                          "kind": "shape"
+                                        }
+                                      }
+                                    ],
+                                    "padding": {
+                                      "top": 8,
+                                      "right": 12,
+                                      "bottom": 8,
+                                      "left": 12
+                                    },
+                                    "align": "center",
+                                    "justify": "center",
+                                    "contentFrame": {
+                                      "left": 1549,
+                                      "top": 446,
+                                      "width": 226,
+                                      "height": 28
+                                    },
+                                    "element": {
+                                      "aid": "sh/itgfmlkj",
+                                      "id": "32",
+                                      "kind": "shape"
+                                    }
+                                  }
+                                ],
+                                "padding": {
+                                  "top": 0,
+                                  "right": 0,
+                                  "bottom": 0,
+                                  "left": 0
+                                },
+                                "gap": 12,
+                                "effectiveGap": 12,
+                                "justifyOffset": 0,
+                                "align": "center",
+                                "justify": "start",
+                                "contentFrame": {
+                                  "left": 1009,
+                                  "top": 438,
+                                  "width": 799,
+                                  "height": 44
+                                },
+                                "items": [
+                                  {
+                                    "path": "0.1.1.1.1.0.1.0",
+                                    "frame": {
+                                      "left": 1009,
+                                      "top": 438,
+                                      "width": 210,
+                                      "height": 44
+                                    }
+                                  },
+                                  {
+                                    "path": "0.1.1.1.1.0.1.1",
+                                    "frame": {
+                                      "left": 1231,
+                                      "top": 444,
+                                      "width": 30,
+                                      "height": 32
+                                    }
+                                  },
+                                  {
+                                    "path": "0.1.1.1.1.0.1.2",
+                                    "frame": {
+                                      "left": 1273,
+                                      "top": 438,
+                                      "width": 210,
+                                      "height": 44
+                                    }
+                                  },
+                                  {
+                                    "path": "0.1.1.1.1.0.1.3",
+                                    "frame": {
+                                      "left": 1495,
+                                      "top": 444,
+                                      "width": 30,
+                                      "height": 32
+                                    }
+                                  },
+                                  {
+                                    "path": "0.1.1.1.1.0.1.4",
+                                    "frame": {
+                                      "left": 1537,
+                                      "top": 438,
+                                      "width": 250,
+                                      "height": 44
+                                    }
+                                  }
+                                ]
+                              },
+                              {
+                                "path": "0.1.1.1.1.0.2",
+                                "kind": "row",
+                                "requestedSize": {
+                                  "width": {
+                                    "mode": "fill",
+                                    "value": 1
+                                  },
+                                  "height": {
+                                    "mode": "hug"
+                                  }
+                                },
+                                "intrinsicSize": {
+                                  "width": 68,
+                                  "height": 48
+                                },
+                                "frame": {
+                                  "left": 1009,
+                                  "top": 502,
+                                  "width": 799,
+                                  "height": 48
+                                },
+                                "children": [
+                                  {
+                                    "path": "0.1.1.1.1.0.2.0",
+                                    "kind": "text",
+                                    "requestedSize": {
+                                      "width": {
+                                        "mode": "fixed",
+                                        "value": 56
+                                      },
+                                      "height": {
+                                        "mode": "hug"
+                                      }
+                                    },
+                                    "intrinsicSize": {
+                                      "width": 56,
+                                      "height": 48
+                                    },
+                                    "frame": {
+                                      "left": 1009,
+                                      "top": 502,
+                                      "width": 56,
+                                      "height": 48
+                                    },
+                                    "snappedFrame": {
+                                      "left": 1010,
+                                      "top": 502,
+                                      "width": 56,
+                                      "height": 48
+                                    },
+                                    "children": [],
+                                    "text": "↺",
+                                    "transform": "none",
+                                    "element": {
+                                      "aid": "sh/0nuxc3yl",
+                                      "id": "34",
+                                      "kind": "shape"
+                                    }
+                                  },
+                                  {
+                                    "path": "0.1.1.1.1.0.2.1",
+                                    "kind": "text",
+                                    "requestedSize": {
+                                      "width": {
+                                        "mode": "fill",
+                                        "value": 1
+                                      },
+                                      "height": {
+                                        "mode": "hug"
+                                      }
+                                    },
+                                    "intrinsicSize": {
+                                      "width": 0,
+                                      "height": 24
+                                    },
+                                    "frame": {
+                                      "left": 1077,
+                                      "top": 502,
+                                      "width": 731,
+                                      "height": 48
+                                    },
+                                    "snappedFrame": {
+                                      "left": 1078,
+                                      "top": 502,
+                                      "width": 732,
+                                      "height": 48
+                                    },
+                                    "children": [],
+                                    "text": "更新 action taxonomy / schema weights / promotion policy；高置信规则被固化进 runtime。",
+                                    "transform": "none",
+                                    "element": {
+                                      "aid": "sh/p8nqxs72",
+                                      "id": "35",
+                                      "kind": "shape"
+                                    }
+                                  }
+                                ],
+                                "padding": {
+                                  "top": 0,
+                                  "right": 0,
+                                  "bottom": 0,
+                                  "left": 0
+                                },
+                                "gap": 12,
+                                "effectiveGap": 12,
+                                "justifyOffset": 0,
+                                "align": "center",
+                                "justify": "center",
+                                "contentFrame": {
+                                  "left": 1009,
+                                  "top": 502,
+                                  "width": 799,
+                                  "height": 48
+                                },
+                                "items": [
+                                  {
+                                    "path": "0.1.1.1.1.0.2.0",
+                                    "frame": {
+                                      "left": 1009,
+                                      "top": 502,
+                                      "width": 56,
+                                      "height": 48
+                                    }
+                                  },
+                                  {
+                                    "path": "0.1.1.1.1.0.2.1",
+                                    "frame": {
+                                      "left": 1077,
+                                      "top": 502,
+                                      "width": 731,
+                                      "height": 48
+                                    }
+                                  }
+                                ]
+                              }
+                            ],
+                            "padding": {
+                              "top": 0,
+                              "right": 0,
+                              "bottom": 0,
+                              "left": 0
+                            },
+                            "gap": 20,
+                            "effectiveGap": 20,
+                            "justifyOffset": 96,
+                            "align": "start",
+                            "justify": "center",
+                            "contentFrame": {
+                              "left": 1009,
+                              "top": 278,
+                              "width": 799,
+                              "height": 368
+                            },
+                            "items": [
+                              {
+                                "path": "0.1.1.1.1.0.0",
+                                "frame": {
+                                  "left": 1009,
+                                  "top": 374,
+                                  "width": 799,
+                                  "height": 44
+                                }
+                              },
+                              {
+                                "path": "0.1.1.1.1.0.1",
+                                "frame": {
+                                  "left": 1009,
+                                  "top": 438,
+                                  "width": 799,
+                                  "height": 44
+                                }
+                              },
+                              {
+                                "path": "0.1.1.1.1.0.2",
+                                "frame": {
+                                  "left": 1009,
+                                  "top": 502,
+                                  "width": 799,
+                                  "height": 48
+                                }
+                              }
+                            ]
+                          }
+                        ],
+                        "padding": {
+                          "top": 26,
+                          "right": 28,
+                          "bottom": 26,
+                          "left": 28
+                        },
+                        "align": "start",
+                        "justify": "start",
+                        "contentFrame": {
+                          "left": 1009,
+                          "top": 278,
+                          "width": 799,
+                          "height": 368
+                        },
+                        "element": {
+                          "aid": "sh/1orytsvu",
+                          "id": "17",
+                          "kind": "shape"
+                        }
+                      },
+                      {
+                        "path": "0.1.1.1.2",
+                        "kind": "panel",
+                        "requestedSize": {
+                          "width": {
+                            "mode": "fill",
+                            "value": 1
+                          },
+                          "height": {
+                            "mode": "fill",
+                            "value": 1
+                          }
+                        },
+                        "intrinsicSize": {
+                          "width": 40,
+                          "height": 36
+                        },
+                        "frame": {
+                          "left": 981,
+                          "top": 690,
+                          "width": 855,
+                          "height": 290
+                        },
+                        "snappedFrame": {
+                          "left": 981,
+                          "top": 690,
+                          "width": 855,
+                          "height": 290
+                        },
+                        "children": [
+                          {
+                            "path": "0.1.1.1.2.0",
+                            "kind": "column",
+                            "requestedSize": {
+                              "width": {
+                                "mode": "fill",
+                                "value": 1
+                              },
+                              "height": {
+                                "mode": "fill",
+                                "value": 1
+                              }
+                            },
+                            "intrinsicSize": {
+                              "width": 0,
+                              "height": 55
+                            },
+                            "frame": {
+                              "left": 1001,
+                              "top": 708,
+                              "width": 815,
+                              "height": 254
+                            },
+                            "children": [
+                              {
+                                "path": "0.1.1.1.2.0.0",
+                                "kind": "text",
+                                "requestedSize": {
+                                  "width": {
+                                    "mode": "fill",
+                                    "value": 1
+                                  },
+                                  "height": {
+                                    "mode": "hug"
+                                  }
+                                },
+                                "intrinsicSize": {
+                                  "width": 0,
+                                  "height": 25
+                                },
+                                "frame": {
+                                  "left": 1001,
+                                  "top": 708,
+                                  "width": 815,
+                                  "height": 25
+                                },
+                                "snappedFrame": {
+                                  "left": 1002,
+                                  "top": 708,
+                                  "width": 816,
+                                  "height": 26
+                                },
+                                "children": [],
+                                "text": "避免不可收敛",
+                                "transform": "none",
+                                "element": {
+                                  "aid": "sh/72x4nap4",
+                                  "id": "37",
+                                  "kind": "shape"
+                                }
+                              },
+                              {
+                                "path": "0.1.1.1.2.0.1",
+                                "kind": "text",
+                                "requestedSize": {
+                                  "width": {
+                                    "mode": "fill",
+                                    "value": 1
+                                  },
+                                  "height": {
+                                    "mode": "hug"
+                                  }
+                                },
+                                "intrinsicSize": {
+                                  "width": 0,
+                                  "height": 21
+                                },
+                                "frame": {
+                                  "left": 1001,
+                                  "top": 742,
+                                  "width": 815,
+                                  "height": 63
+                                },
+                                "snappedFrame": {
+                                  "left": 1002,
+                                  "top": 742,
+                                  "width": 816,
+                                  "height": 64
+                                },
+                                "children": [],
+                                "text": "先冻结 schema v1 与 action taxonomy；先做 SFT / preference ranking；只在窄动作集合上做 offline RL；每次实验都能回滚到 deterministic baseline。",
+                                "transform": "none",
+                                "element": {
+                                  "aid": "sh/wjudg7ad",
+                                  "id": "38",
+                                  "kind": "shape"
+                                }
+                              }
+                            ],
+                            "padding": {
+                              "top": 0,
+                              "right": 0,
+                              "bottom": 0,
+                              "left": 0
+                            },
+                            "gap": 9,
+                            "effectiveGap": 9,
+                            "justifyOffset": 0,
+                            "align": "start",
+                            "justify": "start",
+                            "contentFrame": {
+                              "left": 1001,
+                              "top": 708,
+                              "width": 815,
+                              "height": 254
+                            },
+                            "items": [
+                              {
+                                "path": "0.1.1.1.2.0.0",
+                                "frame": {
+                                  "left": 1001,
+                                  "top": 708,
+                                  "width": 815,
+                                  "height": 25
+                                }
+                              },
+                              {
+                                "path": "0.1.1.1.2.0.1",
+                                "frame": {
+                                  "left": 1001,
+                                  "top": 742,
+                                  "width": 815,
+                                  "height": 63
+                                }
+                              }
+                            ]
+                          }
+                        ],
+                        "padding": {
+                          "top": 18,
+                          "right": 20,
+                          "bottom": 18,
+                          "left": 20
+                        },
+                        "align": "start",
+                        "justify": "start",
+                        "contentFrame": {
+                          "left": 1001,
+                          "top": 708,
+                          "width": 815,
+                          "height": 254
+                        },
+                        "element": {
+                          "aid": "sh/ih4byhgn",
+                          "id": "36",
+                          "kind": "shape"
+                        }
+                      }
+                    ],
+                    "padding": {
+                      "top": 0,
+                      "right": 0,
+                      "bottom": 0,
+                      "left": 0
+                    },
+                    "gap": 18,
+                    "effectiveGap": 18,
+                    "justifyOffset": 0,
+                    "align": "start",
+                    "justify": "start",
+                    "contentFrame": {
+                      "left": 981,
+                      "top": 204,
+                      "width": 855,
+                      "height": 776
+                    },
+                    "items": [
+                      {
+                        "path": "0.1.1.1.0",
+                        "frame": {
+                          "left": 981,
+                          "top": 204,
+                          "width": 855,
+                          "height": 30
+                        }
+                      },
+                      {
+                        "path": "0.1.1.1.1",
+                        "frame": {
+                          "left": 981,
+                          "top": 252,
+                          "width": 855,
+                          "height": 420
+                        }
+                      },
+                      {
+                        "path": "0.1.1.1.2",
+                        "frame": {
+                          "left": 981,
+                          "top": 690,
+                          "width": 855,
+                          "height": 290
+                        }
+                      }
+                    ]
+                  }
+                ],
+                "padding": {
+                  "top": 0,
+                  "right": 0,
+                  "bottom": 0,
+                  "left": 0
+                },
+                "columnGap": 42,
+                "rowGap": 0,
+                "alignItems": "stretch",
+                "justifyItems": "stretch",
+                "contentFrame": {
+                  "left": 84,
+                  "top": 204,
+                  "width": 1752,
+                  "height": 776
+                },
+                "columns": [
+                  {
+                    "mode": "fr",
+                    "value": 1
+                  },
+                  {
+                    "mode": "fr",
+                    "value": 1
+                  }
+                ],
+                "autoRows": "auto",
+                "resolvedRows": [
+                  "auto"
+                ],
+                "columnSizes": [
+                  855,
+                  855
+                ],
+                "rowSizes": [
+                  776
+                ],
+                "cells": [
+                  {
+                    "path": "0.1.1.0",
+                    "column": 0,
+                    "row": 0,
+                    "columnSpan": 1,
+                    "rowSpan": 1,
+                    "cellFrame": {
+                      "left": 84,
+                      "top": 204,
+                      "width": 855,
+                      "height": 776
+                    }
+                  },
+                  {
+                    "path": "0.1.1.1",
+                    "column": 1,
+                    "row": 0,
+                    "columnSpan": 1,
+                    "rowSpan": 1,
+                    "cellFrame": {
+                      "left": 981,
+                      "top": 204,
+                      "width": 855,
+                      "height": 776
+                    }
+                  }
+                ]
+              },
+              {
+                "path": "0.1.2",
+                "kind": "row",
+                "requestedSize": {
+                  "width": {
+                    "mode": "fill",
+                    "value": 1
+                  },
+                  "height": {
+                    "mode": "fixed",
+                    "value": 22
+                  }
+                },
+                "intrinsicSize": {
+                  "width": 1160,
+                  "height": 12
+                },
+                "frame": {
+                  "left": 84,
+                  "top": 1002,
+                  "width": 1752,
+                  "height": 22
+                },
+                "children": [
+                  {
+                    "path": "0.1.2.0",
+                    "kind": "text",
+                    "requestedSize": {
+                      "width": {
+                        "mode": "fixed",
+                        "value": 900
+                      },
+                      "height": {
+                        "mode": "hug"
+                      }
+                    },
+                    "intrinsicSize": {
+                      "width": 900,
+                      "height": 12
+                    },
+                    "frame": {
+                      "left": 84,
+                      "top": 1008,
+                      "width": 900,
+                      "height": 12
+                    },
+                    "snappedFrame": {
+                      "left": 84,
+                      "top": 1008,
+                      "width": 900,
+                      "height": 12
+                    },
+                    "children": [],
+                    "text": "MnemonicOS proposal | revised narrative",
+                    "transform": "none",
+                    "element": {
+                      "aid": "sh/p4r65wju",
+                      "id": "39",
+                      "kind": "shape"
+                    }
+                  },
+                  {
+                    "path": "0.1.2.1",
+                    "kind": "text",
+                    "requestedSize": {
+                      "width": {
+                        "mode": "fixed",
+                        "value": 260
+                      },
+                      "height": {
+                        "mode": "hug"
+                      }
+                    },
+                    "intrinsicSize": {
+                      "width": 260,
+                      "height": 12
+                    },
+                    "frame": {
+                      "left": 1576,
+                      "top": 1008,
+                      "width": 260,
+                      "height": 12
+                    },
+                    "snappedFrame": {
+                      "left": 1576,
+                      "top": 1008,
+                      "width": 260,
+                      "height": 12
+                    },
+                    "children": [],
+                    "text": "2026-04-24",
+                    "transform": "none",
+                    "element": {
+                      "aid": "sh/1cfa9w3m",
+                      "id": "40",
+                      "kind": "shape"
+                    }
+                  }
+                ],
+                "padding": {
+                  "top": 0,
+                  "right": 0,
+                  "bottom": 0,
+                  "left": 0
+                },
+                "gap": 0,
+                "effectiveGap": 592,
+                "justifyOffset": 0,
+                "align": "center",
+                "justify": "between",
+                "contentFrame": {
+                  "left": 84,
+                  "top": 1002,
+                  "width": 1752,
+                  "height": 22
+                },
+                "items": [
+                  {
+                    "path": "0.1.2.0",
+                    "frame": {
+                      "left": 84,
+                      "top": 1008,
+                      "width": 900,
+                      "height": 12
+                    }
+                  },
+                  {
+                    "path": "0.1.2.1",
+                    "frame": {
+                      "left": 1576,
+                      "top": 1008,
+                      "width": 260,
+                      "height": 12
+                    }
+                  }
+                ]
+              }
+            ],
+            "padding": {
+              "top": 56,
+              "right": 84,
+              "bottom": 56,
+              "left": 84
+            },
+            "gap": 22,
+            "effectiveGap": 22,
+            "justifyOffset": 0,
+            "align": "start",
+            "justify": "start",
+            "contentFrame": {
+              "left": 84,
+              "top": 56,
+              "width": 1752,
+              "height": 968
+            },
+            "items": [
+              {
+                "path": "0.1.0",
+                "frame": {
+                  "left": 84,
+                  "top": 56,
+                  "width": 1752,
+                  "height": 126
+                }
+              },
+              {
+                "path": "0.1.1",
+                "frame": {
+                  "left": 84,
+                  "top": 204,
+                  "width": 1752,
+                  "height": 776
+                }
+              },
+              {
+                "path": "0.1.2",
+                "frame": {
+                  "left": 84,
+                  "top": 1002,
+                  "width": 1752,
+                  "height": 22
+                }
+              }
+            ]
+          }
+        ],
+        "padding": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        },
+        "alignItems": "stretch",
+        "justifyItems": "stretch",
+        "contentFrame": {
+          "left": 0,
+          "top": 0,
+          "width": 1920,
+          "height": 1080
+        },
+        "items": [
+          {
+            "path": "0.0",
+            "frame": {
+              "left": 0,
+              "top": 0,
+              "width": 1920,
+              "height": 1080
+            }
+          },
+          {
+            "path": "0.1",
+            "frame": {
+              "left": 0,
+              "top": 0,
+              "width": 1920,
+              "height": 1080
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,2235 @@
+{
+  "schema": "openai.presentation.layout/v4",
+  "unit": "px",
+  "slide": {
+    "aid": "sl/sc3n9g",
+    "id": "sc3n9g",
+    "slide": 10,
+    "layoutId": "6c4375c3-e4f1-41cc-8c9a-2142c2f8ac68",
+    "layoutName": "Title Slide",
+    "layoutType": "title",
+    "masterLayoutId": "3ae0daf4-08c4-430b-bfbe-8444b207bd88",
+    "masterLayoutName": "Master",
+    "frame": {
+      "left": 0,
+      "top": 0,
+      "width": 1920,
+      "height": 1080
+    }
+  },
+  "theme": {
+    "colorSchemeName": "ChatGPT",
+    "colors": {
+      "accent1": "#156082",
+      "accent2": "#E97132",
+      "accent3": "#196B24",
+      "accent4": "#0F9ED5",
+      "accent5": "#A02B93",
+      "accent6": "#4EA72E",
+      "bg1": "#FFFFFF",
+      "bg2": "#000000",
+      "tx1": "#1F1F1F",
+      "tx2": "#FFFFFF",
+      "dk1": "#000000",
+      "lt1": "#FFFFFF",
+      "dk2": "#0E2841",
+      "lt2": "#E8E8E8",
+      "hlink": "#467886",
+      "folHlink": "#96607D"
+    },
+    "typefaces": [
+      "+mn-lt"
+    ]
+  },
+  "inheritedLayers": [
+    {
+      "scope": "layout",
+      "id": "6c4375c3-e4f1-41cc-8c9a-2142c2f8ac68",
+      "name": "Title Slide",
+      "type": "title",
+      "parentLayoutId": "3ae0daf4-08c4-430b-bfbe-8444b207bd88",
+      "elements": []
+    },
+    {
+      "scope": "master",
+      "id": "3ae0daf4-08c4-430b-bfbe-8444b207bd88",
+      "name": "Master",
+      "type": "master",
+      "elements": []
+    }
+  ],
+  "elements": [
+    {
+      "order": 1,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/bm58z25k",
+      "id": "1",
+      "name": "bg",
+      "bbox": [
+        0,
+        0,
+        1920,
+        1080
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.0"
+      },
+      "geometry": "rect",
+      "fillColor": "#F6F8FB",
+      "lineColor": "#F6F8FB",
+      "lineWidth": 0
+    },
+    {
+      "order": 2,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/47y1kre1",
+      "id": "2",
+      "bbox": [
+        84,
+        68,
+        10,
+        10
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.0.0.0"
+      },
+      "geometry": "roundRect",
+      "fillColor": "#667085",
+      "lineColor": "#667085",
+      "lineWidth": 0
+    },
+    {
+      "order": 3,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/tsvu9kni",
+      "id": "3",
+      "bbox": [
+        104,
+        66,
+        1732,
+        16
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.0.0.1"
+      },
+      "geometry": "rect",
+      "text": "BACKUP B",
+      "textPreview": "BACKUP B",
+      "resolvedFontSize": 16,
+      "resolvedTextStyle": {
+        "fontSize": 16,
+        "typeface": "+mn-lt",
+        "bold": true,
+        "alignment": "left"
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "BACKUP B"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "BACKUP B",
+          "runs": [
+            {
+              "index": 1,
+              "text": "BACKUP B",
+              "fontSize": 16,
+              "color": "#667085",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 4,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/mp0bi9s3",
+      "id": "4",
+      "name": "slide-title",
+      "bbox": [
+        84,
+        100,
+        1752,
+        48
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.0.1"
+      },
+      "geometry": "rect",
+      "text": "风险与对策：把风险设计进 runtime，而不是交给 prompt 运气",
+      "textPreview": "风险与对策：把风险设计进 runtime，而不是交给 prompt 运气",
+      "resolvedFontSize": 48,
+      "resolvedTextStyle": {
+        "fontSize": 48,
+        "typeface": "+mn-lt",
+        "bold": true,
+        "alignment": "left"
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "风险与对策：把风险设计进 runtime，而不是交给 prompt 运气"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "风险与对策：把风险设计进 runtime，而不是交给 prompt 运气",
+          "runs": [
+            {
+              "index": 1,
+              "text": "风险与对策：把风险设计进 runtime，而不是交给 prompt 运气",
+              "fontSize": 48,
+              "color": "#101828",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 5,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/bat47y1k",
+      "id": "5",
+      "bbox": [
+        84,
+        170,
+        862,
+        395
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.0"
+      },
+      "geometry": "roundRect",
+      "fillColor": "#FDECEC",
+      "lineColor": "#E85D5D",
+      "lineWidth": 1
+    },
+    {
+      "order": 6,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/4vmtwra5",
+      "id": "6",
+      "bbox": [
+        104,
+        188,
+        822,
+        26
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.0.0.0"
+      },
+      "geometry": "rect",
+      "text": "Raw intake 风险",
+      "textPreview": "Raw intake 风险",
+      "resolvedFontSize": 25,
+      "resolvedTextStyle": {
+        "fontSize": 25,
+        "typeface": "+mn-lt",
+        "bold": true,
+        "alignment": "left"
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Raw intake 风险"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Raw intake 风险",
+          "runs": [
+            {
+              "index": 1,
+              "text": "Raw intake 风险",
+              "fontSize": 25,
+              "color": "#E85D5D",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 7,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/tgfmlkjm",
+      "id": "7",
+      "bbox": [
+        104,
+        222,
+        822,
+        42
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.0.0.1"
+      },
+      "geometry": "rect",
+      "text": "噪声、隐私、投毒、版权：privacy class、deletion trail、audit、projection isolation 从 day 1 做。",
+      "textPreview": "噪声、隐私、投毒、版权：privacy class、deletion trail、audit、projection isolation 从 day 1 做。",
+      "resolvedFontSize": 21,
+      "resolvedTextStyle": {
+        "fontSize": 21,
+        "typeface": "+mn-lt",
+        "alignment": "left"
+      },
+      "textLayout": {
+        "lineCount": 2,
+        "lines": [
+          {
+            "index": 1,
+            "text": "噪声、隐私、投毒、版权：privacy class、deletion trail、audit、projection isolation 从"
+          },
+          {
+            "index": 2,
+            "text": "day 1 做。"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "噪声、隐私、投毒、版权：privacy class、deletion trail、audit、projection isolation 从 day 1 做。",
+          "runs": [
+            {
+              "index": 1,
+              "text": "噪声、隐私、投毒、版权：privacy class、deletion trail、audit、projection isolation 从 day 1 做。",
+              "fontSize": 21,
+              "color": "#101828"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 8,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/mhk3q5o7",
+      "id": "8",
+      "bbox": [
+        974,
+        170,
+        862,
+        395
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.1"
+      },
+      "geometry": "roundRect",
+      "fillColor": "#EFEAFE",
+      "lineColor": "#7357FF",
+      "lineWidth": 1
+    },
+    {
+      "order": 9,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/b2hwfyxo",
+      "id": "9",
+      "bbox": [
+        994,
+        188,
+        822,
+        26
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.1.0.0"
+      },
+      "geometry": "rect",
+      "text": "Reward 延迟和噪声",
+      "textPreview": "Reward 延迟和噪声",
+      "resolvedFontSize": 25,
+      "resolvedTextStyle": {
+        "fontSize": 25,
+        "typeface": "+mn-lt",
+        "bold": true,
+        "alignment": "left"
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Reward 延迟和噪声"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Reward 延迟和噪声",
+          "runs": [
+            {
+              "index": 1,
+              "text": "Reward 延迟和噪声",
+              "fontSize": 25,
+              "color": "#7357FF",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 10,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/f6dcbulw",
+      "id": "10",
+      "bbox": [
+        994,
+        222,
+        822,
+        42
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.1.0.1"
+      },
+      "geometry": "rect",
+      "text": "显式记录 useful / misleading / retry / task success；先 preference ranking，再窄动作 RL。",
+      "textPreview": "显式记录 useful / misleading / retry / task success；先 preference ranking，再窄动作 RL。",
+      "resolvedFontSize": 21,
+      "resolvedTextStyle": {
+        "fontSize": 21,
+        "typeface": "+mn-lt",
+        "alignment": "left"
+      },
+      "textLayout": {
+        "lineCount": 2,
+        "lines": [
+          {
+            "index": 1,
+            "text": "显式记录 useful / misleading / retry / task success；先 preference ranking，再窄动作"
+          },
+          {
+            "index": 2,
+            "text": "RL。"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "显式记录 useful / misleading / retry / task success；先 preference ranking，再窄动作 RL。",
+          "runs": [
+            {
+              "index": 1,
+              "text": "显式记录 useful / misleading / retry / task success；先 preference ranking，再窄动作 RL。",
+              "fontSize": 21,
+              "color": "#101828"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 11,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/mlkjm1cf",
+      "id": "11",
+      "bbox": [
+        84,
+        585,
+        862,
+        395
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.2"
+      },
+      "geometry": "roundRect",
+      "fillColor": "#EAF1FF",
+      "lineColor": "#2F6BFF",
+      "lineWidth": 1
+    },
+    {
+      "order": 12,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/xc3ylc7u",
+      "id": "12",
+      "bbox": [
+        104,
+        604,
+        822,
+        26
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.2.0.0"
+      },
+      "geometry": "rect",
+      "text": "Benchmark delta 小",
+      "textPreview": "Benchmark delta 小",
+      "resolvedFontSize": 25,
+      "resolvedTextStyle": {
+        "fontSize": 25,
+        "typeface": "+mn-lt",
+        "bold": true,
+        "alignment": "left"
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Benchmark delta 小"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Benchmark delta 小",
+          "runs": [
+            {
+              "index": 1,
+              "text": "Benchmark delta 小",
+              "fontSize": 25,
+              "color": "#2F6BFF",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 13,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/4r65wjud",
+      "id": "13",
+      "bbox": [
+        104,
+        638,
+        822,
+        42
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.2.0.1"
+      },
+      "geometry": "rect",
+      "text": "不要只押 retrieval；同步评估 provenance correctness、stale/misleading avoidance、policy-packet usefulness。",
+      "textPreview": "不要只押 retrieval；同步评估 provenance correctness、stale/misleading avoidance、policy-packet usefulness。",
+      "resolvedFontSize": 21,
+      "resolvedTextStyle": {
+        "fontSize": 21,
+        "typeface": "+mn-lt",
+        "alignment": "left"
+      },
+      "textLayout": {
+        "lineCount": 2,
+        "lines": [
+          {
+            "index": 1,
+            "text": "不要只押 retrieval；同步评估 provenance correctness、stale/misleading"
+          },
+          {
+            "index": 2,
+            "text": "avoidance、policy-packet usefulness。"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "不要只押 retrieval；同步评估 provenance correctness、stale/misleading avoidance、policy-packet usefulness。",
+          "runs": [
+            {
+              "index": 1,
+              "text": "不要只押 retrieval；同步评估 provenance correctness、stale/misleading avoidance、policy-packet usefulness。",
+              "fontSize": 21,
+              "color": "#101828"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 14,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/fepkzupw",
+      "id": "14",
+      "bbox": [
+        974,
+        585,
+        862,
+        395
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.3"
+      },
+      "geometry": "roundRect",
+      "fillColor": "#E9F7F1",
+      "lineColor": "#12A66A",
+      "lineWidth": 1
+    },
+    {
+      "order": 15,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/mtwra5gb",
+      "id": "15",
+      "bbox": [
+        994,
+        604,
+        822,
+        26
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.3.0.0"
+      },
+      "geometry": "rect",
+      "text": "Daemon 过拟合 heuristic",
+      "textPreview": "Daemon 过拟合 heuristic",
+      "resolvedFontSize": 25,
+      "resolvedTextStyle": {
+        "fontSize": 25,
+        "typeface": "+mn-lt",
+        "bold": true,
+        "alignment": "left"
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Daemon 过拟合 heuristic"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Daemon 过拟合 heuristic",
+          "runs": [
+            {
+              "index": 1,
+              "text": "Daemon 过拟合 heuristic",
+              "fontSize": 25,
+              "color": "#12A66A",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 16,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/xkf6dcbu",
+      "id": "16",
+      "bbox": [
+        994,
+        638,
+        822,
+        42
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.1.3.0.1"
+      },
+      "geometry": "rect",
+      "text": "改 trace quality、action taxonomy 和 contrastive examples；保留 deterministic baseline。",
+      "textPreview": "改 trace quality、action taxonomy 和 contrastive examples；保留 deterministic baseline。",
+      "resolvedFontSize": 21,
+      "resolvedTextStyle": {
+        "fontSize": 21,
+        "typeface": "+mn-lt",
+        "alignment": "left"
+      },
+      "textLayout": {
+        "lineCount": 2,
+        "lines": [
+          {
+            "index": 1,
+            "text": "改 trace quality、action taxonomy 和 contrastive examples；保留 deterministic"
+          },
+          {
+            "index": 2,
+            "text": "baseline。"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "改 trace quality、action taxonomy 和 contrastive examples；保留 deterministic baseline。",
+          "runs": [
+            {
+              "index": 1,
+              "text": "改 trace quality、action taxonomy 和 contrastive examples；保留 deterministic baseline。",
+              "fontSize": 21,
+              "color": "#101828"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 17,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/4zidonyd",
+      "id": "17",
+      "bbox": [
+        84,
+        1008,
+        900,
+        12
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.2.0"
+      },
+      "geometry": "rect",
+      "text": "MnemonicOS proposal | revised narrative",
+      "textPreview": "MnemonicOS proposal | revised narrative",
+      "resolvedFontSize": 12,
+      "resolvedTextStyle": {
+        "fontSize": 12,
+        "typeface": "+mn-lt",
+        "alignment": "left"
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "MnemonicOS proposal | revised narrative"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "MnemonicOS proposal | revised narrative",
+          "runs": [
+            {
+              "index": 1,
+              "text": "MnemonicOS proposal | revised narrative",
+              "fontSize": 12,
+              "color": "#8A94A6"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 18,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/fil0rqd4",
+      "id": "18",
+      "bbox": [
+        1576,
+        1008,
+        260,
+        12
+      ],
+      "composeSource": {
+        "run": 1,
+        "path": "0.1.2.1"
+      },
+      "geometry": "rect",
+      "text": "2026-04-24",
+      "textPreview": "2026-04-24",
+      "resolvedFontSize": 12,
+      "resolvedTextStyle": {
+        "fontSize": 12,
+        "typeface": "+mn-lt",
+        "alignment": "right"
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "2026-04-24"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "2026-04-24",
+          "runs": [
+            {
+              "index": 1,
+              "text": "2026-04-24",
+              "fontSize": 12,
+              "color": "#8A94A6",
+              "alignment": "right"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "composeRuns": [
+    {
+      "index": 1,
+      "frame": {
+        "left": 0,
+        "top": 0,
+        "width": 1920,
+        "height": 1080
+      },
+      "baseUnit": 8,
+      "root": {
+        "path": "0",
+        "kind": "layers",
+        "requestedSize": {
+          "width": {
+            "mode": "fill",
+            "value": 1
+          },
+          "height": {
+            "mode": "fill",
+            "value": 1
+          }
+        },
+        "intrinsicSize": {
+          "width": 0,
+          "height": 0
+        },
+        "frame": {
+          "left": 0,
+          "top": 0,
+          "width": 1920,
+          "height": 1080
+        },
+        "children": [
+          {
+            "path": "0.0",
+            "kind": "shape",
+            "name": "bg",
+            "requestedSize": {
+              "width": {
+                "mode": "fill",
+                "value": 1
+              },
+              "height": {
+                "mode": "fill",
+                "value": 1
+              }
+            },
+            "intrinsicSize": {
+              "width": 0,
+              "height": 0
+            },
+            "frame": {
+              "left": 0,
+              "top": 0,
+              "width": 1920,
+              "height": 1080
+            },
+            "snappedFrame": {
+              "left": 0,
+              "top": 0,
+              "width": 1920,
+              "height": 1080
+            },
+            "children": [],
+            "geometry": "rect",
+            "element": {
+              "aid": "sh/bm58z25k",
+              "id": "1",
+              "kind": "shape"
+            }
+          },
+          {
+            "path": "0.1",
+            "kind": "column",
+            "requestedSize": {
+              "width": {
+                "mode": "fill",
+                "value": 1
+              },
+              "height": {
+                "mode": "fill",
+                "value": 1
+              }
+            },
+            "intrinsicSize": {
+              "width": 168,
+              "height": 270
+            },
+            "frame": {
+              "left": 0,
+              "top": 0,
+              "width": 1920,
+              "height": 1080
+            },
+            "children": [
+              {
+                "path": "0.1.0",
+                "kind": "column",
+                "requestedSize": {
+                  "width": {
+                    "mode": "fill",
+                    "value": 1
+                  },
+                  "height": {
+                    "mode": "hug"
+                  }
+                },
+                "intrinsicSize": {
+                  "width": 0,
+                  "height": 92
+                },
+                "frame": {
+                  "left": 84,
+                  "top": 56,
+                  "width": 1752,
+                  "height": 92
+                },
+                "children": [
+                  {
+                    "path": "0.1.0.0",
+                    "kind": "row",
+                    "requestedSize": {
+                      "width": {
+                        "mode": "fill",
+                        "value": 1
+                      },
+                      "height": {
+                        "mode": "fixed",
+                        "value": 34
+                      }
+                    },
+                    "intrinsicSize": {
+                      "width": 20,
+                      "height": 16
+                    },
+                    "frame": {
+                      "left": 84,
+                      "top": 56,
+                      "width": 1752,
+                      "height": 34
+                    },
+                    "children": [
+                      {
+                        "path": "0.1.0.0.0",
+                        "kind": "shape",
+                        "requestedSize": {
+                          "width": {
+                            "mode": "fixed",
+                            "value": 10
+                          },
+                          "height": {
+                            "mode": "fixed",
+                            "value": 10
+                          }
+                        },
+                        "intrinsicSize": {
+                          "width": 10,
+                          "height": 10
+                        },
+                        "frame": {
+                          "left": 84,
+                          "top": 68,
+                          "width": 10,
+                          "height": 10
+                        },
+                        "snappedFrame": {
+                          "left": 84,
+                          "top": 68,
+                          "width": 10,
+                          "height": 10
+                        },
+                        "children": [],
+                        "geometry": "rect",
+                        "element": {
+                          "aid": "sh/47y1kre1",
+                          "id": "2",
+                          "kind": "shape"
+                        }
+                      },
+                      {
+                        "path": "0.1.0.0.1",
+                        "kind": "text",
+                        "requestedSize": {
+                          "width": {
+                            "mode": "fill",
+                            "value": 1
+                          },
+                          "height": {
+                            "mode": "hug"
+                          }
+                        },
+                        "intrinsicSize": {
+                          "width": 0,
+                          "height": 16
+                        },
+                        "frame": {
+                          "left": 104,
+                          "top": 66,
+                          "width": 1732,
+                          "height": 16
+                        },
+                        "snappedFrame": {
+                          "left": 104,
+                          "top": 66,
+                          "width": 1732,
+                          "height": 16
+                        },
+                        "children": [],
+                        "text": "BACKUP B",
+                        "transform": "none",
+                        "element": {
+                          "aid": "sh/tsvu9kni",
+                          "id": "3",
+                          "kind": "shape"
+                        }
+                      }
+                    ],
+                    "padding": {
+                      "top": 0,
+                      "right": 0,
+                      "bottom": 0,
+                      "left": 0
+                    },
+                    "gap": 10,
+                    "effectiveGap": 10,
+                    "justifyOffset": 0,
+                    "align": "center",
+                    "justify": "start",
+                    "contentFrame": {
+                      "left": 84,
+                      "top": 56,
+                      "width": 1752,
+                      "height": 34
+                    },
+                    "items": [
+                      {
+                        "path": "0.1.0.0.0",
+                        "frame": {
+                          "left": 84,
+                          "top": 68,
+                          "width": 10,
+                          "height": 10
+                        }
+                      },
+                      {
+                        "path": "0.1.0.0.1",
+                        "frame": {
+                          "left": 104,
+                          "top": 66,
+                          "width": 1732,
+                          "height": 16
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "path": "0.1.0.1",
+                    "kind": "text",
+                    "name": "slide-title",
+                    "requestedSize": {
+                      "width": {
+                        "mode": "fill",
+                        "value": 1
+                      },
+                      "height": {
+                        "mode": "hug"
+                      }
+                    },
+                    "intrinsicSize": {
+                      "width": 0,
+                      "height": 48
+                    },
+                    "frame": {
+                      "left": 84,
+                      "top": 100,
+                      "width": 1752,
+                      "height": 48
+                    },
+                    "snappedFrame": {
+                      "left": 84,
+                      "top": 100,
+                      "width": 1752,
+                      "height": 48
+                    },
+                    "children": [],
+                    "text": "风险与对策：把风险设计进 runtime，而不是交给 prompt 运气",
+                    "transform": "none",
+                    "element": {
+                      "aid": "sh/mp0bi9s3",
+                      "id": "4",
+                      "kind": "shape"
+                    }
+                  }
+                ],
+                "padding": {
+                  "top": 0,
+                  "right": 0,
+                  "bottom": 0,
+                  "left": 0
+                },
+                "gap": 10,
+                "effectiveGap": 10,
+                "justifyOffset": 0,
+                "align": "start",
+                "justify": "start",
+                "contentFrame": {
+                  "left": 84,
+                  "top": 56,
+                  "width": 1752,
+                  "height": 92
+                },
+                "items": [
+                  {
+                    "path": "0.1.0.0",
+                    "frame": {
+                      "left": 84,
+                      "top": 56,
+                      "width": 1752,
+                      "height": 34
+                    }
+                  },
+                  {
+                    "path": "0.1.0.1",
+                    "frame": {
+                      "left": 84,
+                      "top": 100,
+                      "width": 1752,
+                      "height": 48
+                    }
+                  }
+                ]
+              },
+              {
+                "path": "0.1.1",
+                "kind": "grid",
+                "requestedSize": {
+                  "width": {
+                    "mode": "fill",
+                    "value": 1
+                  },
+                  "height": {
+                    "mode": "fill",
+                    "value": 1
+                  }
+                },
+                "intrinsicSize": {
+                  "width": 28,
+                  "height": 20
+                },
+                "frame": {
+                  "left": 84,
+                  "top": 170,
+                  "width": 1752,
+                  "height": 810
+                },
+                "children": [
+                  {
+                    "path": "0.1.1.0",
+                    "kind": "panel",
+                    "requestedSize": {
+                      "width": {
+                        "mode": "fill",
+                        "value": 1
+                      },
+                      "height": {
+                        "mode": "fill",
+                        "value": 1
+                      }
+                    },
+                    "intrinsicSize": {
+                      "width": 40,
+                      "height": 36
+                    },
+                    "frame": {
+                      "left": 84,
+                      "top": 170,
+                      "width": 862,
+                      "height": 395
+                    },
+                    "snappedFrame": {
+                      "left": 84,
+                      "top": 170,
+                      "width": 862,
+                      "height": 395
+                    },
+                    "children": [
+                      {
+                        "path": "0.1.1.0.0",
+                        "kind": "column",
+                        "requestedSize": {
+                          "width": {
+                            "mode": "fill",
+                            "value": 1
+                          },
+                          "height": {
+                            "mode": "fill",
+                            "value": 1
+                          }
+                        },
+                        "intrinsicSize": {
+                          "width": 0,
+                          "height": 55
+                        },
+                        "frame": {
+                          "left": 104,
+                          "top": 188,
+                          "width": 822,
+                          "height": 359
+                        },
+                        "children": [
+                          {
+                            "path": "0.1.1.0.0.0",
+                            "kind": "text",
+                            "requestedSize": {
+                              "width": {
+                                "mode": "fill",
+                                "value": 1
+                              },
+                              "height": {
+                                "mode": "hug"
+                              }
+                            },
+                            "intrinsicSize": {
+                              "width": 0,
+                              "height": 25
+                            },
+                            "frame": {
+                              "left": 104,
+                              "top": 188,
+                              "width": 822,
+                              "height": 25
+                            },
+                            "snappedFrame": {
+                              "left": 104,
+                              "top": 188,
+                              "width": 822,
+                              "height": 26
+                            },
+                            "children": [],
+                            "text": "Raw intake 风险",
+                            "transform": "none",
+                            "element": {
+                              "aid": "sh/4vmtwra5",
+                              "id": "6",
+                              "kind": "shape"
+                            }
+                          },
+                          {
+                            "path": "0.1.1.0.0.1",
+                            "kind": "text",
+                            "requestedSize": {
+                              "width": {
+                                "mode": "fill",
+                                "value": 1
+                              },
+                              "height": {
+                                "mode": "hug"
+                              }
+                            },
+                            "intrinsicSize": {
+                              "width": 0,
+                              "height": 21
+                            },
+                            "frame": {
+                              "left": 104,
+                              "top": 222,
+                              "width": 822,
+                              "height": 42
+                            },
+                            "snappedFrame": {
+                              "left": 104,
+                              "top": 222,
+                              "width": 822,
+                              "height": 42
+                            },
+                            "children": [],
+                            "text": "噪声、隐私、投毒、版权：privacy class、deletion trail、audit、projection isolation 从 day 1 做。",
+                            "transform": "none",
+                            "element": {
+                              "aid": "sh/tgfmlkjm",
+                              "id": "7",
+                              "kind": "shape"
+                            }
+                          }
+                        ],
+                        "padding": {
+                          "top": 0,
+                          "right": 0,
+                          "bottom": 0,
+                          "left": 0
+                        },
+                        "gap": 9,
+                        "effectiveGap": 9,
+                        "justifyOffset": 0,
+                        "align": "start",
+                        "justify": "start",
+                        "contentFrame": {
+                          "left": 104,
+                          "top": 188,
+                          "width": 822,
+                          "height": 359
+                        },
+                        "items": [
+                          {
+                            "path": "0.1.1.0.0.0",
+                            "frame": {
+                              "left": 104,
+                              "top": 188,
+                              "width": 822,
+                              "height": 25
+                            }
+                          },
+                          {
+                            "path": "0.1.1.0.0.1",
+                            "frame": {
+                              "left": 104,
+                              "top": 222,
+                              "width": 822,
+                              "height": 42
+                            }
+                          }
+                        ]
+                      }
+                    ],
+                    "padding": {
+                      "top": 18,
+                      "right": 20,
+                      "bottom": 18,
+                      "left": 20
+                    },
+                    "align": "start",
+                    "justify": "start",
+                    "contentFrame": {
+                      "left": 104,
+                      "top": 188,
+                      "width": 822,
+                      "height": 359
+                    },
+                    "element": {
+                      "aid": "sh/bat47y1k",
+                      "id": "5",
+                      "kind": "shape"
+                    }
+                  },
+                  {
+                    "path": "0.1.1.1",
+                    "kind": "panel",
+                    "requestedSize": {
+                      "width": {
+                        "mode": "fill",
+                        "value": 1
+                      },
+                      "height": {
+                        "mode": "fill",
+                        "value": 1
+                      }
+                    },
+                    "intrinsicSize": {
+                      "width": 40,
+                      "height": 36
+                    },
+                    "frame": {
+                      "left": 974,
+                      "top": 170,
+                      "width": 862,
+                      "height": 395
+                    },
+                    "snappedFrame": {
+                      "left": 974,
+                      "top": 170,
+                      "width": 862,
+                      "height": 395
+                    },
+                    "children": [
+                      {
+                        "path": "0.1.1.1.0",
+                        "kind": "column",
+                        "requestedSize": {
+                          "width": {
+                            "mode": "fill",
+                            "value": 1
+                          },
+                          "height": {
+                            "mode": "fill",
+                            "value": 1
+                          }
+                        },
+                        "intrinsicSize": {
+                          "width": 0,
+                          "height": 55
+                        },
+                        "frame": {
+                          "left": 994,
+                          "top": 188,
+                          "width": 822,
+                          "height": 359
+                        },
+                        "children": [
+                          {
+                            "path": "0.1.1.1.0.0",
+                            "kind": "text",
+                            "requestedSize": {
+                              "width": {
+                                "mode": "fill",
+                                "value": 1
+                              },
+                              "height": {
+                                "mode": "hug"
+                              }
+                            },
+                            "intrinsicSize": {
+                              "width": 0,
+                              "height": 25
+                            },
+                            "frame": {
+                              "left": 994,
+                              "top": 188,
+                              "width": 822,
+                              "height": 25
+                            },
+                            "snappedFrame": {
+                              "left": 994,
+                              "top": 188,
+                              "width": 822,
+                              "height": 26
+                            },
+                            "children": [],
+                            "text": "Reward 延迟和噪声",
+                            "transform": "none",
+                            "element": {
+                              "aid": "sh/b2hwfyxo",
+                              "id": "9",
+                              "kind": "shape"
+                            }
+                          },
+                          {
+                            "path": "0.1.1.1.0.1",
+                            "kind": "text",
+                            "requestedSize": {
+                              "width": {
+                                "mode": "fill",
+                                "value": 1
+                              },
+                              "height": {
+                                "mode": "hug"
+                              }
+                            },
+                            "intrinsicSize": {
+                              "width": 0,
+                              "height": 21
+                            },
+                            "frame": {
+                              "left": 994,
+                              "top": 222,
+                              "width": 822,
+                              "height": 42
+                            },
+                            "snappedFrame": {
+                              "left": 994,
+                              "top": 222,
+                              "width": 822,
+                              "height": 42
+                            },
+                            "children": [],
+                            "text": "显式记录 useful / misleading / retry / task success；先 preference ranking，再窄动作 RL。",
+                            "transform": "none",
+                            "element": {
+                              "aid": "sh/f6dcbulw",
+                              "id": "10",
+                              "kind": "shape"
+                            }
+                          }
+                        ],
+                        "padding": {
+                          "top": 0,
+                          "right": 0,
+                          "bottom": 0,
+                          "left": 0
+                        },
+                        "gap": 9,
+                        "effectiveGap": 9,
+                        "justifyOffset": 0,
+                        "align": "start",
+                        "justify": "start",
+                        "contentFrame": {
+                          "left": 994,
+                          "top": 188,
+                          "width": 822,
+                          "height": 359
+                        },
+                        "items": [
+                          {
+                            "path": "0.1.1.1.0.0",
+                            "frame": {
+                              "left": 994,
+                              "top": 188,
+                              "width": 822,
+                              "height": 25
+                            }
+                          },
+                          {
+                            "path": "0.1.1.1.0.1",
+                            "frame": {
+                              "left": 994,
+                              "top": 222,
+                              "width": 822,
+                              "height": 42
+                            }
+                          }
+                        ]
+                      }
+                    ],
+                    "padding": {
+                      "top": 18,
+                      "right": 20,
+                      "bottom": 18,
+                      "left": 20
+                    },
+                    "align": "start",
+                    "justify": "start",
+                    "contentFrame": {
+                      "left": 994,
+                      "top": 188,
+                      "width": 822,
+                      "height": 359
+                    },
+                    "element": {
+                      "aid": "sh/mhk3q5o7",
+                      "id": "8",
+                      "kind": "shape"
+                    }
+                  },
+                  {
+                    "path": "0.1.1.2",
+                    "kind": "panel",
+                    "requestedSize": {
+                      "width": {
+                        "mode": "fill",
+                        "value": 1
+                      },
+                      "height": {
+                        "mode": "fill",
+                        "value": 1
+                      }
+                    },
+                    "intrinsicSize": {
+                      "width": 40,
+                      "height": 36
+                    },
+                    "frame": {
+                      "left": 84,
+                      "top": 585,
+                      "width": 862,
+                      "height": 395
+                    },
+                    "snappedFrame": {
+                      "left": 84,
+                      "top": 585,
+                      "width": 862,
+                      "height": 395
+                    },
+                    "children": [
+                      {
+                        "path": "0.1.1.2.0",
+                        "kind": "column",
+                        "requestedSize": {
+                          "width": {
+                            "mode": "fill",
+                            "value": 1
+                          },
+                          "height": {
+                            "mode": "fill",
+                            "value": 1
+                          }
+                        },
+                        "intrinsicSize": {
+                          "width": 0,
+                          "height": 55
+                        },
+                        "frame": {
+                          "left": 104,
+                          "top": 603,
+                          "width": 822,
+                          "height": 359
+                        },
+                        "children": [
+                          {
+                            "path": "0.1.1.2.0.0",
+                            "kind": "text",
+                            "requestedSize": {
+                              "width": {
+                                "mode": "fill",
+                                "value": 1
+                              },
+                              "height": {
+                                "mode": "hug"
+                              }
+                            },
+                            "intrinsicSize": {
+                              "width": 0,
+                              "height": 25
+                            },
+                            "frame": {
+                              "left": 104,
+                              "top": 603,
+                              "width": 822,
+                              "height": 25
+                            },
+                            "snappedFrame": {
+                              "left": 104,
+                              "top": 604,
+                              "width": 822,
+                              "height": 26
+                            },
+                            "children": [],
+                            "text": "Benchmark delta 小",
+                            "transform": "none",
+                            "element": {
+                              "aid": "sh/xc3ylc7u",
+                              "id": "12",
+                              "kind": "shape"
+                            }
+                          },
+                          {
+                            "path": "0.1.1.2.0.1",
+                            "kind": "text",
+                            "requestedSize": {
+                              "width": {
+                                "mode": "fill",
+                                "value": 1
+                              },
+                              "height": {
+                                "mode": "hug"
+                              }
+                            },
+                            "intrinsicSize": {
+                              "width": 0,
+                              "height": 21
+                            },
+                            "frame": {
+                              "left": 104,
+                              "top": 637,
+                              "width": 822,
+                              "height": 42
+                            },
+                            "snappedFrame": {
+                              "left": 104,
+                              "top": 638,
+                              "width": 822,
+                              "height": 42
+                            },
+                            "children": [],
+                            "text": "不要只押 retrieval；同步评估 provenance correctness、stale/misleading avoidance、policy-packet usefulness。",
+                            "transform": "none",
+                            "element": {
+                              "aid": "sh/4r65wjud",
+                              "id": "13",
+                              "kind": "shape"
+                            }
+                          }
+                        ],
+                        "padding": {
+                          "top": 0,
+                          "right": 0,
+                          "bottom": 0,
+                          "left": 0
+                        },
+                        "gap": 9,
+                        "effectiveGap": 9,
+                        "justifyOffset": 0,
+                        "align": "start",
+                        "justify": "start",
+                        "contentFrame": {
+                          "left": 104,
+                          "top": 603,
+                          "width": 822,
+                          "height": 359
+                        },
+                        "items": [
+                          {
+                            "path": "0.1.1.2.0.0",
+                            "frame": {
+                              "left": 104,
+                              "top": 603,
+                              "width": 822,
+                              "height": 25
+                            }
+                          },
+                          {
+                            "path": "0.1.1.2.0.1",
+                            "frame": {
+                              "left": 104,
+                              "top": 637,
+                              "width": 822,
+                              "height": 42
+                            }
+                          }
+                        ]
+                      }
+                    ],
+                    "padding": {
+                      "top": 18,
+                      "right": 20,
+                      "bottom": 18,
+                      "left": 20
+                    },
+                    "align": "start",
+                    "justify": "start",
+                    "contentFrame": {
+                      "left": 104,
+                      "top": 603,
+                      "width": 822,
+                      "height": 359
+                    },
+                    "element": {
+                      "aid": "sh/mlkjm1cf",
+                      "id": "11",
+                      "kind": "shape"
+                    }
+                  },
+                  {
+                    "path": "0.1.1.3",
+                    "kind": "panel",
+                    "requestedSize": {
+                      "width": {
+                        "mode": "fill",
+                        "value": 1
+                      },
+                      "height": {
+                        "mode": "fill",
+                        "value": 1
+                      }
+                    },
+                    "intrinsicSize": {
+                      "width": 40,
+                      "height": 36
+                    },
+                    "frame": {
+                      "left": 974,
+                      "top": 585,
+                      "width": 862,
+                      "height": 395
+                    },
+                    "snappedFrame": {
+                      "left": 974,
+                      "top": 585,
+                      "width": 862,
+                      "height": 395
+                    },
+                    "children": [
+                      {
+                        "path": "0.1.1.3.0",
+                        "kind": "column",
+                        "requestedSize": {
+                          "width": {
+                            "mode": "fill",
+                            "value": 1
+                          },
+                          "height": {
+                            "mode": "fill",
+                            "value": 1
+                          }
+                        },
+                        "intrinsicSize": {
+                          "width": 0,
+                          "height": 55
+                        },
+                        "frame": {
+                          "left": 994,
+                          "top": 603,
+                          "width": 822,
+                          "height": 359
+                        },
+                        "children": [
+                          {
+                            "path": "0.1.1.3.0.0",
+                            "kind": "text",
+                            "requestedSize": {
+                              "width": {
+                                "mode": "fill",
+                                "value": 1
+                              },
+                              "height": {
+                                "mode": "hug"
+                              }
+                            },
+                            "intrinsicSize": {
+                              "width": 0,
+                              "height": 25
+                            },
+                            "frame": {
+                              "left": 994,
+                              "top": 603,
+                              "width": 822,
+                              "height": 25
+                            },
+                            "snappedFrame": {
+                              "left": 994,
+                              "top": 604,
+                              "width": 822,
+                              "height": 26
+                            },
+                            "children": [],
+                            "text": "Daemon 过拟合 heuristic",
+                            "transform": "none",
+                            "element": {
+                              "aid": "sh/mtwra5gb",
+                              "id": "15",
+                              "kind": "shape"
+                            }
+                          },
+                          {
+                            "path": "0.1.1.3.0.1",
+                            "kind": "text",
+                            "requestedSize": {
+                              "width": {
+                                "mode": "fill",
+                                "value": 1
+                              },
+                              "height": {
+                                "mode": "hug"
+                              }
+                            },
+                            "intrinsicSize": {
+                              "width": 0,
+                              "height": 21
+                            },
+                            "frame": {
+                              "left": 994,
+                              "top": 637,
+                              "width": 822,
+                              "height": 42
+                            },
+                            "snappedFrame": {
+                              "left": 994,
+                              "top": 638,
+                              "width": 822,
+                              "height": 42
+                            },
+                            "children": [],
+                            "text": "改 trace quality、action taxonomy 和 contrastive examples；保留 deterministic baseline。",
+                            "transform": "none",
+                            "element": {
+                              "aid": "sh/xkf6dcbu",
+                              "id": "16",
+                              "kind": "shape"
+                            }
+                          }
+                        ],
+                        "padding": {
+                          "top": 0,
+                          "right": 0,
+                          "bottom": 0,
+                          "left": 0
+                        },
+                        "gap": 9,
+                        "effectiveGap": 9,
+                        "justifyOffset": 0,
+                        "align": "start",
+                        "justify": "start",
+                        "contentFrame": {
+                          "left": 994,
+                          "top": 603,
+                          "width": 822,
+                          "height": 359
+                        },
+                        "items": [
+                          {
+                            "path": "0.1.1.3.0.0",
+                            "frame": {
+                              "left": 994,
+                              "top": 603,
+                              "width": 822,
+                              "height": 25
+                            }
+                          },
+                          {
+                            "path": "0.1.1.3.0.1",
+                            "frame": {
+                              "left": 994,
+                              "top": 637,
+                              "width": 822,
+                              "height": 42
+                            }
+                          }
+                        ]
+                      }
+                    ],
+                    "padding": {
+                      "top": 18,
+                      "right": 20,
+                      "bottom": 18,
+                      "left": 20
+                    },
+                    "align": "start",
+                    "justify": "start",
+                    "contentFrame": {
+                      "left": 994,
+                      "top": 603,
+                      "width": 822,
+                      "height": 359
+                    },
+                    "element": {
+                      "aid": "sh/fepkzupw",
+                      "id": "14",
+                      "kind": "shape"
+                    }
+                  }
+                ],
+                "padding": {
+                  "top": 0,
+                  "right": 0,
+                  "bottom": 0,
+                  "left": 0
+                },
+                "columnGap": 28,
+                "rowGap": 20,
+                "alignItems": "stretch",
+                "justifyItems": "stretch",
+                "contentFrame": {
+                  "left": 84,
+                  "top": 170,
+                  "width": 1752,
+                  "height": 810
+                },
+                "columns": [
+                  {
+                    "mode": "fr",
+                    "value": 1
+                  },
+                  {
+                    "mode": "fr",
+                    "value": 1
+                  }
+                ],
+                "autoRows": "auto",
+                "resolvedRows": [
+                  "auto",
+                  "auto"
+                ],
+                "columnSizes": [
+                  862,
+                  862
+                ],
+                "rowSizes": [
+                  395,
+                  395
+                ],
+                "cells": [
+                  {
+                    "path": "0.1.1.0",
+                    "column": 0,
+                    "row": 0,
+                    "columnSpan": 1,
+                    "rowSpan": 1,
+                    "cellFrame": {
+                      "left": 84,
+                      "top": 170,
+                      "width": 862,
+                      "height": 395
+                    }
+                  },
+                  {
+                    "path": "0.1.1.1",
+                    "column": 1,
+                    "row": 0,
+                    "columnSpan": 1,
+                    "rowSpan": 1,
+                    "cellFrame": {
+                      "left": 974,
+                      "top": 170,
+                      "width": 862,
+                      "height": 395
+                    }
+                  },
+                  {
+                    "path": "0.1.1.2",
+                    "column": 0,
+                    "row": 1,
+                    "columnSpan": 1,
+                    "rowSpan": 1,
+                    "cellFrame": {
+                      "left": 84,
+                      "top": 585,
+                      "width": 862,
+                      "height": 395
+                    }
+                  },
+                  {
+                    "path": "0.1.1.3",
+                    "column": 1,
+                    "row": 1,
+                    "columnSpan": 1,
+                    "rowSpan": 1,
+                    "cellFrame": {
+                      "left": 974,
+                      "top": 585,
+                      "width": 862,
+                      "height": 395
+                    }
+                  }
+                ]
+              },
+              {
+                "path": "0.1.2",
+                "kind": "row",
+                "requestedSize": {
+                  "width": {
+                    "mode": "fill",
+                    "value": 1
+                  },
+                  "height": {
+                    "mode": "fixed",
+                    "value": 22
+                  }
+                },
+                "intrinsicSize": {
+                  "width": 1160,
+                  "height": 12
+                },
+                "frame": {
+                  "left": 84,
+                  "top": 1002,
+                  "width": 1752,
+                  "height": 22
+                },
+                "children": [
+                  {
+                    "path": "0.1.2.0",
+                    "kind": "text",
+                    "requestedSize": {
+                      "width": {
+                        "mode": "fixed",
+                        "value": 900
+                      },
+                      "height": {
+                        "mode": "hug"
+                      }
+                    },
+                    "intrinsicSize": {
+                      "width": 900,
+                      "height": 12
+                    },
+                    "frame": {
+                      "left": 84,
+                      "top": 1008,
+                      "width": 900,
+                      "height": 12
+                    },
+                    "snappedFrame": {
+                      "left": 84,
+                      "top": 1008,
+                      "width": 900,
+                      "height": 12
+                    },
+                    "children": [],
+                    "text": "MnemonicOS proposal | revised narrative",
+                    "transform": "none",
+                    "element": {
+                      "aid": "sh/4zidonyd",
+                      "id": "17",
+                      "kind": "shape"
+                    }
+                  },
+                  {
+                    "path": "0.1.2.1",
+                    "kind": "text",
+                    "requestedSize": {
+                      "width": {
+                        "mode": "fixed",
+                        "value": 260
+                      },
+                      "height": {
+                        "mode": "hug"
+                      }
+                    },
+                    "intrinsicSize": {
+                      "width": 260,
+                      "height": 12
+                    },
+                    "frame": {
+                      "left": 1576,
+                      "top": 1008,
+                      "width": 260,
+                      "height": 12
+                    },
+                    "snappedFrame": {
+                      "left": 1576,
+                      "top": 1008,
+                      "width": 260,
+                      "height": 12
+                    },
+                    "children": [],
+                    "text": "2026-04-24",
+                    "transform": "none",
+                    "element": {
+                      "aid": "sh/fil0rqd4",
+                      "id": "18",
+                      "kind": "shape"
+                    }
+                  }
+                ],
+                "padding": {
+                  "top": 0,
+                  "right": 0,
+                  "bottom": 0,
+                  "left": 0
+                },
+                "gap": 0,
+                "effectiveGap": 592,
+                "justifyOffset": 0,
+                "align": "center",
+                "justify": "between",
+                "contentFrame": {
+                  "left": 84,
+                  "top": 1002,
+                  "width": 1752,
+                  "height": 22
+                },
+                "items": [
+                  {
+                    "path": "0.1.2.0",
+                    "frame": {
+                      "left": 84,
+                      "top": 1008,
+                      "width": 900,
+                      "height": 12
+                    }
+                  },
+                  {
+                    "path": "0.1.2.1",
+                    "frame": {
+                      "left": 1576,
+                      "top": 1008,
+                      "width": 260,
+                      "height": 12
+                    }
+                  }
+                ]
+              }
+            ],
+            "padding": {
+              "top": 56,
+              "right": 84,
+              "bottom": 56,
+              "left": 84
+            },
+            "gap": 22,
+            "effectiveGap": 22,
+            "justifyOffset": 0,
+            "align": "start",
+            "justify": "start",
+            "contentFrame": {
+              "left": 84,
+              "top": 56,
+              "width": 1752,
+              "height": 968
+            },
+            "items": [
+              {
+                "path": "0.1.0",
+                "frame": {
+                  "left": 84,
+                  "top": 56,
+                  "width": 1752,
+                  "height": 92
+                }
+              },
+              {
+                "path": "0.1.1",
+                "frame": {
+                  "left": 84,
+                  "top": 170,
+                  "width": 1752,
+                  "height": 810
+                }
+              },
+              {
+                "path": "0.1.2",
+                "frame": {
+                  "left": 84,
+                  "top": 1002,
+                  "width": 1752,
+                  "height": 22
+                }
+              }
+            ]
+          }
+        ],
+        "padding": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        },
+        "alignItems": "stretch",
+        "justifyItems": "stretch",
+        "contentFrame": {
+          "left": 0,
+          "top": 0,
+          "width": 1920,
+          "height": 1080
+        },
+        "items": [
+          {
+            "path": "0.0",
+            "frame": {
+              "left": 0,
+              "top": 0,
+              "width": 1920,
+              "height": 1080
+            }
+          },
+          {
+            "path": "0.1",
+            "frame": {
+              "left": 0,
+              "top": 0,
+              "width": 1920,
+              "height": 1080
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
