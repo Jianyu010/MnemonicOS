@@ -40,6 +40,21 @@ brain/raw/sessions/{conversation_id}/
 `events.jsonl` is the spine. Attachments store large outputs, diffs, generated
 files, command logs, search snapshots, or child branch logs.
 
+```mermaid
+flowchart TD
+    A["Agent runtime / UI"] --> B["Bridge middleware or platform hook"]
+    B --> C["MnemonicOS capture API"]
+    C --> D["Conversation directory<br/>brain/raw/sessions/{conversation_id}"]
+    D --> E["Episode events<br/>episodes/{episode_id}/events.jsonl"]
+    D --> F["Human transcript<br/>episodes/{episode_id}/transcript.md"]
+    D --> G["Attachments<br/>episodes/{episode_id}/artifacts/"]
+    E --> H["Daemon projection<br/>usable raw in memory"]
+    G --> H
+    H --> I["Future VLM / <=8B extraction"]
+    I --> J["Promotion policy"]
+    J --> K["Canonical wiki + SQLite materializers"]
+```
+
 ---
 
 ## Reliability Principle
@@ -136,12 +151,57 @@ Common event types:
 - `branch_completed`
 - `episode_ended`
 
-Large payload rule:
+### Event Payload Schemas
+
+Minimum required fields per event type. All payloads may carry additional
+bridge-specific fields — extraction must tolerate unknown fields.
+
+```jsonc
+// user_message
+{ "content": "..." }
+
+// assistant_message
+{ "content": "...", "stop_reason": "end_turn|tool_use|max_tokens" }
+
+// tool_call
+{ "call_id": "...", "tool_name": "...", "input": {} }
+
+// tool_result
+{ "call_id": "...", "tool_name": "...", "output": "...", "is_error": false }
+
+// file_changed
+{ "path": "relative/path", "change_type": "created|modified|deleted",
+  "artifact": "artifacts/patch-001.diff" }   // diff stored as attachment
+
+// artifact_created
+{ "artifact": "artifacts/filename", "mime_type": "...", "byte_size": 0 }
+
+// retrieval_packet
+{ "query": "...", "result_count": 0, "artifact": "artifacts/retrieval-001.json" }
+
+// failure
+{ "message": "...", "error_type": "...", "recoverable": true,
+  "tool_call_id": "optional" }
+
+// branch_started
+{ "branch_id": "...", "parent_seq": 0,
+  "artifact": "artifacts/{branch_id}/events.jsonl" }
+
+// branch_completed
+{ "branch_id": "...", "status": "success|failure|partial",
+  "artifact": "artifacts/{branch_id}/events.jsonl" }
+
+// episode_started / episode_ended  (see begin_episode / end_episode inputs)
+```
+
+### Large Payload Rule
 
 - Keep the JSONL line compact and replayable.
 - Store large command output, search results, diffs, generated files, screenshots,
   and branch logs under `artifacts/`.
 - Put attachment pointers in the event payload.
+- Default threshold: **32 KB** inline; anything larger goes to `artifacts/`.
+  Configurable via `MNEMOS_ARTIFACT_THRESHOLD_BYTES`.
 
 ### `end_episode`
 
@@ -200,6 +260,190 @@ promotion.
 
 ---
 
+## Conversation ID Derivation
+
+Platform hooks don't always expose a clean conversation identifier. Each bridge
+adapter must derive or generate `conversation_id` deterministically.
+
+| Platform | Strategy |
+|---|---|
+| Claude Code (hooks) | Derive from `CLAUDE_SESSION_ID` env var if available; else hash of `cwd + session_start_ts` persisted in MnemonicOS bridge state |
+| Codex / OpenAI agents | Use thread ID from platform API |
+| Generic / unknown | UUID generated at first `begin_episode` call and persisted in MnemonicOS bridge state |
+
+Do not write bridge state into arbitrary repo roots by default. The default
+state location should live inside the MnemonicOS vault:
+
+```text
+brain/raw/sessions/.bridge_state/{bridge_id}/{cwd_hash}.json
+```
+
+The state file records the current `conversation_id`, cwd hash, creation time,
+last-seen timestamp, and any platform thread id. It survives hook restarts
+within the same working session. Bridge adapters delete or rotate it when they
+detect a new logical conversation (new cwd, explicit session reset,
+user-triggered fresh start, or changed platform thread id).
+
+Writing `.mnemos-conv-id` into cwd is allowed only as an explicit opt-in for
+simple local wrappers.
+
+---
+
+## Atomic Write and Crash Safety
+
+`events.jsonl` is the raw archive spine. Corruption on crash is unacceptable.
+
+Required write procedure for `append_event`:
+
+1. Serialize the event to a complete JSON line (no embedded newlines).
+2. Acquire an episode-local append lock such as `events.lock`.
+3. Re-read the latest sequence counter while holding the lock.
+4. Write to a unique temp file in the same directory, such as
+   `events.jsonl.{pid}.{seq}.tmp`.
+5. `fsync` the temp file.
+6. Append temp content to `events.jsonl` using append mode.
+7. `fsync` `events.jsonl`.
+8. Delete temp file.
+9. Release the append lock.
+
+Do not use a fixed temp name such as `events.jsonl.tmp`; concurrent hooks can
+race and overwrite it.
+
+`transcript.md` is human-readable only — eventual-consistency update is
+acceptable; crash leaving it stale is not a data loss event.
+
+Manifest counters are updated after a successful append. A manifest counter
+mismatch after crash can be repaired by replaying `events.jsonl`.
+
+---
+
+## Manifest Layout
+
+Two manifest levels.
+
+**Conversation-level** `brain/raw/sessions/{conversation_id}/manifest.json`:
+
+```json
+{
+  "conversation_id": "...",
+  "bridge_id": "...",
+  "created_at": "...",
+  "last_active_at": "...",
+  "episode_count": 0,
+  "episode_ids": [],
+  "related_conversation_ids": [],
+  "parent_conversation_id": null
+}
+```
+
+**Episode-level** `brain/raw/sessions/{conversation_id}/episodes/{episode_id}/manifest.json`:
+
+```json
+{
+  "conversation_id": "...",
+  "episode_id": "...",
+  "bridge_id": "...",
+  "task_id": null,
+  "status": "active|success|failure|partial|abandoned",
+  "started_at": "...",
+  "ended_at": null,
+  "event_count": 0,
+  "artifact_count": 0,
+  "content_hash": null,
+  "cwd": "...",
+  "repo": null,
+  "branch": null,
+  "model": null,
+  "agent_runtime": null
+}
+```
+
+Conversation manifest is updated by `begin_episode` and `end_episode`.
+Episode manifest is updated by `begin_episode`, each `append_event` (counters),
+and `end_episode`.
+
+---
+
+## Context Compression Blind Spot
+
+Claude Code compresses conversation context mid-session when approaching context
+limits. After compression fires, hooks observe the compressed/summarized turn,
+not the original tokens.
+
+This is a known gap for comprehensive capture. Mitigations:
+
+- `UserPromptSubmit` and `Stop` hooks fire per-turn before/after compression
+  decisions; capture what is observable at hook time.
+- If Claude Code exposes a pre-compression transcript field in hook context,
+  prefer that.
+- Mark episodes where compression was detected with
+  `"context_compressed": true` in episode manifest so the extraction daemon
+  can treat the episode as partial.
+
+Full pre-compression capture is not possible through hooks in v1. Accept the
+limitation; do not block v1 on it.
+
+---
+
+## Integration with Projection and Promotion
+
+Captured episode logs are true raw. They must not be re-archived as synthetic
+session markdown just to feed the existing promotion path.
+
+Add a daemon-side episode projection path:
+
+1. Read episode `events.jsonl`.
+2. Generate usable raw in memory from `user_message`, `assistant_message`,
+   `tool_call`, `tool_result`, `retrieval_packet`, and failure events.
+3. Read large payload attachments only when needed for projection.
+4. Feed usable raw to the future VLM / <=8B extraction path.
+5. Persist structured candidates and promotion/review decisions, not the usable
+   raw projection.
+
+For an interim bridge to the current promotion machinery, add
+`project_episode_for_promotion(conversation_id, episode_id)`:
+
+- builds session-like markdown in memory from the event stream
+- calls candidate extraction/promotion helpers directly
+- records provenance back to `conversation_id`, `episode_id`, and event ranges
+- does **not** call `_archive_session()`
+- does **not** create a duplicate raw archive
+- does **not** create artifact/archive chunks from the projected text
+
+Schema note:
+
+- Do not set `archive.type = "episode"` unless a migration explicitly adds that
+  enum value.
+- Prefer a dedicated episode index table such as `raw_episodes`, or store
+  episode metadata in the conversation/episode manifests until the daemon-side
+  projection schema is finalized.
+
+```mermaid
+flowchart LR
+    A["events.jsonl true raw"] --> B["daemon episode projection<br/>in memory"]
+    B --> C["future VLM / <=8B extractor"]
+    C --> D["structured candidates"]
+    D --> E["promotion policy"]
+    E --> F["canonical wiki / review items"]
+    F --> G["sync + SQLite materializers"]
+```
+
+---
+
+## Legacy Deprecation Criteria
+
+`ingest-session` summary flow (discretionary LLM writeback) is kept for
+backward compatibility until:
+
+1. At least one bridge adapter ships and passes the full test plan.
+2. The daemon-side episode projection path is verified end-to-end.
+3. All active bridges have migrated or have a migration date committed.
+
+After those criteria are met, mark `ingest-session` as deprecated in the CLI
+help text. Remove after one release cycle.
+
+---
+
 ## Implementation Shape
 
 Add `src/second_brain/session_capture.py`:
@@ -207,7 +451,7 @@ Add `src/second_brain/session_capture.py`:
 - normalize ids and paths
 - create conversation/episode directories
 - append JSONL with monotonic `seq`
-- flush after append
+- lock, append, and fsync after each event
 - write attachments for large payloads
 - update human-readable transcript
 - update manifest counters and hashes

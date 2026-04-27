@@ -15,14 +15,15 @@ flowchart TD
     A["Agent / CLI / Hook / HTTP client"] --> B["Agent Interface Layer<br/>orchestrator.py + server.py + scripts/"]
     B --> C["Runtime Layer<br/>runtime.py"]
     C --> D["Query Engine<br/>retrieval.py + trust.py + graph.py"]
-    B --> E["Store / Ingest Layer<br/>ingest.py + bridge.py"]
-    E --> F["Archive + Canonical Vault<br/>brain/ markdown"]
-    D --> G["SQLite caches<br/>FTS + vectors + graph + state"]
-    E --> G
-    H["Daemon + scheduled jobs<br/>daemon.py + daemon_jobs.py + jobs.py"] --> E
+    B --> E["Raw Intake Layer<br/>ingest.py + west-flange connectors"]
+    E --> F["True Raw Archive<br/>brain/raw/*"]
+    F --> I
+    H["Daemon + scheduled jobs<br/>daemon.py + daemon_jobs.py + jobs.py"] --> I["Projection + Promotion<br/>future VLM/LLM + policy"]
+    I --> J["Canonical Wiki<br/>brain/wiki/*"]
+    I --> G["SQLite caches<br/>FTS + vectors + graph + state"]
+    G --> D
     H --> D
-    H --> F
-    H --> G
+    J --> G
 ```
 
 ## Core Layers
@@ -31,8 +32,9 @@ flowchart TD
 - `runtime.py` is the shared memory protocol: resolve context, record outcomes, and decide writeback.
 - `orchestrator.py` is the agent interface layer: it infers task shape, formats injected context, preserves `task_id`, and wraps the runtime into begin/fail/finish flows.
 - `server.py` exposes the same operations over local HTTP.
-- `ingest.py` and `bridge.py` handle archive intake, summary parsing, candidate matching, and promotion decisions.
-- `daemon.py`, `daemon_jobs.py`, and `jobs.py` run deferred promotion, embedding backfill, and maintenance on schedule.
+- `ingest.py` owns true raw intake and operational metadata for sessions and artifacts.
+- `bridge.py` remains part of the legacy summary/promotion compatibility path; new bridges should prefer comprehensive raw capture.
+- `daemon.py`, `daemon_jobs.py`, and `jobs.py` run projection, promotion, embedding backfill, and maintenance on schedule.
 
 ## Query Path
 
@@ -61,25 +63,24 @@ New material does not become canonical memory immediately by default.
 
 ```mermaid
 flowchart LR
-    A["True raw artifact<br/>session / PDF / HTML / DOCX / log / note"] --> B["west-flange intake"]
-    B --> C["Immutable raw archive<br/>original artifact + metadata"]
-    C --> K["rebuildable projections<br/>text / chunks / spans / source candidates"]
-    B --> D["promotion_queue candidate"]
-    D --> E["daemon: process_promotion_queue"]
-    E --> F["parse summary + infer chain context"]
-    F --> G["candidate match / upsert decision"]
-    G --> H["create or update canonical markdown note"]
-    K --> I["embed_backfill"]
-    H --> J["sync / graph / trust refresh"]
-    I --> J
+    A["Agent / human submits raw<br/>session events / PDF / HTML / DOCX / log / note"] --> B["west-flange intake"]
+    B --> C["Immutable true raw archive<br/>original artifact + operational metadata"]
+    C --> D["daemon projection<br/>usable raw generated in memory"]
+    D --> E["future VLM over figures<br/>in-memory context"]
+    E --> F["future <=8B extraction LLM<br/>structured candidates"]
+    F --> G["promotion policy<br/>candidate match / review / upsert decision"]
+    G --> H["canonical markdown notes<br/>brain/wiki/*"]
+    H --> I["sync + materializers"]
+    I --> J["SQLite caches<br/>FTS + vectors + graph + trust state"]
 ```
 
 Promotion rules in brief:
 
 - preserve true raw first, project and promote later
 - raw artifacts are witness material, not canonical truth
-- default intake creates a queue candidate instead of immediate canonical memory
-- `--promote-now` exists for manual or debug use, not the normal path
+- agent/human write paths should actively store only true raw and operational metadata
+- projections, canonical notes, and SQLite caches are daemon/materializer outputs
+- legacy session summary intake may still create promotion queue candidates during migration
 - promotion prefers updating an existing note or same-chain note when that is safer than creating duplicates
 
 ## Agent Interface Layer
