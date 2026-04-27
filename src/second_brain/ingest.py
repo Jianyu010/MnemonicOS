@@ -5,6 +5,7 @@ from hashlib import sha256
 import json
 from pathlib import Path
 import re
+import shutil
 import sqlite3
 from typing import Any
 
@@ -12,8 +13,9 @@ import yaml
 
 from .bridge import decide_upsert, find_existing_candidates, infer_chain_context, parse_summary
 from .config import AppConfig
+from .connectors import ConnectorConfig, connector_for_path, figure_from_bytes
 from .db import connect_db, run_migrations
-from .models import CandidateMatch, IngestSessionResult
+from .models import CandidateMatch, IngestArtifactResult, IngestSessionResult
 from .review import create_review_item, slugify
 from .semantics import encode_text, upsert_archive_chunk_vector
 from .summaries import summarize_text
@@ -43,7 +45,7 @@ _ERROR_TOKEN_RE = re.compile(
 )
 
 
-def _synthesize_summary(item: dict[str, Any], session_content: str) -> str:
+def _synthesize_summary(item: dict[str, Any], item_context: str) -> str:
     """Build a compact, vocabulary-rich summary if item lacks one.
 
     Priority:
@@ -63,20 +65,20 @@ def _synthesize_summary(item: dict[str, Any], session_content: str) -> str:
 
     item_type = str(item.get("type", "")).casefold()
 
-    nuance = _line_value(_NUANCE_LINE_RE, session_content)
-    next_line = _line_value(_NEXT_LINE_RE, session_content)
+    nuance = _line_value(_NUANCE_LINE_RE, item_context)
+    next_line = _line_value(_NEXT_LINE_RE, item_context)
     if nuance:
         if next_line and not _looks_like_control_signal(nuance):
             return f"WHEN {nuance} → {next_line}"
         return nuance
 
-    takeaway_section = _TAKEAWAY_SECTION_RE.search(session_content)
+    takeaway_section = _TAKEAWAY_SECTION_RE.search(item_context)
     if takeaway_section:
         bullet = _TAKEAWAY_BULLET_RE.search(takeaway_section.group(1))
         if bullet:
             return bullet.group(1).strip()
 
-    what_line = _line_value(_WHAT_LINE_RE, session_content)
+    what_line = _line_value(_WHAT_LINE_RE, item_context)
     if what_line:
         return what_line
 
@@ -123,24 +125,31 @@ def _is_placeholder_signal(text: str) -> bool:
     )
 
 
-def _extract_error_aliases(item: dict[str, Any], session_content: str = "") -> list[str]:
-    """Extract error/exception class names from item fields for alias injection.
-
-    Scans item-level fields and the surrounding session text.  The session text
-    catches AI Firm tool-experience entries where the future query term appears
-    in Nuance/What/Next lines rather than the explicit memory item.
-    """
+def _item_context_text(item: dict[str, Any]) -> str:
     fields = [
         str(item.get("title", "")),
         str(item.get("summary", "")),
         str(item.get("body", "")),
         str(item.get("symptom", "")),
         str(item.get("fix", "")),
-        session_content,
     ]
     for step in (item.get("steps") or []):
         fields.append(str(step))
-    combined = " ".join(fields)
+    for mode in (item.get("failure_modes") or []):
+        if isinstance(mode, dict):
+            fields.extend(str(value) for value in mode.values())
+        else:
+            fields.append(str(mode))
+    return "\n".join(field for field in fields if field)
+
+
+def _extract_error_aliases(item: dict[str, Any], item_context: str = "") -> list[str]:
+    """Extract error/exception class names from item fields for alias injection.
+
+    Scans only item-level fields so one promoted memory item cannot inherit
+    error tokens from unrelated notes in the same session.
+    """
+    combined = item_context or _item_context_text(item)
     return list(dict.fromkeys(_ERROR_TOKEN_RE.findall(combined)))
 
 TYPE_TO_DIRECTORY = {
@@ -711,6 +720,201 @@ def _archive_session(
     return archive_id, raw_path, chunks, connection
 
 
+def _jsonable_figure(figure: Any) -> dict[str, Any]:
+    payload = figure.to_dict()
+    warnings = payload.pop("warnings", [])
+    payload["warnings_json"] = list(warnings or [])
+    return payload
+
+
+def _artifact_archive_type(source_format: str) -> str:
+    return "web_clip" if source_format == "html" else "doc"
+
+
+def ingest_artifact(
+    config: AppConfig,
+    *,
+    path: str | Path,
+    tags: list[str] | None = None,
+    attachments: list[str | Path] | None = None,
+    connector_config: ConnectorConfig | None = None,
+) -> IngestArtifactResult:
+    source_path = Path(path).expanduser().resolve()
+    if not source_path.exists() or not source_path.is_file():
+        raise FileNotFoundError(str(source_path))
+
+    now = datetime.now()
+    timestamp = now.strftime("%Y-%m-%d-%H%M%S")
+    source_slug = slugify(source_path.stem) or "artifact"
+    archive_name = f"{timestamp}-{source_slug}"
+    archive_id = f"artifact/{archive_name}"
+    artifact_dir = config.paths.vault_root / "raw" / "artifacts" / archive_name
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    raw_path = artifact_dir / f"original{source_path.suffix.casefold()}"
+    shutil.copy2(source_path, raw_path)
+
+    raw_bytes = raw_path.read_bytes()
+    raw_hash = sha256(raw_bytes).hexdigest()
+    connector = connector_for_path(raw_path)
+    result = connector.extract(raw_path, config=connector_config or ConnectorConfig())
+    metadata = dict(result.metadata)
+    source_format = str(metadata.get("source_format") or getattr(connector, "source_format", "unknown"))
+    warnings = list(result.warnings)
+    figure_rows = [_jsonable_figure(figure) for figure in result.figures]
+    source_attachments = [Path(item).expanduser().resolve() for item in (attachments or [])]
+    if source_attachments:
+        attachments_dir = artifact_dir / "attachments"
+        attachments_dir.mkdir(parents=True, exist_ok=True)
+        start_index = len(figure_rows) + 1
+        for offset, attachment_source in enumerate(source_attachments, start=start_index):
+            if not attachment_source.exists() or not attachment_source.is_file():
+                warnings.append(f"attachment_missing:{attachment_source}")
+                continue
+            target = attachments_dir / attachment_source.name
+            shutil.copy2(attachment_source, target)
+            data = target.read_bytes()
+            figure = figure_from_bytes(
+                figure_id=f"fig_{offset:03d}",
+                data=data,
+                storage_policy="source_attachment",
+                attachment_path=str(target.resolve()),
+                source_index=offset,
+                structural_location=f"attachment:{attachment_source.name}",
+            )
+            figure_rows.append(_jsonable_figure(figure))
+    ingest_status = result.status
+    if ingest_status not in {"accepted", "accepted_with_warnings", "failed_extraction", "manual_fix_needed"}:
+        ingest_status = "failed_extraction"
+        warnings.append(f"invalid_connector_status:{result.status}")
+    failure_reason = result.failure_reason
+    needs_manual_projection = bool(metadata.get("needs_manual_projection")) or ingest_status == "failed_extraction"
+    needs_visual_pass = bool(metadata.get("needs_visual_pass")) or any(bool(row.get("needs_visual_pass")) for row in figure_rows)
+    image_only_pdf = bool(metadata.get("image_only_pdf"))
+    figure_count = max(int(metadata.get("figure_count") or 0), len(figure_rows))
+    table_count = int(metadata.get("table_count") or 0)
+    page_count = int(metadata.get("page_count") or 0)
+    slide_count = int(metadata.get("slide_count") or 0)
+
+    manifest = {
+        "archive_id": archive_id,
+        "artifact_path": str(raw_path.resolve()),
+        "source_format": source_format,
+        "original_filename": source_path.name,
+        "raw_sha256": raw_hash,
+        "byte_size": len(raw_bytes),
+        "connector_name": str(metadata.get("connector_name") or getattr(connector, "name", "unknown_connector")),
+        "connector_version": str(metadata.get("connector_version") or ""),
+        "ingest_status": ingest_status,
+        "page_count": page_count,
+        "slide_count": slide_count,
+        "figure_count": figure_count,
+        "table_count": table_count,
+        "warnings": warnings,
+        "failure_reason": failure_reason,
+        "needs_visual_pass": needs_visual_pass,
+        "needs_manual_projection": needs_manual_projection,
+        "image_only_pdf": image_only_pdf,
+        "figures": figure_rows,
+        "ingested_at": now.isoformat(timespec="seconds"),
+    }
+    manifest_path = artifact_dir / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+
+    connection = connect_db(config.paths.db_path)
+    run_migrations(connection, config.paths.workspace_root / "migrations")
+    try:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO archive(
+                    id, type, path, ingested_at, agent, tags, chunk_count,
+                    artifact_path, source_format, original_filename, raw_sha256, byte_size,
+                    connector_name, connector_version, ingest_status, page_count, slide_count,
+                    figure_count, table_count, warnings_json, failure_reason, needs_visual_pass,
+                    needs_manual_projection, image_only_pdf
+                )
+                VALUES (
+                    ?, ?, ?, datetime('now'), NULL, ?, 0,
+                    ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?,
+                    ?, ?
+                )
+                """,
+                (
+                    archive_id,
+                    _artifact_archive_type(source_format),
+                    str(raw_path.resolve()),
+                    json.dumps(tags or []),
+                    str(raw_path.resolve()),
+                    source_format,
+                    source_path.name,
+                    raw_hash,
+                    len(raw_bytes),
+                    manifest["connector_name"],
+                    manifest["connector_version"],
+                    ingest_status,
+                    page_count,
+                    slide_count,
+                    figure_count,
+                    table_count,
+                    json.dumps(warnings),
+                    failure_reason,
+                    1 if needs_visual_pass else 0,
+                    1 if needs_manual_projection else 0,
+                    1 if image_only_pdf else 0,
+                ),
+            )
+            _upsert_archive_sync_state(connection, raw_path, archive_id, raw_hash)
+            for row in figure_rows:
+                connection.execute(
+                    """
+                    INSERT INTO artifact_figures(
+                        archive_id, figure_id, storage_policy, attachment_path,
+                        source_page, source_slide, source_index, width_px, height_px,
+                        mime_type, byte_size, sha256, structural_location,
+                        has_caption, referenced_by_label, needs_visual_pass, warnings_json
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        archive_id,
+                        row.get("figure_id"),
+                        row.get("storage_policy") or "in_memory_extracted",
+                        row.get("attachment_path"),
+                        row.get("source_page"),
+                        row.get("source_slide"),
+                        row.get("source_index"),
+                        row.get("width_px"),
+                        row.get("height_px"),
+                        row.get("mime_type"),
+                        row.get("byte_size"),
+                        row.get("sha256"),
+                        row.get("structural_location"),
+                        1 if row.get("has_caption") else 0,
+                        1 if row.get("referenced_by_label") else 0,
+                        1 if row.get("needs_visual_pass") else 0,
+                        json.dumps(row.get("warnings_json") or []),
+                    ),
+                )
+    finally:
+        connection.close()
+
+    return IngestArtifactResult(
+        archive_id=archive_id,
+        raw_path=str(raw_path.resolve()),
+        manifest_path=str(manifest_path.resolve()),
+        ingest_status=ingest_status,
+        source_format=source_format,
+        figure_count=figure_count,
+        warnings=warnings,
+        failure_reason=failure_reason,
+        needs_visual_pass=needs_visual_pass,
+        needs_manual_projection=needs_manual_projection,
+        image_only_pdf=image_only_pdf,
+    )
+
+
 def _enqueue_promotion_candidate(
     connection: sqlite3.Connection,
     *,
@@ -849,8 +1053,10 @@ def _promote_session_content(
         if normalized is None:
             continue
 
+        item_context = _item_context_text(raw_item)
+
         # Option A: enrich summary with vocabulary-rich signal if item lacks one.
-        synthesized = _synthesize_summary(raw_item, content)
+        synthesized = _synthesize_summary(raw_item, item_context)
         if synthesized:
             existing_summary = str(normalized.get("summary", "")).strip()
             title = str(normalized.get("title", "")).strip()
@@ -858,7 +1064,7 @@ def _promote_session_content(
                 normalized["summary"] = synthesized
 
         # Option B: inject error/exception token aliases for exact-hit retrieval.
-        error_aliases = _extract_error_aliases(raw_item, content)
+        error_aliases = _extract_error_aliases(raw_item, item_context)
         if error_aliases:
             normalized["aliases"] = _merge_unique(
                 list(normalized.get("aliases") or []), error_aliases

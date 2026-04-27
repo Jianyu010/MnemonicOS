@@ -15,7 +15,7 @@ from second_brain.config import load_config
 from second_brain.daemon import Daemon
 from second_brain.daemon_status import daemon_status_summary
 from second_brain.db import connect_db, run_migrations
-from second_brain.ingest import _extract_error_aliases, _read_memory_items, _synthesize_summary, ingest_session
+from second_brain.ingest import _extract_error_aliases, _item_context_text, _read_memory_items, _synthesize_summary, ingest_session
 from second_brain.jobs import run_job
 
 
@@ -155,18 +155,16 @@ class DaemonDeferredPromotionTest(unittest.TestCase):
             self.assertEqual(str(queue_status["status"]), "processed")
             self.assertEqual(int(note_count["count"]), 2)
 
-    def test_promotion_enrichment_prefers_nuance_and_next_over_steps(self) -> None:
+    def test_promotion_enrichment_prefers_item_nuance_and_next_over_steps(self) -> None:
         content = textwrap.dedent(
             """
-            # AI Firm tool experience: run_python
-
-            Nuance: exit 1
-            Next: Use `read_file` before retrying.
-
             ```memory
             items:
               - type: procedure
                 title: "Use run_python: exit 1"
+                body: |
+                  Nuance: exit 1
+                  Next: Use `read_file` before retrying.
                 steps:
                   - "Run the same command again."
                   - "Avoid: Ignore the import path."
@@ -177,22 +175,17 @@ class DaemonDeferredPromotionTest(unittest.TestCase):
         item = _read_memory_items(content, explicit_only=False)[0]
 
         self.assertEqual(
-            _synthesize_summary(item, content),
+            _synthesize_summary(item, _item_context_text(item)),
             "WHEN exit 1 \u2192 Use `read_file` before retrying.",
         )
 
-    def test_promotion_enrichment_extracts_session_wide_error_aliases(self) -> None:
+    def test_promotion_enrichment_extracts_item_error_aliases(self) -> None:
         content = textwrap.dedent(
             """
-            # AI Firm tool experience: run_python
-
-            Nuance: ModuleNotFoundError happened outside the memory item.
-            Next: Verify sys.path before retrying.
-
             ```memory
             items:
               - type: procedure
-                title: "Use run_python after failure"
+                title: "Use run_python after ModuleNotFoundError"
                 steps:
                   - "Inspect files before rerun."
                 confidence: high
@@ -201,9 +194,9 @@ class DaemonDeferredPromotionTest(unittest.TestCase):
         ).strip()
         item = _read_memory_items(content, explicit_only=False)[0]
 
-        self.assertIn("ModuleNotFoundError", _extract_error_aliases(item, content))
+        self.assertIn("ModuleNotFoundError", _extract_error_aliases(item, _item_context_text(item)))
 
-    def test_process_queue_uses_enriched_summary_and_aliases(self) -> None:
+    def test_process_queue_uses_item_scoped_summary_and_aliases(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             config = self._prepare_workspace(Path(tmp_dir))
             ingest_session(
@@ -247,9 +240,64 @@ class DaemonDeferredPromotionTest(unittest.TestCase):
             self.assertIsNotNone(row)
             self.assertEqual(
                 str(row["summary"]),
-                "WHEN ModuleNotFoundError \u2192 Run tests from project root with python -m pytest.",
+                "Blindly edit calculator logic. (NOT: Repeat same test command unchanged.)",
             )
             self.assertEqual(str(alias["note_id"]), str(row["id"]))
+
+    def test_process_queue_does_not_leak_session_signals_between_items(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = self._prepare_workspace(Path(tmp_dir))
+            ingest_session(
+                config,
+                bridge_id="ai_firm",
+                session_id="multi-item-nuance",
+                content=textwrap.dedent(
+                    """
+                    # AI Firm tool experience: mixed notes
+
+                    Nuance: ModuleNotFoundError
+                    Next: Run tests from project root with python -m pytest.
+
+                    ```memory
+                    items:
+                      - type: procedure
+                        title: "Use run_python after failure"
+                        steps:
+                          - "Inspect files before rerun."
+                        confidence: high
+                      - type: concept
+                        title: "Release note tone"
+                        body: "Keep release notes concise and user-facing."
+                        confidence: high
+                    ```
+                    """
+                ).strip()
+                + "\n",
+            )
+
+            run_job(config, job_name="process_promotion_queue", dry_run=False)
+
+            connection = connect_db(config.paths.db_path)
+            procedure = connection.execute(
+                "SELECT id, summary FROM notes WHERE title = ?",
+                ("Use run_python after failure",),
+            ).fetchone()
+            concept = connection.execute(
+                "SELECT id, summary FROM notes WHERE title = ?",
+                ("Release note tone",),
+            ).fetchone()
+            leaked_alias = connection.execute(
+                """
+                SELECT note_id FROM aliases
+                WHERE alias = ? AND note_id IN (?, ?)
+                """,
+                ("ModuleNotFoundError", str(procedure["id"]), str(concept["id"])),
+            ).fetchall()
+            connection.close()
+
+            self.assertEqual(str(procedure["summary"]), "Inspect files before rerun.")
+            self.assertEqual(str(concept["summary"]), "Keep release notes concise and user-facing.")
+            self.assertEqual(leaked_alias, [])
 
     def test_embed_backfill_populates_archive_chunk_vectors(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

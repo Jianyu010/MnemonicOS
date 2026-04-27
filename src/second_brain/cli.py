@@ -12,7 +12,7 @@ import time
 from .config import default_config_path, load_config
 from .daemon_status import daemon_status_summary, daemon_unreachable_summary, read_pid, socket_send
 from .db import connect_db, run_migrations
-from .ingest import ingest_session, ingest_session_promote
+from .ingest import ingest_artifact, ingest_session, ingest_session_promote
 from .jobs import run_job
 from .models import ResolveTaskContextRequest
 from .retrieval import result_to_json, retrieve
@@ -66,6 +66,12 @@ def _build_parser() -> argparse.ArgumentParser:
     ingest_parser.add_argument("--tag", action="append", default=[])
     ingest_parser.add_argument("--source-ref", action="append", default=[])
     ingest_parser.add_argument("--promote-now", action="store_true", help="Bypass the deferred queue and promote immediately.")
+
+    artifact_parser = subparsers.add_parser("ingest-artifact", help="Ingest a true raw artifact without persisting extracted content.")
+    artifact_parser.add_argument("--file", required=True, help="Path to the artifact file.")
+    artifact_parser.add_argument("--tag", action="append", default=[])
+    artifact_parser.add_argument("--attachment", action="append", default=[], help="Source-provided companion image/file to archive with the artifact.")
+    artifact_parser.add_argument("--json", action="store_true", help="Emit JSON output.")
 
     retrieve_parser = subparsers.add_parser("retrieve", help="Run hybrid retrieval across exact, BM25, semantic, graph, and archive channels.")
     retrieve_parser.add_argument("query", help="Query text.")
@@ -451,6 +457,36 @@ def _ingest_session(
     return 0
 
 
+def _ingest_artifact(config_path: str, file_path: str, tags: list[str], attachments: list[str], emit_json: bool) -> int:
+    config = load_config(config_path)
+    result = ingest_artifact(config, path=file_path, tags=tags, attachments=attachments)
+    payload = {
+        "archive_id": result.archive_id,
+        "raw_path": result.raw_path,
+        "manifest_path": result.manifest_path,
+        "ingest_status": result.ingest_status,
+        "source_format": result.source_format,
+        "figure_count": result.figure_count,
+        "warnings": result.warnings,
+        "failure_reason": result.failure_reason,
+        "needs_visual_pass": result.needs_visual_pass,
+        "needs_manual_projection": result.needs_manual_projection,
+        "image_only_pdf": result.image_only_pdf,
+    }
+    if emit_json:
+        print(json.dumps(payload, sort_keys=True))
+        return 0
+    for key, value in payload.items():
+        if isinstance(value, list):
+            if not value:
+                print(f"{key}=[]")
+            for item in value:
+                print(f"{key}={item}")
+        else:
+            print(f"{key}={value}")
+    return 0
+
+
 def _orchestrator_begin_task(
     config_path: str,
     task_text: str,
@@ -736,6 +772,8 @@ def main(argv: list[str] | None = None) -> int:
             args.source_ref,
             args.promote_now,
         )
+    if args.command == "ingest-artifact":
+        return _ingest_artifact(args.config, args.file, args.tag, args.attachment, args.json)
     if args.command == "retrieve":
         return _retrieve(args.config, args.query, args.top_k, args.query_type_hint, args.json)
     if args.command == "resolve-task-context":

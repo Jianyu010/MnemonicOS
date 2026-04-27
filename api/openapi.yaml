@@ -41,6 +41,23 @@ paths:
               schema:
                 $ref: '#/components/schemas/IngestSessionResponse'
 
+  /v1/ingest/artifact:
+    post:
+      operationId: ingestArtifact
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestArtifactRequest'
+      responses:
+        '200':
+          description: Artifact ingested
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestArtifactResponse'
+
   /v1/sync/vault:
     post:
       operationId: syncVault
@@ -217,6 +234,55 @@ components:
         sync_mode:
           type: string
       required: [archive_id, promoted_notes, review_items, sync_mode]
+
+    IngestArtifactRequest:
+      type: object
+      properties:
+        path:
+          type: string
+          description: Local path to the raw artifact file.
+        tags:
+          type: array
+          items:
+            type: string
+        attachments:
+          type: array
+          description: Source-provided companion files to archive as true raw attachments.
+          items:
+            type: string
+      required: [path]
+
+    IngestArtifactResponse:
+      type: object
+      properties:
+        archive_id:
+          type: string
+        raw_path:
+          type: string
+        manifest_path:
+          type: string
+        ingest_status:
+          type: string
+          enum: [accepted, accepted_with_warnings, failed_extraction, manual_fix_needed]
+        source_format:
+          type: string
+        figure_count:
+          type: integer
+        warnings:
+          type: array
+          items:
+            type: string
+        failure_reason:
+          type: string
+        needs_visual_pass:
+          type: boolean
+        needs_manual_projection:
+          type: boolean
+        image_only_pdf:
+          type: boolean
+      required: [archive_id, raw_path, manifest_path, ingest_status, source_format,
+                 figure_count, warnings, needs_visual_pass, needs_manual_projection,
+                 image_only_pdf]
 
     SyncVaultRequest:
       type: object

@@ -1492,6 +1492,7 @@ def draw_bookmarks_overlay(surface, runtime: GameRuntime, panel, small_font, tin
         tiny_font,
         pygame,
         help_text="UP/DOWN navigate, ENTER jump, D remove, click to open, ESC closes.",
+        content_top=panel.y + 84,
     )
 
 
@@ -1570,7 +1571,7 @@ def _draw_browser_overlay(surface, runtime, panel, small_font, tiny_font, pygame
     if runtime.overlay.browser_items:
         total = len(runtime.overlay.browser_items)
         start = min(runtime.overlay.browser_scroll, max(0, total - 1)) + 1
-        end = min(total, runtime.overlay.browser_scroll + _shelf_page_size(panel))
+        end = min(total, runtime.overlay.browser_scroll + _shelf_page_size(panel, start_y=content_top))
         footer = tiny_font.render(f"Showing {start}-{end} of {total}", True, (90, 80, 70))
         surface.blit(footer, (panel.x + 24, panel.bottom - 36))
 

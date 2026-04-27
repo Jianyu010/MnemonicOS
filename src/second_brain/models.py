@@ -91,6 +91,21 @@ class IngestSessionResult:
 
 
 @dataclass(slots=True)
+class IngestArtifactResult:
+    archive_id: str
+    raw_path: str
+    manifest_path: str
+    ingest_status: str
+    source_format: str
+    figure_count: int
+    warnings: list[str]
+    failure_reason: str | None
+    needs_visual_pass: bool
+    needs_manual_projection: bool
+    image_only_pdf: bool
+
+
+@dataclass(slots=True)
 class JobRunResult:
     job_name: str
     status: str

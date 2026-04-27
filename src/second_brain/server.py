@@ -5,6 +5,7 @@ Implements api/openapi.yaml v0.4.0 plus the orchestrator extension:
   GET  /v1/health
   POST /v1/retrieve
   POST /v1/ingest/session
+  POST /v1/ingest/artifact
   POST /v1/sync/vault
   POST /v1/jobs/run
   POST /v1/orchestrator/begin-task
@@ -75,6 +76,30 @@ def _handle_ingest_session(config: AppConfig, body: dict[str, Any]) -> dict[str,
         "chunk_count": result.chunk_count,
         "promoted_notes": result.promoted_notes,
         "review_items": result.review_items,
+    }
+
+
+def _handle_ingest_artifact(config: AppConfig, body: dict[str, Any]) -> dict[str, Any]:
+    _require(body, "path")
+    from .ingest import ingest_artifact
+    result = ingest_artifact(
+        config,
+        path=body["path"],
+        tags=body.get("tags") or [],
+        attachments=body.get("attachments") or [],
+    )
+    return {
+        "archive_id": result.archive_id,
+        "raw_path": result.raw_path,
+        "manifest_path": result.manifest_path,
+        "ingest_status": result.ingest_status,
+        "source_format": result.source_format,
+        "figure_count": result.figure_count,
+        "warnings": result.warnings,
+        "failure_reason": result.failure_reason,
+        "needs_visual_pass": result.needs_visual_pass,
+        "needs_manual_projection": result.needs_manual_projection,
+        "image_only_pdf": result.image_only_pdf,
     }
 
 
@@ -176,6 +201,7 @@ def _handle_orchestrator_finish_task(config: AppConfig, body: dict[str, Any]) ->
 _POST_ROUTES: dict[str, Any] = {
     "/v1/retrieve": _handle_retrieve,
     "/v1/ingest/session": _handle_ingest_session,
+    "/v1/ingest/artifact": _handle_ingest_artifact,
     "/v1/sync/vault": _handle_sync_vault,
     "/v1/jobs/run": _handle_jobs_run,
     "/v1/orchestrator/begin-task": _handle_orchestrator_begin_task,
