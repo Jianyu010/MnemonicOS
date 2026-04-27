@@ -137,6 +137,10 @@ HTTP transport:
 - `POST /v1/ingest/session`
 - `POST /v1/ingest/artifact`
 - `POST /v1/reprocess/artifact`
+- `POST /v1/capture/begin-episode`
+- `POST /v1/capture/append-event`
+- `POST /v1/capture/end-episode`
+- `POST /v1/capture/project-episode`
 - `POST /v1/sync/vault`
 - `POST /v1/jobs/run`
 - `POST /v1/orchestrator/begin-task`
@@ -146,7 +150,7 @@ HTTP transport:
 These mirror the same internal layers:
 
 - query path: `/v1/retrieve`, `/v1/orchestrator/begin-task`, `/v1/orchestrator/mark-failure`
-- store path: `/v1/ingest/session`, `/v1/ingest/artifact`, `/v1/reprocess/artifact`, `/v1/orchestrator/finish-task`
+- store path: `/v1/capture/*`, `/v1/ingest/session`, `/v1/ingest/artifact`, `/v1/reprocess/artifact`, `/v1/orchestrator/finish-task`
 - maintenance path: `/v1/sync/vault`, `/v1/jobs/run`
 
 ## Memory Surfaces
@@ -386,6 +390,7 @@ mnemonicos daemon start
 mnemonicos daemon status
 mnemonicos sync --mode full
 mnemonicos orchestrator begin-task "debug the failing auth deploy"
+mnemonicos capture begin-episode --bridge-id codex --conversation-id thread-001 --episode-id visit-001
 mnemonicos ingest-session --bridge-id local-cli --session-id session-001 --file ./notes/session.md
 mnemonicos ingest-artifact --file ./docs/paper.pdf --tag research
 mnemonicos daemon run-job process_promotion_queue
@@ -417,6 +422,108 @@ PYTHONPATH=src python3 -m second_brain orchestrator begin-task "debug the failin
 ```
 
 `second_brain` is the internal Python package name. `mnemonicos` is the intended user-facing command.
+
+### Bridge raw capture
+
+New bridges should use the capture API for comprehensive raw session recording. This path writes directly under `brain/raw/sessions/{conversation_id}/episodes/{episode_id}/` and does not call the legacy `ingest-session` summary archive.
+
+The target lifecycle for a supported agent looks like this:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User
+    participant Agent as Supported agent runtime
+    participant Bridge as MnemonicOS bridge hook
+    participant Raw as brain/raw/sessions
+    participant Artifacts as episode artifacts
+    participant Queue as extraction queue
+    participant Daemon as future VLM/LLM daemon
+    participant Wiki as brain/wiki + SQLite
+
+    User->>Agent: Start or reopen chat
+    Agent->>Bridge: Session/thread lifecycle event
+    Bridge->>Raw: begin_episode(conversation_id, episode_id)
+    Bridge->>Raw: append user_message events
+    Agent->>Bridge: Tool calls, search results, file diffs
+    Bridge->>Raw: append tool_call/tool_result/file_changed
+    Bridge->>Artifacts: Store large outputs, diffs, search snapshots
+    Bridge->>Raw: append artifact_created pointers
+    Agent->>Bridge: Optional pending summary sidecar
+    Bridge->>Artifacts: Store agent-summary.md
+    Bridge->>Raw: end_episode(status)
+    Raw-->>Queue: Later queue episode for extraction
+    Queue-->>Daemon: Future batch processing
+    Daemon->>Artifacts: Read sidecars and visual assets as needed
+    Daemon->>Wiki: Promote structured candidates after review/policy
+    User->>Agent: Reopen same chat one week later
+    Agent->>Bridge: Same conversation_id, new episode_id
+    Bridge->>Raw: Append a new episode without mutating the old one
+```
+
+```bash
+mnemonicos capture begin-episode \
+  --bridge-id codex \
+  --conversation-id codex-thread-abc \
+  --episode-id 2026-04-27T163000+0800 \
+  --cwd "$PWD" \
+  --agent-runtime codex \
+  --json
+```
+
+Append completed turn and tool events as they happen:
+
+```bash
+mnemonicos capture append-event \
+  --bridge-id codex \
+  --conversation-id codex-thread-abc \
+  --episode-id 2026-04-27T163000+0800 \
+  --type user_message \
+  --content "implement the bridge capture plan" \
+  --json
+
+mnemonicos capture append-event \
+  --bridge-id codex \
+  --conversation-id codex-thread-abc \
+  --episode-id 2026-04-27T163000+0800 \
+  --type tool_result \
+  --payload-json '{"call_id":"shell-1","tool_name":"exec_command","output":"...","is_error":false}' \
+  --json
+```
+
+End the episode when the bridge observes the run ending:
+
+```bash
+mnemonicos capture end-episode \
+  --bridge-id codex \
+  --conversation-id codex-thread-abc \
+  --episode-id 2026-04-27T163000+0800 \
+  --status success \
+  --json
+```
+
+Project a captured episode into the promotion path without creating a duplicate raw archive:
+
+```bash
+mnemonicos capture project-episode \
+  --conversation-id codex-thread-abc \
+  --episode-id 2026-04-27T163000+0800 \
+  --json
+```
+
+The resulting layout is:
+
+```text
+brain/raw/sessions/{conversation_id}/
+  manifest.json
+  episodes/{episode_id}/
+    manifest.json
+    events.jsonl
+    transcript.md
+    artifacts/
+```
+
+`events.jsonl` is append-only raw truth. `transcript.md` is a convenience view for user/assistant messages. Payloads larger than `MNEMOS_ARTIFACT_THRESHOLD_BYTES` defaulting to 32 KB are moved to `artifacts/` and referenced from the event line.
 
 ### West-flange artifact ingest
 

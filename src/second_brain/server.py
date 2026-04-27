@@ -1,12 +1,16 @@
 """
 MnemonicOS HTTP server — stdlib-only, no external dependencies.
 
-Implements api/openapi.yaml v0.4.0 plus the orchestrator extension:
+Implements api/openapi.yaml v0.5.0 plus the orchestrator extension:
   GET  /v1/health
   POST /v1/retrieve
   POST /v1/ingest/session
   POST /v1/ingest/artifact
   POST /v1/reprocess/artifact
+  POST /v1/capture/begin-episode
+  POST /v1/capture/append-event
+  POST /v1/capture/end-episode
+  POST /v1/capture/project-episode
   POST /v1/sync/vault
   POST /v1/jobs/run
   POST /v1/orchestrator/begin-task
@@ -128,6 +132,85 @@ def _handle_reprocess_artifact(config: AppConfig, body: dict[str, Any]) -> dict[
     return _artifact_response(reprocess_artifact(config, archive_id=body["archive_id"]))
 
 
+def _handle_capture_begin_episode(config: AppConfig, body: dict[str, Any]) -> dict[str, Any]:
+    _require(body, "bridge_id")
+    from .models import BeginEpisodeRequest
+    from .session_capture import begin_episode
+    result = begin_episode(
+        config,
+        BeginEpisodeRequest(
+            bridge_id=body["bridge_id"],
+            conversation_id=body.get("conversation_id"),
+            episode_id=body.get("episode_id"),
+            parent_conversation_id=body.get("parent_conversation_id"),
+            related_conversation_ids=body.get("related_conversation_ids") or [],
+            task_id=body.get("task_id"),
+            cwd=body.get("cwd"),
+            repo=body.get("repo"),
+            branch=body.get("branch"),
+            model=body.get("model"),
+            agent_runtime=body.get("agent_runtime"),
+            platform_thread_id=body.get("platform_thread_id"),
+            metadata=body.get("metadata") or {},
+        ),
+    )
+    return result.to_dict()
+
+
+def _handle_capture_append_event(config: AppConfig, body: dict[str, Any]) -> dict[str, Any]:
+    _require(body, "bridge_id", "conversation_id", "episode_id", "type")
+    from .models import AppendEventRequest
+    from .session_capture import append_event
+    result = append_event(
+        config,
+        AppendEventRequest(
+            bridge_id=body["bridge_id"],
+            conversation_id=body["conversation_id"],
+            episode_id=body["episode_id"],
+            event_type=body["type"],
+            payload=body.get("payload") or {},
+            task_id=body.get("task_id"),
+            branch_id=body.get("branch_id") or "main",
+            timestamp=body.get("timestamp"),
+        ),
+    )
+    return result.to_dict()
+
+
+def _handle_capture_end_episode(config: AppConfig, body: dict[str, Any]) -> dict[str, Any]:
+    _require(body, "bridge_id", "conversation_id", "episode_id")
+    from .models import EndEpisodeRequest
+    from .session_capture import end_episode
+    result = end_episode(
+        config,
+        EndEpisodeRequest(
+            bridge_id=body["bridge_id"],
+            conversation_id=body["conversation_id"],
+            episode_id=body["episode_id"],
+            status=body.get("status") or "success",
+            metadata=body.get("metadata") or {},
+        ),
+    )
+    return result.to_dict()
+
+
+def _handle_capture_project_episode(config: AppConfig, body: dict[str, Any]) -> dict[str, Any]:
+    _require(body, "conversation_id", "episode_id")
+    from .ingest import project_episode_for_promotion
+    result = project_episode_for_promotion(
+        config,
+        conversation_id=body["conversation_id"],
+        episode_id=body["episode_id"],
+    )
+    return {
+        "archive_id": result.archive_id,
+        "raw_path": result.raw_path,
+        "chunk_count": result.chunk_count,
+        "promoted_notes": result.promoted_notes,
+        "review_items": result.review_items,
+    }
+
+
 def _handle_sync_vault(config: AppConfig, body: dict[str, Any]) -> dict[str, Any]:
     _require(body, "mode")
     from .sync import sync_vault
@@ -228,6 +311,10 @@ _POST_ROUTES: dict[str, Any] = {
     "/v1/ingest/session": _handle_ingest_session,
     "/v1/ingest/artifact": _handle_ingest_artifact,
     "/v1/reprocess/artifact": _handle_reprocess_artifact,
+    "/v1/capture/begin-episode": _handle_capture_begin_episode,
+    "/v1/capture/append-event": _handle_capture_append_event,
+    "/v1/capture/end-episode": _handle_capture_end_episode,
+    "/v1/capture/project-episode": _handle_capture_project_episode,
     "/v1/sync/vault": _handle_sync_vault,
     "/v1/jobs/run": _handle_jobs_run,
     "/v1/orchestrator/begin-task": _handle_orchestrator_begin_task,
@@ -298,6 +385,8 @@ class _MnemonicOSHandler(BaseHTTPRequestHandler):
             result = handler(self.config, body)
             self._respond(200, result)
         except _BadRequest as exc:
+            self._respond(400, {"error": "bad_request", "detail": str(exc)})
+        except (FileNotFoundError, ValueError) as exc:
             self._respond(400, {"error": "bad_request", "detail": str(exc)})
         except Exception as exc:
             logger.exception("POST %s failed: %s", path, exc)

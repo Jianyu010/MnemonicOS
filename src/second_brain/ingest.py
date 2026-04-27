@@ -28,6 +28,7 @@ INLINE_ITEM_PATTERN = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 WORD_PATTERN = re.compile(r"\S+")
+_PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 
 # Patterns for session content extraction (options A and B)
 _NUANCE_LINE_RE = re.compile(r"^Nuance:\s*(.+?)$", re.MULTILINE)
@@ -43,6 +44,11 @@ _ERROR_TOKEN_RE = re.compile(
     r"|\bTIMEOUT\b"
     r"|\bNEEDS_REVISION\b",
 )
+
+
+def _migrations_dir(config: AppConfig) -> Path:
+    configured = config.paths.workspace_root / "migrations"
+    return configured if configured.exists() else _PACKAGE_ROOT / "migrations"
 
 
 def _synthesize_summary(item: dict[str, Any], item_context: str) -> str:
@@ -670,7 +676,7 @@ def _archive_session(
     raw_path.write_text(content.rstrip() + "\n")
 
     connection = connect_db(config.paths.db_path)
-    run_migrations(connection, config.paths.workspace_root / "migrations")
+    run_migrations(connection, _migrations_dir(config))
 
     chunks = _chunk_text(
         content,
@@ -821,7 +827,7 @@ def ingest_artifact(
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
     connection = connect_db(config.paths.db_path)
-    run_migrations(connection, config.paths.workspace_root / "migrations")
+    run_migrations(connection, _migrations_dir(config))
     try:
         with connection:
             connection.execute(
@@ -978,7 +984,7 @@ def reprocess_artifact(
     connector_config: ConnectorConfig | None = None,
 ) -> IngestArtifactResult:
     connection = connect_db(config.paths.db_path)
-    run_migrations(connection, config.paths.workspace_root / "migrations")
+    run_migrations(connection, _migrations_dir(config))
     try:
         row = connection.execute(
             """
@@ -1054,7 +1060,7 @@ def reprocess_artifact(
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
     connection = connect_db(config.paths.db_path)
-    run_migrations(connection, config.paths.workspace_root / "migrations")
+    run_migrations(connection, _migrations_dir(config))
     try:
         with connection:
             connection.execute(
@@ -1127,7 +1133,7 @@ def reprocess_artifact(
 
 def reprocess_failed_artifacts(config: AppConfig) -> list[IngestArtifactResult]:
     connection = connect_db(config.paths.db_path)
-    run_migrations(connection, config.paths.workspace_root / "migrations")
+    run_migrations(connection, _migrations_dir(config))
     try:
         rows = connection.execute(
             """
@@ -1189,6 +1195,182 @@ def _enqueue_promotion_candidate(
             chain_reason,
         ),
     )
+
+
+def _load_episode_event_payload(event: dict[str, Any], episode_dir: Path) -> dict[str, Any]:
+    payload = event.get("payload")
+    if not isinstance(payload, dict):
+        return {}
+    if payload.get("externalized_payload") and payload.get("artifact"):
+        artifact_path = episode_dir / str(payload["artifact"])
+        try:
+            loaded = json.loads(artifact_path.read_text())
+            return loaded if isinstance(loaded, dict) else payload
+        except (OSError, json.JSONDecodeError):
+            return payload
+    return payload
+
+
+def _project_episode_markdown(
+    *,
+    conversation_id: str,
+    episode_id: str,
+    bridge_id: str,
+    task_id: str | None,
+    events: list[dict[str, Any]],
+    episode_dir: Path,
+) -> str:
+    lines = [
+        f"agent: {bridge_id}",
+        f"session_date: {datetime.now().strftime('%Y-%m-%d')}",
+        "task_kind: general",
+        f"task_id: {task_id or ''}",
+        f"conversation_id: {conversation_id}",
+        f"episode_id: {episode_id}",
+        "",
+        "## Raw Episode Projection",
+        "",
+    ]
+    for event in events:
+        event_type = str(event.get("type") or "event")
+        seq = event.get("seq")
+        ts = event.get("ts")
+        payload = _load_episode_event_payload(event, episode_dir)
+        prefix = f"### {event_type}"
+        if seq is not None:
+            prefix += f" seq={seq}"
+        if ts:
+            prefix += f" ts={ts}"
+        lines.extend([prefix, ""])
+        if event_type in {"user_message", "assistant_message"}:
+            content = str(payload.get("content") or "").strip()
+            if content:
+                lines.extend([content, ""])
+                continue
+        if event_type == "tool_call":
+            lines.extend(
+                [
+                    f"tool_name: {payload.get('tool_name', '')}",
+                    f"call_id: {payload.get('call_id', '')}",
+                    "",
+                    "```json",
+                    json.dumps(payload.get("input") or {}, indent=2, sort_keys=True),
+                    "```",
+                    "",
+                ]
+            )
+            continue
+        if event_type == "tool_result":
+            output = str(payload.get("output") or "").strip()
+            lines.extend(
+                [
+                    f"tool_name: {payload.get('tool_name', '')}",
+                    f"call_id: {payload.get('call_id', '')}",
+                    f"is_error: {bool(payload.get('is_error'))}",
+                    "",
+                ]
+            )
+            if output:
+                lines.extend(["```text", output, "```", ""])
+            continue
+        if event_type == "failure":
+            message = str(payload.get("message") or "").strip()
+            if message:
+                lines.extend([message, ""])
+            lines.extend(["```json", json.dumps(payload, indent=2, sort_keys=True), "```", ""])
+            continue
+        lines.extend(["```json", json.dumps(payload, indent=2, sort_keys=True), "```", ""])
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def project_episode_for_promotion(
+    config: AppConfig,
+    *,
+    conversation_id: str,
+    episode_id: str,
+) -> IngestSessionResult:
+    """Project captured episode raw events in memory and run promotion helpers.
+
+    This intentionally avoids `_archive_session()`: the episode JSONL is already
+    true raw. No duplicate markdown raw file, archive row, or archive chunks are
+    created.
+    """
+    connection = connect_db(config.paths.db_path)
+    run_migrations(connection, _migrations_dir(config))
+    try:
+        row = connection.execute(
+            """
+            SELECT bridge_id, task_id, events_path, episode_path
+            FROM raw_episodes
+            WHERE conversation_id = ? AND episode_id = ?
+            """,
+            (conversation_id, episode_id),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"raw episode not found: {conversation_id}/{episode_id}")
+        events_path = Path(str(row["events_path"]))
+        episode_dir = Path(str(row["episode_path"]))
+        if not events_path.exists():
+            raise FileNotFoundError(str(events_path))
+        events = [json.loads(line) for line in events_path.read_text().splitlines() if line.strip()]
+        bridge_id = str(row["bridge_id"] or "unknown")
+        task_id = str(row["task_id"] or "").strip() or None
+        archive_id = f"episode/{conversation_id}/{episode_id}"
+        session_id = f"{conversation_id}/{episode_id}"
+        content = _project_episode_markdown(
+            conversation_id=conversation_id,
+            episode_id=episode_id,
+            bridge_id=bridge_id,
+            task_id=task_id,
+            events=events,
+            episode_dir=episode_dir,
+        )
+        try:
+            promoted_notes, review_items = _promote_session_content(
+                config,
+                connection=connection,
+                archive_id=archive_id,
+                resolved_bridge_id=bridge_id,
+                resolved_session_id=session_id,
+                content=content,
+                source_refs=[archive_id],
+            )
+        except Exception as exc:
+            with connection:
+                connection.execute(
+                    """
+                    UPDATE raw_episodes
+                    SET projection_status = 'error',
+                        last_projection_error = ?,
+                        updated_at = datetime('now')
+                    WHERE conversation_id = ? AND episode_id = ?
+                    """,
+                    (str(exc), conversation_id, episode_id),
+                )
+            raise
+        projection_status = "projected" if (promoted_notes or review_items) else "skipped"
+        with connection:
+            connection.execute(
+                """
+                UPDATE raw_episodes
+                SET projection_status = ?,
+                    promoted_count = ?,
+                    review_count = ?,
+                    last_projection_error = NULL,
+                    updated_at = datetime('now')
+                WHERE conversation_id = ? AND episode_id = ?
+                """,
+                (projection_status, len(promoted_notes), len(review_items), conversation_id, episode_id),
+            )
+        return IngestSessionResult(
+            archive_id=archive_id,
+            raw_path=str(events_path.resolve()),
+            chunk_count=0,
+            promoted_notes=promoted_notes,
+            review_items=review_items,
+        )
+    finally:
+        connection.close()
 
 
 def ingest_session(

@@ -124,7 +124,10 @@ class TestPreflightHook(unittest.TestCase):
         # If state file exists, it must contain a non-empty task_id
         if os.path.exists(self._state_file):
             content = Path(self._state_file).read_text().strip()
-            self.assertTrue(content.startswith("task-"), f"Unexpected task_id: {content!r}")
+            parsed = json.loads(content)
+            self.assertTrue(parsed.get("task_id", "").startswith("task-"), f"Unexpected state: {content!r}")
+            self.assertTrue(parsed.get("conversation_id"), f"Missing conversation_id: {content!r}")
+            self.assertTrue(parsed.get("episode_id"), f"Missing episode_id: {content!r}")
 
     def test_stdout_is_valid_json_context_when_state_file_written(self) -> None:
         """If orchestrator ran and wrote a state file, stdout must be valid JSON {"context": ...}."""
@@ -304,7 +307,8 @@ class TestHookRoundTrip(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
 
             if os.path.exists(self._state_file):
-                tid = Path(self._state_file).read_text().strip()
+                raw_state = Path(self._state_file).read_text().strip()
+                tid = json.loads(raw_state).get("task_id", "")
                 if tid:
                     task_ids.append(tid)
 

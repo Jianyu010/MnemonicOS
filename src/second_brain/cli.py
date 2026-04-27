@@ -13,7 +13,14 @@ from typing import Any
 from .config import default_config_path, load_config
 from .daemon_status import daemon_status_summary, daemon_unreachable_summary, read_pid, socket_send
 from .db import connect_db, run_migrations
-from .ingest import ingest_artifact, ingest_session, ingest_session_promote, reprocess_artifact, reprocess_failed_artifacts
+from .ingest import (
+    ingest_artifact,
+    ingest_session,
+    ingest_session_promote,
+    project_episode_for_promotion,
+    reprocess_artifact,
+    reprocess_failed_artifacts,
+)
 from .jobs import run_job
 from .models import ResolveTaskContextRequest
 from .retrieval import result_to_json, retrieve
@@ -25,6 +32,7 @@ from .runtime import (
     resolve_task_context,
     resolve_task_context_to_json,
 )
+from .session_capture import append_event, begin_episode, end_episode
 from .sync import sync_vault
 from .orchestrator import (
     OrchestratorFailureRequest,
@@ -79,6 +87,51 @@ def _build_parser() -> argparse.ArgumentParser:
     reprocess_group.add_argument("--archive-id", help="Artifact archive id to reprocess.")
     reprocess_group.add_argument("--failed", action="store_true", help="Reprocess all failed artifact ingests.")
     reprocess_parser.add_argument("--json", action="store_true", help="Emit JSON output.")
+
+    capture_parser = subparsers.add_parser("capture", help="Comprehensive raw bridge capture operations.")
+    capture_subparsers = capture_parser.add_subparsers(dest="capture_command", required=True)
+
+    begin_capture = capture_subparsers.add_parser("begin-episode", help="Create or reopen a raw conversation and begin an episode.")
+    begin_capture.add_argument("--bridge-id", required=True)
+    begin_capture.add_argument("--conversation-id", default=None)
+    begin_capture.add_argument("--episode-id", default=None)
+    begin_capture.add_argument("--parent-conversation-id", default=None)
+    begin_capture.add_argument("--related-conversation-id", action="append", default=[])
+    begin_capture.add_argument("--task-id", default=None)
+    begin_capture.add_argument("--cwd", default=None)
+    begin_capture.add_argument("--repo", default=None)
+    begin_capture.add_argument("--branch", default=None)
+    begin_capture.add_argument("--model", default=None)
+    begin_capture.add_argument("--agent-runtime", default=None)
+    begin_capture.add_argument("--platform-thread-id", default=None)
+    begin_capture.add_argument("--metadata-json", default=None)
+    begin_capture.add_argument("--json", action="store_true", help="Emit JSON output.")
+
+    append_capture = capture_subparsers.add_parser("append-event", help="Append one raw event to an episode.")
+    append_capture.add_argument("--bridge-id", required=True)
+    append_capture.add_argument("--conversation-id", required=True)
+    append_capture.add_argument("--episode-id", required=True)
+    append_capture.add_argument("--type", required=True, dest="event_type")
+    append_capture.add_argument("--payload-json", default=None)
+    append_capture.add_argument("--payload-file", default=None)
+    append_capture.add_argument("--content", default=None, help="Shortcut payload for user/assistant message content.")
+    append_capture.add_argument("--task-id", default=None)
+    append_capture.add_argument("--branch-id", default="main")
+    append_capture.add_argument("--timestamp", default=None)
+    append_capture.add_argument("--json", action="store_true", help="Emit JSON output.")
+
+    end_capture = capture_subparsers.add_parser("end-episode", help="Close an active raw capture episode.")
+    end_capture.add_argument("--bridge-id", required=True)
+    end_capture.add_argument("--conversation-id", required=True)
+    end_capture.add_argument("--episode-id", required=True)
+    end_capture.add_argument("--status", default="success", choices=("success", "failure", "partial", "abandoned"))
+    end_capture.add_argument("--metadata-json", default=None)
+    end_capture.add_argument("--json", action="store_true", help="Emit JSON output.")
+
+    project_capture = capture_subparsers.add_parser("project-episode", help="Project a captured episode in memory and run promotion.")
+    project_capture.add_argument("--conversation-id", required=True)
+    project_capture.add_argument("--episode-id", required=True)
+    project_capture.add_argument("--json", action="store_true", help="Emit JSON output.")
 
     retrieve_parser = subparsers.add_parser("retrieve", help="Run hybrid retrieval across exact, BM25, semantic, graph, and archive channels.")
     retrieve_parser.add_argument("query", help="Query text.")
@@ -530,6 +583,162 @@ def _reprocess_artifact(config_path: str, archive_id: str | None, failed: bool, 
     return 0
 
 
+def _json_arg(value: str | None, *, field_name: str) -> dict[str, Any]:
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"{field_name} must be valid JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise SystemExit(f"{field_name} must be a JSON object")
+    return parsed
+
+
+def _capture_payload(payload_json: str | None, payload_file: str | None, content: str | None) -> dict[str, Any]:
+    provided = sum(1 for item in (payload_json, payload_file, content) if item is not None)
+    if provided > 1:
+        raise SystemExit("provide only one of --payload-json, --payload-file, or --content")
+    if payload_json is not None:
+        return _json_arg(payload_json, field_name="--payload-json")
+    if payload_file is not None:
+        return _json_arg(open(payload_file, encoding="utf-8").read(), field_name="--payload-file")
+    if content is not None:
+        return {"content": content}
+    return {}
+
+
+def _print_or_json(payload: dict[str, Any], emit_json: bool) -> int:
+    if emit_json:
+        print(json.dumps(payload, sort_keys=True))
+        return 0
+    for key, value in payload.items():
+        if isinstance(value, list):
+            if not value:
+                print(f"{key}=[]")
+            for item in value:
+                print(f"{key}={item}")
+        else:
+            print(f"{key}={value}")
+    return 0
+
+
+def _capture_begin_episode(
+    config_path: str,
+    bridge_id: str,
+    conversation_id: str | None,
+    episode_id: str | None,
+    parent_conversation_id: str | None,
+    related_conversation_ids: list[str],
+    task_id: str | None,
+    cwd: str | None,
+    repo: str | None,
+    branch: str | None,
+    model: str | None,
+    agent_runtime: str | None,
+    platform_thread_id: str | None,
+    metadata_json: str | None,
+    emit_json: bool,
+) -> int:
+    from .models import BeginEpisodeRequest
+
+    config = load_config(config_path)
+    result = begin_episode(
+        config,
+        BeginEpisodeRequest(
+            bridge_id=bridge_id,
+            conversation_id=conversation_id,
+            episode_id=episode_id,
+            parent_conversation_id=parent_conversation_id,
+            related_conversation_ids=related_conversation_ids,
+            task_id=task_id,
+            cwd=cwd,
+            repo=repo,
+            branch=branch,
+            model=model,
+            agent_runtime=agent_runtime,
+            platform_thread_id=platform_thread_id,
+            metadata=_json_arg(metadata_json, field_name="--metadata-json"),
+        ),
+    )
+    return _print_or_json(result.to_dict(), emit_json)
+
+
+def _capture_append_event(
+    config_path: str,
+    bridge_id: str,
+    conversation_id: str,
+    episode_id: str,
+    event_type: str,
+    payload_json: str | None,
+    payload_file: str | None,
+    content: str | None,
+    task_id: str | None,
+    branch_id: str,
+    timestamp: str | None,
+    emit_json: bool,
+) -> int:
+    from .models import AppendEventRequest
+
+    config = load_config(config_path)
+    result = append_event(
+        config,
+        AppendEventRequest(
+            bridge_id=bridge_id,
+            conversation_id=conversation_id,
+            episode_id=episode_id,
+            event_type=event_type,
+            payload=_capture_payload(payload_json, payload_file, content),
+            task_id=task_id,
+            branch_id=branch_id,
+            timestamp=timestamp,
+        ),
+    )
+    return _print_or_json(result.to_dict(), emit_json)
+
+
+def _capture_end_episode(
+    config_path: str,
+    bridge_id: str,
+    conversation_id: str,
+    episode_id: str,
+    status: str,
+    metadata_json: str | None,
+    emit_json: bool,
+) -> int:
+    from .models import EndEpisodeRequest
+
+    config = load_config(config_path)
+    result = end_episode(
+        config,
+        EndEpisodeRequest(
+            bridge_id=bridge_id,
+            conversation_id=conversation_id,
+            episode_id=episode_id,
+            status=status,
+            metadata=_json_arg(metadata_json, field_name="--metadata-json"),
+        ),
+    )
+    return _print_or_json(result.to_dict(), emit_json)
+
+
+def _capture_project_episode(config_path: str, conversation_id: str, episode_id: str, emit_json: bool) -> int:
+    config = load_config(config_path)
+    result = project_episode_for_promotion(
+        config,
+        conversation_id=conversation_id,
+        episode_id=episode_id,
+    )
+    payload = {
+        "archive_id": result.archive_id,
+        "raw_path": result.raw_path,
+        "chunk_count": result.chunk_count,
+        "promoted_notes": result.promoted_notes,
+        "review_items": result.review_items,
+    }
+    return _print_or_json(payload, emit_json)
+
+
 def _orchestrator_begin_task(
     config_path: str,
     task_text: str,
@@ -819,6 +1028,52 @@ def main(argv: list[str] | None = None) -> int:
         return _ingest_artifact(args.config, args.file, args.tag, args.attachment, args.json)
     if args.command == "reprocess-artifact":
         return _reprocess_artifact(args.config, args.archive_id, args.failed, args.json)
+    if args.command == "capture":
+        if args.capture_command == "begin-episode":
+            return _capture_begin_episode(
+                args.config,
+                args.bridge_id,
+                args.conversation_id,
+                args.episode_id,
+                args.parent_conversation_id,
+                args.related_conversation_id,
+                args.task_id,
+                args.cwd,
+                args.repo,
+                args.branch,
+                args.model,
+                args.agent_runtime,
+                args.platform_thread_id,
+                args.metadata_json,
+                args.json,
+            )
+        if args.capture_command == "append-event":
+            return _capture_append_event(
+                args.config,
+                args.bridge_id,
+                args.conversation_id,
+                args.episode_id,
+                args.event_type,
+                args.payload_json,
+                args.payload_file,
+                args.content,
+                args.task_id,
+                args.branch_id,
+                args.timestamp,
+                args.json,
+            )
+        if args.capture_command == "end-episode":
+            return _capture_end_episode(
+                args.config,
+                args.bridge_id,
+                args.conversation_id,
+                args.episode_id,
+                args.status,
+                args.metadata_json,
+                args.json,
+            )
+        if args.capture_command == "project-episode":
+            return _capture_project_episode(args.config, args.conversation_id, args.episode_id, args.json)
     if args.command == "retrieve":
         return _retrieve(args.config, args.query, args.top_k, args.query_type_hint, args.json)
     if args.command == "resolve-task-context":

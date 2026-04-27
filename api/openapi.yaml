@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: MnemonicOS Local API
   version: 0.5.0
-  description: Local API for ingest, sync, retrieval, trust/freshness scoring, graph expansion, maintenance jobs, and the shared orchestrator facade.
+  description: Local API for raw capture, ingest, sync, retrieval, trust/freshness scoring, graph expansion, maintenance jobs, and the shared orchestrator facade.
 servers:
   - url: http://127.0.0.1:8000
 paths:
@@ -76,6 +76,78 @@ paths:
                 oneOf:
                   - $ref: '#/components/schemas/IngestArtifactResponse'
                   - $ref: '#/components/schemas/ReprocessArtifactBatchResponse'
+
+  /v1/capture/begin-episode:
+    post:
+      operationId: captureBeginEpisode
+      summary: Begin a software-enforced raw capture episode.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BeginEpisodeRequest'
+      responses:
+        '200':
+          description: Episode initialized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BeginEpisodeResponse'
+
+  /v1/capture/append-event:
+    post:
+      operationId: captureAppendEvent
+      summary: Append one raw event to an episode JSONL log.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppendEventRequest'
+      responses:
+        '200':
+          description: Event appended
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppendEventResponse'
+
+  /v1/capture/end-episode:
+    post:
+      operationId: captureEndEpisode
+      summary: End a raw capture episode and finalize episode metadata.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EndEpisodeRequest'
+      responses:
+        '200':
+          description: Episode finalized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EndEpisodeResponse'
+
+  /v1/capture/project-episode:
+    post:
+      operationId: captureProjectEpisode
+      summary: Project a captured episode in memory and run promotion.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectEpisodeRequest'
+      responses:
+        '200':
+          description: Episode projected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectEpisodeResponse'
 
   /v1/sync/vault:
     post:
@@ -322,6 +394,173 @@ components:
           items:
             $ref: '#/components/schemas/IngestArtifactResponse'
       required: [results]
+
+    BeginEpisodeRequest:
+      type: object
+      properties:
+        bridge_id:
+          type: string
+        conversation_id:
+          type: string
+          description: Durable thread id. Generated or recovered from bridge state when absent.
+        episode_id:
+          type: string
+          description: Visit/run id. Generated when absent.
+        parent_conversation_id:
+          type: string
+        related_conversation_ids:
+          type: array
+          items:
+            type: string
+        task_id:
+          type: string
+        cwd:
+          type: string
+        repo:
+          type: string
+        branch:
+          type: string
+        model:
+          type: string
+        agent_runtime:
+          type: string
+        platform_thread_id:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
+      required: [bridge_id]
+
+    BeginEpisodeResponse:
+      type: object
+      properties:
+        conversation_id:
+          type: string
+        episode_id:
+          type: string
+        conversation_path:
+          type: string
+        episode_path:
+          type: string
+        events_path:
+          type: string
+        transcript_path:
+          type: string
+        artifacts_path:
+          type: string
+      required: [conversation_id, episode_id, conversation_path, episode_path,
+                 events_path, transcript_path, artifacts_path]
+
+    AppendEventRequest:
+      type: object
+      properties:
+        bridge_id:
+          type: string
+        conversation_id:
+          type: string
+        episode_id:
+          type: string
+        type:
+          type: string
+          enum: [episode_started, user_message, assistant_message, tool_call, tool_result,
+                 file_changed, artifact_created, retrieval_packet, failure, branch_started,
+                 branch_completed, conversation_reference, episode_ended]
+        payload:
+          type: object
+          additionalProperties: true
+        task_id:
+          type: string
+        branch_id:
+          type: string
+          default: main
+        timestamp:
+          type: string
+          description: Optional ISO timestamp supplied by the bridge.
+      required: [bridge_id, conversation_id, episode_id, type]
+
+    AppendEventResponse:
+      type: object
+      properties:
+        conversation_id:
+          type: string
+        episode_id:
+          type: string
+        seq:
+          type: integer
+        events_path:
+          type: string
+        transcript_path:
+          type: string
+        artifact_paths:
+          type: array
+          items:
+            type: string
+      required: [conversation_id, episode_id, seq, events_path, transcript_path, artifact_paths]
+
+    EndEpisodeRequest:
+      type: object
+      properties:
+        bridge_id:
+          type: string
+        conversation_id:
+          type: string
+        episode_id:
+          type: string
+        status:
+          type: string
+          enum: [success, failure, partial, abandoned]
+          default: success
+        metadata:
+          type: object
+          additionalProperties: true
+      required: [bridge_id, conversation_id, episode_id]
+
+    EndEpisodeResponse:
+      type: object
+      properties:
+        conversation_id:
+          type: string
+        episode_id:
+          type: string
+        status:
+          type: string
+        event_count:
+          type: integer
+        content_hash:
+          type: string
+        manifest_path:
+          type: string
+      required: [conversation_id, episode_id, status, event_count, content_hash, manifest_path]
+
+    ProjectEpisodeRequest:
+      type: object
+      properties:
+        conversation_id:
+          type: string
+        episode_id:
+          type: string
+      required: [conversation_id, episode_id]
+
+    ProjectEpisodeResponse:
+      type: object
+      properties:
+        archive_id:
+          type: string
+          description: Episode provenance id, not an archive table row.
+        raw_path:
+          type: string
+        chunk_count:
+          type: integer
+          const: 0
+        promoted_notes:
+          type: array
+          items:
+            type: string
+        review_items:
+          type: array
+          items:
+            type: string
+      required: [archive_id, raw_path, chunk_count, promoted_notes, review_items]
 
     SyncVaultRequest:
       type: object

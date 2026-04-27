@@ -106,6 +106,84 @@ class IngestArtifactResult:
 
 
 @dataclass(slots=True)
+class BeginEpisodeRequest:
+    bridge_id: str
+    conversation_id: str | None = None
+    episode_id: str | None = None
+    parent_conversation_id: str | None = None
+    related_conversation_ids: list[str] = field(default_factory=list)
+    task_id: str | None = None
+    cwd: str | None = None
+    repo: str | None = None
+    branch: str | None = None
+    model: str | None = None
+    agent_runtime: str | None = None
+    platform_thread_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class BeginEpisodeResult:
+    conversation_id: str
+    episode_id: str
+    conversation_path: str
+    episode_path: str
+    events_path: str
+    transcript_path: str
+    artifacts_path: str
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class AppendEventRequest:
+    bridge_id: str
+    conversation_id: str
+    episode_id: str
+    event_type: str
+    payload: dict[str, Any] = field(default_factory=dict)
+    task_id: str | None = None
+    branch_id: str = "main"
+    timestamp: str | None = None
+
+
+@dataclass(slots=True)
+class AppendEventResult:
+    conversation_id: str
+    episode_id: str
+    seq: int
+    events_path: str
+    transcript_path: str
+    artifact_paths: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class EndEpisodeRequest:
+    bridge_id: str
+    conversation_id: str
+    episode_id: str
+    status: str = "success"
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class EndEpisodeResult:
+    conversation_id: str
+    episode_id: str
+    status: str
+    event_count: int
+    content_hash: str
+    manifest_path: str
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
 class JobRunResult:
     job_name: str
     status: str

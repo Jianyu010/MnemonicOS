@@ -45,9 +45,35 @@ else
   CLI=(env PYTHONPATH="$REPO_ROOT/src" python3 -m second_brain --config "$CONFIG")
 fi
 
+CAPTURE=$("${CLI[@]}" capture begin-episode \
+  --bridge-id claude \
+  --conversation-id "$SESSION_ID" \
+  --cwd "$PWD" \
+  --agent-runtime claude-code \
+  --json 2>/dev/null) || CAPTURE=""
+
+CONVERSATION_ID=$(echo "$CAPTURE" | python3 -c \
+  "import sys,json; d=json.load(sys.stdin); print(d.get('conversation_id',''))" 2>/dev/null) \
+  || CONVERSATION_ID=""
+EPISODE_ID=$(echo "$CAPTURE" | python3 -c \
+  "import sys,json; d=json.load(sys.stdin); print(d.get('episode_id',''))" 2>/dev/null) \
+  || EPISODE_ID=""
+
+if [[ -n "$CONVERSATION_ID" && -n "$EPISODE_ID" ]]; then
+  PROMPT_PAYLOAD=$(PROMPT="$PROMPT" python3 -c \
+    "import json,os; print(json.dumps({'content': os.environ.get('PROMPT','')}))" 2>/dev/null) \
+    || PROMPT_PAYLOAD="{}"
+  "${CLI[@]}" capture append-event \
+    --bridge-id claude \
+    --conversation-id "$CONVERSATION_ID" \
+    --episode-id "$EPISODE_ID" \
+    --type user_message \
+    --payload-json "$PROMPT_PAYLOAD" \
+    --json >/dev/null 2>&1 || true
+fi
+
 RESULT=$("${CLI[@]}" orchestrator begin-task "$PROMPT" \
   --bridge-id claude --session-id "$SESSION_ID" --json 2>/dev/null) || RESULT=""
-[[ -z "$RESULT" ]] && exit 0
 
 TASK_ID=$(echo "$RESULT" | python3 -c \
   "import sys,json; d=json.load(sys.stdin); print(d.get('task_id',''))" 2>/dev/null) \
@@ -59,8 +85,28 @@ STATE=$(echo "$RESULT" | python3 -c \
   "import sys,json; d=json.load(sys.stdin); print(d.get('retrieval_state',''))" 2>/dev/null) \
   || STATE=""
 
-# Persist task_id for this turn's Stop hook (plain text, one line)
-[[ -n "$TASK_ID" ]] && echo "$TASK_ID" > "$STATE_FILE" 2>/dev/null || true
+# Persist capture coordinates and task_id for this turn's Stop hook.
+if [[ -n "$TASK_ID" || -n "$CONVERSATION_ID" ]]; then
+  python3 - "$STATE_FILE" "$TASK_ID" "$SESSION_ID" "$CONVERSATION_ID" "$EPISODE_ID" <<'PY' 2>/dev/null || true
+import json
+import sys
+path, task_id, session_id, conversation_id, episode_id = sys.argv[1:6]
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(
+        {
+            "task_id": task_id,
+            "session_id": session_id,
+            "conversation_id": conversation_id,
+            "episode_id": episode_id,
+        },
+        handle,
+        sort_keys=True,
+    )
+    handle.write("\n")
+PY
+fi
+
+[[ -z "$RESULT" ]] && exit 0
 
 [[ -z "$CONTEXT" || "$STATE" == "insufficient_no_hit" ]] && exit 0
 
