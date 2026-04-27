@@ -915,6 +915,233 @@ def ingest_artifact(
     )
 
 
+def _figure_rows_from_source_attachments(rows: list[sqlite3.Row], *, start_index: int, warnings: list[str]) -> list[dict[str, Any]]:
+    figure_rows: list[dict[str, Any]] = []
+    for offset, row in enumerate(rows, start=start_index):
+        attachment_path = str(row["attachment_path"] or "")
+        path = Path(attachment_path)
+        if not attachment_path or not path.exists():
+            warnings.append(f"attachment_missing:{attachment_path or row['figure_id']}")
+            continue
+        data = path.read_bytes()
+        figure = figure_from_bytes(
+            figure_id=f"fig_{offset:03d}",
+            data=data,
+            storage_policy="source_attachment",
+            attachment_path=str(path.resolve()),
+            source_index=offset,
+            structural_location=str(row["structural_location"] or f"attachment:{path.name}"),
+            mime_type=str(row["mime_type"] or "") or None,
+        )
+        figure_rows.append(_jsonable_figure(figure))
+    return figure_rows
+
+
+def _insert_artifact_figure_rows(connection: sqlite3.Connection, archive_id: str, figure_rows: list[dict[str, Any]]) -> None:
+    for row in figure_rows:
+        connection.execute(
+            """
+            INSERT INTO artifact_figures(
+                archive_id, figure_id, storage_policy, attachment_path,
+                source_page, source_slide, source_index, width_px, height_px,
+                mime_type, byte_size, sha256, structural_location,
+                has_caption, referenced_by_label, needs_visual_pass, warnings_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                archive_id,
+                row.get("figure_id"),
+                row.get("storage_policy") or "in_memory_extracted",
+                row.get("attachment_path"),
+                row.get("source_page"),
+                row.get("source_slide"),
+                row.get("source_index"),
+                row.get("width_px"),
+                row.get("height_px"),
+                row.get("mime_type"),
+                row.get("byte_size"),
+                row.get("sha256"),
+                row.get("structural_location"),
+                1 if row.get("has_caption") else 0,
+                1 if row.get("referenced_by_label") else 0,
+                1 if row.get("needs_visual_pass") else 0,
+                json.dumps(row.get("warnings_json") or []),
+            ),
+        )
+
+
+def reprocess_artifact(
+    config: AppConfig,
+    *,
+    archive_id: str,
+    connector_config: ConnectorConfig | None = None,
+) -> IngestArtifactResult:
+    connection = connect_db(config.paths.db_path)
+    run_migrations(connection, config.paths.workspace_root / "migrations")
+    try:
+        row = connection.execute(
+            """
+            SELECT id, path, artifact_path, original_filename, tags
+            FROM archive
+            WHERE id = ? AND id LIKE 'artifact/%'
+            """,
+            (archive_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"artifact archive not found: {archive_id}")
+        raw_path = Path(str(row["artifact_path"] or row["path"])).resolve()
+        if not raw_path.exists() or not raw_path.is_file():
+            raise FileNotFoundError(str(raw_path))
+        source_attachment_rows = connection.execute(
+            """
+            SELECT figure_id, attachment_path, mime_type, structural_location
+            FROM artifact_figures
+            WHERE archive_id = ? AND storage_policy = 'source_attachment'
+            ORDER BY source_index, figure_id
+            """,
+            (archive_id,),
+        ).fetchall()
+    finally:
+        connection.close()
+
+    now = datetime.now()
+    raw_bytes = raw_path.read_bytes()
+    raw_hash = sha256(raw_bytes).hexdigest()
+    connector = connector_for_path(raw_path)
+    result = connector.extract(raw_path, config=connector_config or ConnectorConfig())
+    metadata = dict(result.metadata)
+    source_format = str(metadata.get("source_format") or getattr(connector, "source_format", "unknown"))
+    warnings = list(result.warnings)
+    figure_rows = [_jsonable_figure(figure) for figure in result.figures]
+    figure_rows.extend(_figure_rows_from_source_attachments(source_attachment_rows, start_index=len(figure_rows) + 1, warnings=warnings))
+    ingest_status = result.status
+    if ingest_status not in {"accepted", "accepted_with_warnings", "failed_extraction", "manual_fix_needed"}:
+        ingest_status = "failed_extraction"
+        warnings.append(f"invalid_connector_status:{result.status}")
+    failure_reason = result.failure_reason
+    needs_manual_projection = bool(metadata.get("needs_manual_projection")) or ingest_status == "failed_extraction"
+    needs_visual_pass = bool(metadata.get("needs_visual_pass")) or any(bool(item.get("needs_visual_pass")) for item in figure_rows)
+    image_only_pdf = bool(metadata.get("image_only_pdf"))
+    figure_count = max(int(metadata.get("figure_count") or 0), len(figure_rows))
+    table_count = int(metadata.get("table_count") or 0)
+    page_count = int(metadata.get("page_count") or 0)
+    slide_count = int(metadata.get("slide_count") or 0)
+    artifact_dir = raw_path.parent
+    manifest_path = artifact_dir / "manifest.json"
+    manifest = {
+        "archive_id": archive_id,
+        "artifact_path": str(raw_path.resolve()),
+        "source_format": source_format,
+        "original_filename": str(row["original_filename"] or raw_path.name),
+        "raw_sha256": raw_hash,
+        "byte_size": len(raw_bytes),
+        "connector_name": str(metadata.get("connector_name") or getattr(connector, "name", "unknown_connector")),
+        "connector_version": str(metadata.get("connector_version") or ""),
+        "ingest_status": ingest_status,
+        "page_count": page_count,
+        "slide_count": slide_count,
+        "figure_count": figure_count,
+        "table_count": table_count,
+        "warnings": warnings,
+        "failure_reason": failure_reason,
+        "needs_visual_pass": needs_visual_pass,
+        "needs_manual_projection": needs_manual_projection,
+        "image_only_pdf": image_only_pdf,
+        "figures": figure_rows,
+        "reprocessed_at": now.isoformat(timespec="seconds"),
+    }
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+
+    connection = connect_db(config.paths.db_path)
+    run_migrations(connection, config.paths.workspace_root / "migrations")
+    try:
+        with connection:
+            connection.execute(
+                """
+                UPDATE archive
+                SET type = ?,
+                    path = ?,
+                    artifact_path = ?,
+                    source_format = ?,
+                    original_filename = ?,
+                    raw_sha256 = ?,
+                    byte_size = ?,
+                    connector_name = ?,
+                    connector_version = ?,
+                    ingest_status = ?,
+                    page_count = ?,
+                    slide_count = ?,
+                    figure_count = ?,
+                    table_count = ?,
+                    warnings_json = ?,
+                    failure_reason = ?,
+                    needs_visual_pass = ?,
+                    needs_manual_projection = ?,
+                    image_only_pdf = ?
+                WHERE id = ?
+                """,
+                (
+                    _artifact_archive_type(source_format),
+                    str(raw_path.resolve()),
+                    str(raw_path.resolve()),
+                    source_format,
+                    manifest["original_filename"],
+                    raw_hash,
+                    len(raw_bytes),
+                    manifest["connector_name"],
+                    manifest["connector_version"],
+                    ingest_status,
+                    page_count,
+                    slide_count,
+                    figure_count,
+                    table_count,
+                    json.dumps(warnings),
+                    failure_reason,
+                    1 if needs_visual_pass else 0,
+                    1 if needs_manual_projection else 0,
+                    1 if image_only_pdf else 0,
+                    archive_id,
+                ),
+            )
+            _upsert_archive_sync_state(connection, raw_path, archive_id, raw_hash)
+            connection.execute("DELETE FROM artifact_figures WHERE archive_id = ?", (archive_id,))
+            _insert_artifact_figure_rows(connection, archive_id, figure_rows)
+    finally:
+        connection.close()
+
+    return IngestArtifactResult(
+        archive_id=archive_id,
+        raw_path=str(raw_path.resolve()),
+        manifest_path=str(manifest_path.resolve()),
+        ingest_status=ingest_status,
+        source_format=source_format,
+        figure_count=figure_count,
+        warnings=warnings,
+        failure_reason=failure_reason,
+        needs_visual_pass=needs_visual_pass,
+        needs_manual_projection=needs_manual_projection,
+        image_only_pdf=image_only_pdf,
+    )
+
+
+def reprocess_failed_artifacts(config: AppConfig) -> list[IngestArtifactResult]:
+    connection = connect_db(config.paths.db_path)
+    run_migrations(connection, config.paths.workspace_root / "migrations")
+    try:
+        rows = connection.execute(
+            """
+            SELECT id
+            FROM archive
+            WHERE id LIKE 'artifact/%' AND ingest_status = 'failed_extraction'
+            ORDER BY ingested_at, id
+            """
+        ).fetchall()
+    finally:
+        connection.close()
+    return [reprocess_artifact(config, archive_id=str(row["id"])) for row in rows]
+
+
 def _enqueue_promotion_candidate(
     connection: sqlite3.Connection,
     *,

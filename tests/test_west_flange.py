@@ -17,7 +17,7 @@ if str(SRC) not in sys.path:
 
 from second_brain.config import load_config
 from second_brain.db import connect_db, run_migrations
-from second_brain.ingest import ingest_artifact
+from second_brain.ingest import ingest_artifact, reprocess_artifact, reprocess_failed_artifacts
 from second_brain.retrieval import retrieve
 
 
@@ -182,6 +182,72 @@ class WestFlangeTest(unittest.TestCase):
                 self.assertEqual(row["storage_policy"], "source_attachment")
                 self.assertEqual(row["attachment_path"], str(attachment_copy.resolve()))
                 self.assertTrue(row["sha256"])
+            finally:
+                db.close()
+
+    def test_reprocess_updates_same_artifact_after_manual_raw_repair(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            config = load_config(_config(workspace), workspace)
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            connection.close()
+
+            source = workspace / "empty.txt"
+            source.write_text("")
+            first = ingest_artifact(config, path=source)
+            self.assertEqual(first.ingest_status, "failed_extraction")
+
+            Path(first.raw_path).write_text("Manual projection repair made this usable.\n")
+            second = reprocess_artifact(config, archive_id=first.archive_id)
+            self.assertEqual(second.archive_id, first.archive_id)
+            self.assertEqual(second.raw_path, first.raw_path)
+            self.assertEqual(second.ingest_status, "accepted")
+            self.assertFalse(second.needs_manual_projection)
+
+            manifest = json.loads(Path(second.manifest_path).read_text())
+            self.assertEqual(manifest["archive_id"], first.archive_id)
+            self.assertEqual(manifest["ingest_status"], "accepted")
+            self.assertIn("reprocessed_at", manifest)
+
+            db = connect_db(config.paths.db_path)
+            try:
+                archive_count = db.execute("SELECT COUNT(*) AS n FROM archive WHERE id LIKE 'artifact/%'").fetchone()
+                self.assertEqual(int(archive_count["n"]), 1)
+                row = db.execute("SELECT ingest_status, chunk_count FROM archive WHERE id = ?", (first.archive_id,)).fetchone()
+                self.assertEqual(row["ingest_status"], "accepted")
+                self.assertEqual(int(row["chunk_count"]), 0)
+                chunks = db.execute("SELECT COUNT(*) AS n FROM archive_chunks WHERE archive_id = ?", (first.archive_id,)).fetchone()
+                self.assertEqual(int(chunks["n"]), 0)
+            finally:
+                db.close()
+
+    def test_reprocess_failed_artifacts_retries_only_failed_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            config = load_config(_config(workspace), workspace)
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            connection.close()
+
+            failed_source = workspace / "failed.txt"
+            failed_source.write_text("")
+            ok_source = workspace / "ok.txt"
+            ok_source.write_text("Already usable.\n")
+            failed = ingest_artifact(config, path=failed_source)
+            ok = ingest_artifact(config, path=ok_source)
+            Path(failed.raw_path).write_text("Now usable after repair.\n")
+
+            results = reprocess_failed_artifacts(config)
+            self.assertEqual([result.archive_id for result in results], [failed.archive_id])
+            self.assertEqual(results[0].ingest_status, "accepted")
+
+            db = connect_db(config.paths.db_path)
+            try:
+                ok_row = db.execute("SELECT ingest_status FROM archive WHERE id = ?", (ok.archive_id,)).fetchone()
+                failed_row = db.execute("SELECT ingest_status FROM archive WHERE id = ?", (failed.archive_id,)).fetchone()
+                self.assertEqual(ok_row["ingest_status"], "accepted")
+                self.assertEqual(failed_row["ingest_status"], "accepted")
             finally:
                 db.close()
 

@@ -6,6 +6,7 @@ Implements api/openapi.yaml v0.4.0 plus the orchestrator extension:
   POST /v1/retrieve
   POST /v1/ingest/session
   POST /v1/ingest/artifact
+  POST /v1/reprocess/artifact
   POST /v1/sync/vault
   POST /v1/jobs/run
   POST /v1/orchestrator/begin-task
@@ -101,6 +102,30 @@ def _handle_ingest_artifact(config: AppConfig, body: dict[str, Any]) -> dict[str
         "needs_manual_projection": result.needs_manual_projection,
         "image_only_pdf": result.image_only_pdf,
     }
+
+
+def _artifact_response(result: Any) -> dict[str, Any]:
+    return {
+        "archive_id": result.archive_id,
+        "raw_path": result.raw_path,
+        "manifest_path": result.manifest_path,
+        "ingest_status": result.ingest_status,
+        "source_format": result.source_format,
+        "figure_count": result.figure_count,
+        "warnings": result.warnings,
+        "failure_reason": result.failure_reason,
+        "needs_visual_pass": result.needs_visual_pass,
+        "needs_manual_projection": result.needs_manual_projection,
+        "image_only_pdf": result.image_only_pdf,
+    }
+
+
+def _handle_reprocess_artifact(config: AppConfig, body: dict[str, Any]) -> dict[str, Any]:
+    from .ingest import reprocess_artifact, reprocess_failed_artifacts
+    if body.get("failed"):
+        return {"results": [_artifact_response(result) for result in reprocess_failed_artifacts(config)]}
+    _require(body, "archive_id")
+    return _artifact_response(reprocess_artifact(config, archive_id=body["archive_id"]))
 
 
 def _handle_sync_vault(config: AppConfig, body: dict[str, Any]) -> dict[str, Any]:
@@ -202,6 +227,7 @@ _POST_ROUTES: dict[str, Any] = {
     "/v1/retrieve": _handle_retrieve,
     "/v1/ingest/session": _handle_ingest_session,
     "/v1/ingest/artifact": _handle_ingest_artifact,
+    "/v1/reprocess/artifact": _handle_reprocess_artifact,
     "/v1/sync/vault": _handle_sync_vault,
     "/v1/jobs/run": _handle_jobs_run,
     "/v1/orchestrator/begin-task": _handle_orchestrator_begin_task,

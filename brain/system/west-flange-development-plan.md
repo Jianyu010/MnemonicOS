@@ -406,6 +406,10 @@ CREATE TABLE artifact_figures (
 
 - CLI: `mnemonicos ingest-artifact --file PATH --tag TAG --attachment PATH`
 - HTTP: `POST /v1/ingest/artifact`
+- CLI reprocess:
+  - `mnemonicos reprocess-artifact --archive-id artifact/...`
+  - `mnemonicos reprocess-artifact --failed`
+- HTTP reprocess: `POST /v1/reprocess/artifact`
 
 The response should include:
 
@@ -420,6 +424,10 @@ The response should include:
 - `needs_visual_pass`
 - `needs_manual_projection`
 - `image_only_pdf`
+
+Reprocessing must update the same artifact archive id, manifest, archive row,
+and figure metadata. It must not duplicate true raw or create artifact archive
+chunks.
 
 ---
 

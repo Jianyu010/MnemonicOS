@@ -58,6 +58,25 @@ paths:
               schema:
                 $ref: '#/components/schemas/IngestArtifactResponse'
 
+  /v1/reprocess/artifact:
+    post:
+      operationId: reprocessArtifact
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReprocessArtifactRequest'
+      responses:
+        '200':
+          description: Artifact reprocessed
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/IngestArtifactResponse'
+                  - $ref: '#/components/schemas/ReprocessArtifactBatchResponse'
+
   /v1/sync/vault:
     post:
       operationId: syncVault
@@ -283,6 +302,26 @@ components:
       required: [archive_id, raw_path, manifest_path, ingest_status, source_format,
                  figure_count, warnings, needs_visual_pass, needs_manual_projection,
                  image_only_pdf]
+
+    ReprocessArtifactRequest:
+      type: object
+      properties:
+        archive_id:
+          type: string
+          description: Artifact archive id to reprocess.
+        failed:
+          type: boolean
+          default: false
+          description: Reprocess all artifacts currently marked failed_extraction.
+
+    ReprocessArtifactBatchResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/IngestArtifactResponse'
+      required: [results]
 
     SyncVaultRequest:
       type: object
