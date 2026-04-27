@@ -258,6 +258,34 @@ def decide_writeback_to_json(result: DecideWritebackResult) -> str:
     return json.dumps(result.to_dict(), indent=2)
 
 
+_CONTENT_MARKERS = frozenset({"WHEN", "DO", "Steps", "Cause", "Fix", "Avoid", "→", "->", "NOT"})
+
+
+def _hit_has_content_quality(hit: RetrieveHit) -> bool:
+    """Return True if the hit carries actionable content signal.
+
+    A hit fails quality when summary is absent/title-copy AND excerpt is too
+    short or lacks any actionable marker.  In that case the note body is likely
+    empty and trusting it as sufficient_current would mislead the agent.
+    """
+    title = hit.title.strip()
+    summary = hit.summary.strip()
+    excerpt = hit.excerpt.strip()
+
+    summary_has_signal = bool(summary) and summary != title
+    if summary_has_signal:
+        return True
+
+    # Fall back to excerpt analysis when summary gives no signal.
+    excerpt_words = excerpt.split()
+    if len(excerpt_words) >= 20:
+        return True
+    if any(marker in excerpt for marker in _CONTENT_MARKERS):
+        return True
+
+    return False
+
+
 def _assess_hits(hits: list[RetrieveHit], *, temporality: str) -> RetrievalAssessment:
     if not hits:
         return RetrievalAssessment(
@@ -330,6 +358,12 @@ def _assess_hits(hits: list[RetrieveHit], *, temporality: str) -> RetrievalAsses
     else:
         state = "insufficient_stale"
         recommendation = "research_fresh"
+
+    # Quality gate: downgrade sufficient_current if top hit has no actionable content.
+    # A fresh note with empty body misleads agents into trusting it; partial forces verification.
+    if state == "sufficient_current" and not _hit_has_content_quality(top_hit):
+        state = "partial"
+        recommendation = "reuse_with_verification"
 
     return RetrievalAssessment(
         state=state,

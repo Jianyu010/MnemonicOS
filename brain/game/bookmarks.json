@@ -1,5 +1,6 @@
 [
   "procedure/pattern-code-safety-task-failed-environment-obstacle-keep-adding-special-functions-to-this-calcul",
   "procedure/use-read-file-before-write-file-when-modifying-existing-code",
-  "incident/orchestrator-finish-task-did-not-call-ingest-session"
+  "incident/orchestrator-finish-task-did-not-call-ingest-session",
+  "concept/quantum-mechanics"
 ]

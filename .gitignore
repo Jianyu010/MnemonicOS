@@ -7,6 +7,9 @@ development/
 
 # Build artifacts
 /src/mnemonicos.egg-info/
+/outputs/
+/tools/
+/tmp/
 
 # Claude Code worktrees
 /.claude/worktrees/

@@ -107,17 +107,35 @@ def _build_player_frames(pygame):
 
 def _build_player_frame(pygame, facing: str, step: int):
     surface = pygame.Surface((28, 28), pygame.SRCALPHA)
-    pygame.draw.rect(surface, color("blue"), (4, 4, 20, 20), border_radius=8)
-    pygame.draw.rect(surface, color("parchment"), (8, 8 + (step % 2), 12, 6), border_radius=3)
+    skin = (236, 198, 166)
+    hair = (82, 56, 30)
+    cloak = color("blue")
+    boots = (76, 54, 36)
+    stride = 1 if step % 2 else 0
+    pygame.draw.circle(surface, skin, (14, 6), 4)
+    pygame.draw.ellipse(surface, hair, (9, 2, 10, 6))
+    pygame.draw.rect(surface, cloak, (9, 10, 10, 10), border_radius=4)
+    pygame.draw.rect(surface, (242, 231, 214), (12, 11, 4, 6), border_radius=2)
     if facing == "north":
-        marker = pygame.Rect(10, 4, 8, 4)
+        pygame.draw.line(surface, cloak, (10, 13), (6, 16), 2)
+        pygame.draw.line(surface, cloak, (18, 13), (22, 16), 2)
+        pygame.draw.line(surface, boots, (11, 20), (10, 26 - stride), 2)
+        pygame.draw.line(surface, boots, (17, 20), (18, 25 + stride), 2)
     elif facing == "south":
-        marker = pygame.Rect(10, 20, 8, 4)
+        pygame.draw.line(surface, cloak, (10, 13), (7, 18), 2)
+        pygame.draw.line(surface, cloak, (18, 13), (21, 18), 2)
+        pygame.draw.line(surface, boots, (11, 20), (9, 26 - stride), 2)
+        pygame.draw.line(surface, boots, (17, 20), (19, 25 + stride), 2)
     elif facing == "west":
-        marker = pygame.Rect(4, 10, 4, 8)
+        pygame.draw.line(surface, cloak, (9, 13), (5, 17), 2)
+        pygame.draw.line(surface, cloak, (18, 13), (15, 17), 2)
+        pygame.draw.line(surface, boots, (12, 20), (10, 26 - stride), 2)
+        pygame.draw.line(surface, boots, (17, 20), (16, 25 + stride), 2)
     else:
-        marker = pygame.Rect(20, 10, 4, 8)
-    pygame.draw.rect(surface, color("parchment"), marker, border_radius=2)
+        pygame.draw.line(surface, cloak, (10, 13), (13, 17), 2)
+        pygame.draw.line(surface, cloak, (19, 13), (23, 17), 2)
+        pygame.draw.line(surface, boots, (11, 20), (12, 25 + stride), 2)
+        pygame.draw.line(surface, boots, (16, 20), (18, 26 - stride), 2)
     return surface
 
 

@@ -16,6 +16,11 @@ reviewed_at:
 last_verified_at:
 verified_by:
 applicability:
+summary: ""
+# Optional fields (not yet in NoteRecord — add now, retrieval-visible once parser supports):
+# control_summary: "WHEN [trigger] → DO [action] (NOT [anti-pattern])"
+# warnings:
+#   - "AVOID: ..."
 ---
 
 ## Failure Modes

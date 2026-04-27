@@ -27,6 +27,122 @@ INLINE_ITEM_PATTERN = re.compile(
 )
 WORD_PATTERN = re.compile(r"\S+")
 
+# Patterns for session content extraction (options A and B)
+_NUANCE_LINE_RE = re.compile(r"^Nuance:\s*(.+?)$", re.MULTILINE)
+_NEXT_LINE_RE = re.compile(r"^(?:Next|Next Time):\s*(.+?)$", re.MULTILINE)
+_WHAT_LINE_RE = re.compile(r"^(?:What|What Happened):\s*(.+?)$", re.MULTILINE)
+_TAKEAWAY_SECTION_RE = re.compile(
+    r"##\s+Reusable Takeaways\s*\n(.*?)(?=\n##|\Z)", re.DOTALL
+)
+_TAKEAWAY_BULLET_RE = re.compile(r"^\s*[-*]\s+(.+?)$", re.MULTILINE)
+_ERROR_TOKEN_RE = re.compile(
+    r"\b[A-Z][a-zA-Z]*(?:Error|Exception|Warning|Timeout)\b"
+    r"|\bexit\s+[012]\b"
+    r"|\bTIMEOUT\b"
+    r"|\bNEEDS_REVISION\b",
+)
+
+
+def _synthesize_summary(item: dict[str, Any], session_content: str) -> str:
+    """Build a compact, vocabulary-rich summary if item lacks one.
+
+    Priority:
+    1. Item already has a non-title summary  → keep it.
+    2. Nuance: + Next: lines              → compact control signal.
+    3. First Reusable Takeaway bullet     → use verbatim.
+    4. What: line                         → use as situation summary.
+    5. Procedure with steps               → gene template from steps.
+    6. Incident with symptom/fix          → error-aware situation/fix sentence.
+    7. Next: line                         → use verbatim.
+    8. Return empty string (let caller fall through to summarize_text).
+    """
+    title = str(item.get("title", "")).strip()
+    existing = str(item.get("summary", "")).strip()
+    if existing and existing.casefold() != title.casefold():
+        return existing
+
+    item_type = str(item.get("type", "")).casefold()
+
+    nuance = _line_value(_NUANCE_LINE_RE, session_content)
+    next_line = _line_value(_NEXT_LINE_RE, session_content)
+    if nuance:
+        if next_line and not _looks_like_control_signal(nuance):
+            return f"WHEN {nuance} → {next_line}"
+        return nuance
+
+    takeaway_section = _TAKEAWAY_SECTION_RE.search(session_content)
+    if takeaway_section:
+        bullet = _TAKEAWAY_BULLET_RE.search(takeaway_section.group(1))
+        if bullet:
+            return bullet.group(1).strip()
+
+    what_line = _line_value(_WHAT_LINE_RE, session_content)
+    if what_line:
+        return what_line
+
+    if item_type == "procedure":
+        steps = item.get("steps") or []
+        non_avoid = [s for s in steps if not str(s).strip().lower().startswith("avoid:")]
+        avoid = [s for s in steps if str(s).strip().lower().startswith("avoid:")]
+        if non_avoid:
+            do_clause = str(non_avoid[0]).strip()
+            not_clause = str(avoid[0]).replace("Avoid:", "").replace("avoid:", "").strip() if avoid else ""
+            return f"{do_clause} (NOT: {not_clause})" if not_clause else do_clause
+
+    if item_type == "incident":
+        fix = str(item.get("fix", "")).strip()
+        symptom = str(item.get("symptom", "")).strip()
+        if symptom and fix and not _is_placeholder_signal(fix):
+            return f"WHEN {symptom[:160]} → {fix[:160]}"
+        if symptom and 10 < len(symptom) <= 280:
+            return f"WHEN {symptom}"
+        if fix and 10 < len(fix) <= 280 and not _is_placeholder_signal(fix):
+            return f"Fix: {fix}"
+
+    if next_line:
+        return next_line
+
+    return ""
+
+
+def _line_value(pattern: re.Pattern[str], text: str) -> str:
+    match = pattern.search(text)
+    return match.group(1).strip() if match else ""
+
+
+def _looks_like_control_signal(text: str) -> bool:
+    return "→" in text or "->" in text or text.lstrip().upper().startswith("WHEN ")
+
+
+def _is_placeholder_signal(text: str) -> bool:
+    lowered = " ".join(text.casefold().split())
+    return (
+        "needs_revision" in lowered
+        or lowered in {"the phase 3 milestone", "the phase milestone"}
+        or lowered.startswith("[needs_revision]")
+    )
+
+
+def _extract_error_aliases(item: dict[str, Any], session_content: str = "") -> list[str]:
+    """Extract error/exception class names from item fields for alias injection.
+
+    Scans item-level fields and the surrounding session text.  The session text
+    catches AI Firm tool-experience entries where the future query term appears
+    in Nuance/What/Next lines rather than the explicit memory item.
+    """
+    fields = [
+        str(item.get("title", "")),
+        str(item.get("summary", "")),
+        str(item.get("body", "")),
+        str(item.get("symptom", "")),
+        str(item.get("fix", "")),
+        session_content,
+    ]
+    for step in (item.get("steps") or []):
+        fields.append(str(step))
+    combined = " ".join(fields)
+    return list(dict.fromkeys(_ERROR_TOKEN_RE.findall(combined)))
+
 TYPE_TO_DIRECTORY = {
     "person": "people",
     "project": "projects",
@@ -732,6 +848,22 @@ def _promote_session_content(
         normalized = _normalize_item(raw_item, archive_id=archive_id, now=now)
         if normalized is None:
             continue
+
+        # Option A: enrich summary with vocabulary-rich signal if item lacks one.
+        synthesized = _synthesize_summary(raw_item, content)
+        if synthesized:
+            existing_summary = str(normalized.get("summary", "")).strip()
+            title = str(normalized.get("title", "")).strip()
+            if not existing_summary or existing_summary.casefold() == title.casefold():
+                normalized["summary"] = synthesized
+
+        # Option B: inject error/exception token aliases for exact-hit retrieval.
+        error_aliases = _extract_error_aliases(raw_item, content)
+        if error_aliases:
+            normalized["aliases"] = _merge_unique(
+                list(normalized.get("aliases") or []), error_aliases
+            )
+
         if chain_context.get("chain_extraction") != "no_chain":
             for key in ("chain_id", "chain_confidence", "chain_question", "chain_summary", "problem_class"):
                 value = chain_context.get(key, "").strip()

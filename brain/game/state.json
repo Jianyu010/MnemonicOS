@@ -1,6 +1,11 @@
 {
   "scene": "library",
-  "x": 236.14,
-  "y": 1044.28,
-  "bookmarks": []
+  "x": 1315.92,
+  "y": 791.82,
+  "bookmarks": [
+    "procedure/pattern-code-safety-task-failed-environment-obstacle-keep-adding-special-functions-to-this-calcul",
+    "procedure/use-read-file-before-write-file-when-modifying-existing-code",
+    "incident/orchestrator-finish-task-did-not-call-ingest-session",
+    "concept/quantum-mechanics"
+  ]
 }

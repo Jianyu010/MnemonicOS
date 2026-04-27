@@ -176,6 +176,54 @@ class LibraryRpgMechanicsTest(unittest.TestCase):
             self.assertEqual(runtime.follow_thread_sections, [])
             self.assertEqual(runtime.status_line, "Thread trail cleared.")
 
+    def test_carrying_scroll_to_daemon_opens_counter_overlay(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            _seed_workspace(workspace)
+            snapshot = BrainLoader(workspace).load()
+            layout = build_library_layout(snapshot)
+            runtime = GameRuntime(
+                settings=types.SimpleNamespace(window_width=1280, window_height=720, workspace_root=workspace),
+                snapshot=snapshot,
+                indexes=build_indexes(snapshot),
+                scenes={"library": layout, "vault": build_dungeon_layout(snapshot)},
+                current_scene="library",
+                player=PlayerState(100, 100),
+            )
+            runtime.daemon_socket_state = "online"
+            runtime.focused_entry_id = "procedure/open-daemon-counter"
+            runtime.overlay.mode = "inspect"
+            fake_pygame = types.SimpleNamespace(K_DOWN=-1, K_s=-1, K_UP=-1, K_w=-1, K_b=66, K_j=-1, K_f=-1)
+            handle_inspector_keys(runtime, fake_pygame.K_b, fake_pygame)
+            runtime.nearest_object_id = "daemon:counter"
+            from mnemonicos_game.main import interact
+            interact(runtime)
+            self.assertEqual(runtime.overlay.mode, "counter-menu")
+            self.assertEqual(runtime.selected_daemon_target, "procedure/open-daemon-counter")
+            self.assertEqual(runtime.carried_entry_id, "procedure/open-daemon-counter")
+
+    def test_escape_from_counter_returns_summoned_materials(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            _seed_workspace(workspace)
+            snapshot = BrainLoader(workspace).load()
+            runtime = GameRuntime(
+                settings=types.SimpleNamespace(window_width=1280, window_height=720, workspace_root=workspace),
+                snapshot=snapshot,
+                indexes=build_indexes(snapshot),
+                scenes={"library": build_library_layout(snapshot)},
+                current_scene="library",
+                player=PlayerState(100, 100),
+            )
+            runtime.overlay.mode = "counter-menu"
+            runtime.carried_entry_id = "procedure/open-daemon-counter"
+            runtime.selected_daemon_target = "procedure/open-daemon-counter"
+            fake_pygame = types.SimpleNamespace(K_ESCAPE=27)
+            handle_keydown(runtime, fake_pygame.K_ESCAPE, fake_pygame)
+            self.assertEqual(runtime.overlay.mode, "none")
+            self.assertIsNone(runtime.carried_entry_id)
+            self.assertIsNone(runtime.selected_daemon_target)
+
     def test_daemon_state_label_prefers_runtime_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             workspace = Path(tmp_dir)
@@ -357,6 +405,7 @@ class LibraryRpgMechanicsTest(unittest.TestCase):
             fake_pygame = types.SimpleNamespace(K_DOWN=-1, K_s=-1, K_UP=-1, K_w=-1, K_b=66, K_j=-1, K_f=-1)
             handle_inspector_keys(runtime, fake_pygame.K_b, fake_pygame)
             self.assertEqual(runtime.bookmarks, ["2026-04-16-120000-codex-task-build-library"])
+            self.assertEqual(runtime.carried_session_slug, "2026-04-16-120000-codex-task-build-library")
 
     def test_escape_return_keeps_overlay_in_place(self) -> None:
         runtime = GameRuntime(

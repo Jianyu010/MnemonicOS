@@ -10,7 +10,7 @@ major missing architecture.
 
 Turn the spec into a small local service that can:
 
-1. ingest raw sessions and documents into the vault
+1. ingest true raw sessions and documents into the vault
 2. synchronize markdown notes into SQLite search indexes
 3. run consolidation and hygiene jobs
 4. answer retrieval requests through a minimal API
@@ -68,8 +68,10 @@ Validation policy:
 
 Responsibility:
 
-- write raw session/doc files first
-- chunk and summarize archive content
+- write original raw session/doc/log/artifact files first
+- preserve raw as unmodified witness material
+- create rebuildable projections such as extracted text, chunks, spans, and metadata
+- chunk and summarize projections, not as a replacement for raw
 - extract candidate memories
 - apply promotion rules
 - upsert canonical notes or review items
@@ -78,6 +80,7 @@ Atomicity:
 
 - one ingest transaction per source
 - if note upserts fail after raw save, keep the raw source and record a failed job
+- upstream agents and tools may attach metadata, but should not be required to pre-trim or reshape material before archival
 
 ### 4. Search Materializer
 

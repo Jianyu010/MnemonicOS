@@ -17,12 +17,12 @@ from .engine import AnimationClock, SoundManager, ease_out_quad
 from .entities.daemon_npc import read_daemon_log, read_daemon_status_report, run_daemon_status_report_job
 from .entities.marker import entry_color, freshness_label
 from .persistence import load_bookmarks, load_prefs, restore_runtime_state, save_bookmarks, save_prefs, save_runtime_state, sync_bookmarks
-from .runtime import BOARD_MAINTENANCE_MENU, BOARD_MENU, BrowserItem, DAEMON_MENU, GameRuntime, INTAKE_TYPES, IntakeDraft, OverlayState, PlayerState, switch_scene
+from .runtime import BOARD_MAINTENANCE_MENU, BOARD_MENU, BrowserItem, COUNTER_MENU, DAEMON_MENU, GameRuntime, INTAKE_TYPES, IntakeDraft, OverlayState, PlayerState, switch_scene
 from .scenes import DungeonScene, LibraryScene
 from .services.digest import build_guidance, build_indexes, build_linked_digest, build_provenance, resolve_jump_candidates
 from .settings import GameSettings
 from .ui.markdown_renderer import render_lines
-from .world.routing import related_section_keys
+from .world.routing import related_note_ids, related_section_keys
 from .world.tilemap import build_dungeon_layout, build_library_layout
 
 
@@ -188,6 +188,17 @@ def handle_keydown(runtime: GameRuntime, key: int, pygame, sound_manager: SoundM
         if sound_manager is not None:
             sound_manager.play("inspect_close")
         return
+    if runtime.overlay.mode == "counter-menu" and key == pygame.K_ESCAPE:
+        close_counter_overlay(runtime)
+        if sound_manager is not None:
+            sound_manager.play("inspect_close")
+        return
+    if runtime.overlay.mode == "counter-links" and key == pygame.K_ESCAPE:
+        runtime.overlay = build_counter_menu_overlay(runtime)
+        runtime.status_line = "The daemon waits for the next instruction."
+        if sound_manager is not None:
+            sound_manager.play("inspect_close")
+        return
     if runtime.overlay.mode == "none" and key == pygame.K_f and runtime.follow_thread_source:
         clear_follow_thread(runtime)
         if sound_manager is not None:
@@ -238,6 +249,47 @@ def handle_keydown(runtime: GameRuntime, key: int, pygame, sound_manager: SoundM
             runtime.overlay = build_bookmarks_overlay(runtime)
             if sound_manager is not None:
                 sound_manager.play("inspect_close")
+        return
+    if runtime.overlay.mode == "counter-menu":
+        if key in (pygame.K_DOWN, pygame.K_s):
+            runtime.overlay.menu_index = (runtime.overlay.menu_index + 1) % len(COUNTER_MENU)
+            if sound_manager is not None:
+                sound_manager.play("menu_move")
+        elif key in (pygame.K_UP, pygame.K_w):
+            runtime.overlay.menu_index = (runtime.overlay.menu_index - 1) % len(COUNTER_MENU)
+            if sound_manager is not None:
+                sound_manager.play("menu_move")
+        elif key in (pygame.K_RETURN, pygame.K_SPACE, pygame.K_b):
+            run_counter_action(runtime)
+            if sound_manager is not None:
+                sound_manager.play("menu_confirm")
+        return
+    if runtime.overlay.mode == "counter-links":
+        items = runtime.overlay.browser_items
+        n = len(items)
+        _panel_h = runtime.settings.window_height - 160
+        _page = max(1, (_panel_h - 120) // 62)
+        if key in (pygame.K_DOWN, pygame.K_s) and n:
+            runtime.overlay.browser_cursor = min(runtime.overlay.browser_cursor + 1, n - 1)
+            if runtime.overlay.browser_cursor >= runtime.overlay.browser_scroll + _page:
+                runtime.overlay.browser_scroll += 1
+            if sound_manager is not None:
+                sound_manager.play("menu_move")
+        elif key in (pygame.K_UP, pygame.K_w) and n:
+            runtime.overlay.browser_cursor = max(runtime.overlay.browser_cursor - 1, 0)
+            if runtime.overlay.browser_cursor < runtime.overlay.browser_scroll:
+                runtime.overlay.browser_scroll = runtime.overlay.browser_cursor
+            if sound_manager is not None:
+                sound_manager.play("menu_move")
+        elif key in (pygame.K_RETURN, pygame.K_SPACE) and n:
+            _open_browser_item(runtime, items[runtime.overlay.browser_cursor])
+            if sound_manager is not None:
+                sound_manager.play("menu_confirm")
+        elif key == pygame.K_b:
+            runtime.overlay = build_counter_menu_overlay(runtime)
+            runtime.status_line = "The daemon is ready to act on the carried scroll."
+            if sound_manager is not None:
+                sound_manager.play("daemon_greet")
         return
     if runtime.overlay.mode == "shelf":
         items = runtime.overlay.browser_items
@@ -319,6 +371,12 @@ def handle_keydown(runtime: GameRuntime, key: int, pygame, sound_manager: SoundM
         return
     if key == pygame.K_SPACE:
         interact(runtime, sound_manager)
+    elif key == pygame.K_b and runtime.overlay.mode == "none" and runtime.nearest_object_id == "daemon:counter" and (runtime.carried_entry_id or runtime.carried_session_slug):
+        runtime.overlay = build_counter_menu_overlay(runtime)
+        runtime.status_line = f"Handover complete: {carried_item_label(runtime)} rests on the counter."
+        set_daemon_state(runtime, "consulting", 4.0)
+        if sound_manager is not None:
+            sound_manager.play("daemon_greet")
     elif key == pygame.K_TAB:
         runtime.overlay = build_bookmarks_overlay(runtime)
 
@@ -333,9 +391,7 @@ def handle_inspector_keys(runtime: GameRuntime, key: int, pygame, sound_manager:
         runtime.scroll_hold_direction = -1
         runtime.scroll_hold_elapsed = 0.0
     elif key == pygame.K_b and (runtime.focused_entry_id or runtime.focused_session_slug):
-        bookmark_id = runtime.focused_entry_id or runtime.focused_session_slug
-        add_bookmark(runtime, bookmark_id)
-        runtime.status_line = f"Saved bookmark for {bookmark_id}. Press TAB to reopen it later."
+        carry_current_item(runtime)
         if sound_manager is not None:
             sound_manager.play("bookmark")
     elif key == pygame.K_j and runtime.focused_entry_id:
@@ -508,11 +564,18 @@ def interact(runtime: GameRuntime, sound_manager: SoundManager | None = None) ->
             )
             runtime.status_line = "The daemon is offline."
         else:
-            runtime.overlay = OverlayState(mode="daemon", title="Daemon Counter", body="Choose a bounded service.", menu_index=0)
-            runtime.status_line = "Consulting the daemon."
-            set_daemon_state(runtime, "consulting", 4.0)
-            if sound_manager is not None:
-                sound_manager.play("daemon_greet")
+            if runtime.carried_entry_id or runtime.carried_session_slug:
+                runtime.overlay = build_counter_menu_overlay(runtime)
+                runtime.status_line = f"Handover complete: {carried_item_label(runtime)} rests on the counter."
+                set_daemon_state(runtime, "consulting", 4.0)
+                if sound_manager is not None:
+                    sound_manager.play("daemon_greet")
+            else:
+                runtime.overlay = OverlayState(mode="daemon", title="Daemon Counter", body="Choose a bounded service.", menu_index=0)
+                runtime.status_line = "Consulting the daemon."
+                set_daemon_state(runtime, "consulting", 4.0)
+                if sound_manager is not None:
+                    sound_manager.play("daemon_greet")
         return
     if obj.kind == "board":
         runtime.overlay = OverlayState(mode="board", title="Daemon Notice Board", body="Choose what to inspect.", menu_index=0)
@@ -715,6 +778,9 @@ def draw_overlay(surface, runtime: GameRuntime, small_font, tiny_font, pygame) -
     if runtime.overlay.mode == "bookmarks":
         draw_bookmarks_overlay(surface, runtime, panel, small_font, tiny_font, pygame)
         return
+    if runtime.overlay.mode in {"counter-menu", "counter-links"}:
+        draw_counter_overlay(surface, runtime, panel, small_font, tiny_font, pygame)
+        return
 
     if runtime.overlay.mode == "picker":
         for index, item in enumerate(runtime.overlay.picker_candidates):
@@ -739,7 +805,7 @@ def draw_overlay(surface, runtime: GameRuntime, small_font, tiny_font, pygame) -
     if runtime.overlay.mode == "inspect":
         footer_text += " | hold UP/DOWN scroll"
         if runtime.focused_entry_id:
-            footer_text += " | J jump-source | F follow-thread | B save-bookmark"
+            footer_text += " | J jump-source | F follow-thread | B carry-to-daemon"
     footer = tiny_font.render(footer_text, True, (90, 80, 70))
     surface.blit(footer, (panel.x + 24, panel.bottom - 36))
 
@@ -819,13 +885,15 @@ def _open_browser_item(runtime: GameRuntime, hit: BrowserItem) -> None:
 
 
 def handle_mouse_down(runtime: GameRuntime, pos: tuple[int, int], pygame) -> None:
-    if runtime.overlay.mode not in {"shelf", "bookmarks"}:
+    if runtime.overlay.mode not in {"shelf", "bookmarks", "counter"}:
         return
     hit = shelf_item_at_pos(runtime, pos, pygame)
     if hit is None:
         return
     if runtime.overlay.mode == "bookmarks":
         open_bookmark_item(runtime, hit)
+    elif runtime.overlay.mode == "counter":
+        _open_browser_item(runtime, hit)
     else:
         _open_browser_item(runtime, hit)
 
@@ -837,7 +905,7 @@ def handle_mouse_wheel(runtime: GameRuntime, delta_y: int) -> None:
         elif delta_y > 0:
             runtime.overlay.scroll = max(0, runtime.overlay.scroll - 3)
         return
-    if runtime.overlay.mode in {"shelf", "bookmarks"}:
+    if runtime.overlay.mode in {"shelf", "bookmarks", "counter"}:
         if delta_y < 0:
             runtime.overlay.browser_scroll += 2
         elif delta_y > 0:
@@ -909,6 +977,154 @@ def build_bookmarks_overlay(runtime: GameRuntime) -> OverlayState:
     return OverlayState(mode="bookmarks", title="Bookmarks", body=body, browser_items=items)
 
 
+def carry_current_item(runtime: GameRuntime) -> None:
+    entry_id = runtime.focused_entry_id
+    session_slug = runtime.focused_session_slug
+    if entry_id is not None:
+        if runtime.carried_entry_id == entry_id:
+            clear_carried_item(runtime)
+            return
+        runtime.carried_entry_id = entry_id
+        runtime.carried_session_slug = None
+        add_bookmark(runtime, entry_id)
+        entry = runtime.indexes.note_by_id.get(entry_id)
+        title = entry.title if entry is not None else entry_id
+        runtime.overlay = OverlayState()
+        runtime.overlay_return = None
+        runtime.overlay_slide = 0.0
+        runtime.status_line = f"Carrying {title}. Walk to the daemon counter and press B to hand it over."
+        return
+    if session_slug is not None:
+        if runtime.carried_session_slug == session_slug:
+            clear_carried_item(runtime)
+            return
+        runtime.carried_entry_id = None
+        runtime.carried_session_slug = session_slug
+        add_bookmark(runtime, session_slug)
+        book = runtime.indexes.session_by_slug.get(session_slug)
+        title = book.title if book is not None else session_slug
+        runtime.overlay = OverlayState()
+        runtime.overlay_return = None
+        runtime.overlay_slide = 0.0
+        runtime.status_line = f"Carrying {title}. Walk to the daemon counter and press B to hand it over."
+
+
+def clear_carried_item(runtime: GameRuntime) -> None:
+    runtime.carried_entry_id = None
+    runtime.carried_session_slug = None
+    runtime.status_line = "Set the carried scroll back on its shelf."
+
+
+def carried_item_label(runtime: GameRuntime) -> str:
+    if runtime.carried_entry_id and runtime.carried_entry_id in runtime.indexes.note_by_id:
+        return runtime.indexes.note_by_id[runtime.carried_entry_id].title
+    if runtime.carried_session_slug and runtime.carried_session_slug in runtime.indexes.session_by_slug:
+        return runtime.indexes.session_by_slug[runtime.carried_session_slug].title
+    return "the carried scroll"
+
+
+def build_counter_menu_overlay(runtime: GameRuntime) -> OverlayState:
+    if runtime.carried_entry_id and runtime.carried_entry_id in runtime.indexes.note_by_id:
+        runtime.selected_daemon_target = runtime.carried_entry_id
+    elif runtime.carried_session_slug:
+        runtime.selected_daemon_target = None
+    body = f"{carried_item_label(runtime)} is open on the counter. What should the daemon do?"
+    return OverlayState(mode="counter-menu", title="Daemon Counter", body=body, menu_index=0)
+
+
+def build_counter_links_overlay(runtime: GameRuntime) -> OverlayState:
+    items: list[BrowserItem] = []
+    body = "Summoned materials:"
+    if runtime.carried_entry_id and runtime.carried_entry_id in runtime.indexes.note_by_id:
+        entry = runtime.indexes.note_by_id[runtime.carried_entry_id]
+        runtime.selected_daemon_target = entry.note_id
+        items.append(BrowserItem(item_id=entry.note_id, kind="entry", label=entry.title, subtitle="carried scroll"))
+        seen_ids = {entry.note_id}
+        for related_id in related_note_ids(entry, runtime.snapshot)[:5]:
+            candidate = runtime.indexes.note_by_id.get(related_id)
+            if candidate is None or candidate.note_id in seen_ids:
+                continue
+            items.append(BrowserItem(item_id=candidate.note_id, kind="entry", label=candidate.title, subtitle=f"linked {candidate.note_type}"))
+            seen_ids.add(candidate.note_id)
+        candidates, _reason = resolve_jump_candidates(entry, runtime.snapshot, runtime.indexes)
+        for book in candidates[:3]:
+            items.append(BrowserItem(item_id=book.session_slug, kind="book", label=book.title, subtitle="source session"))
+    elif runtime.carried_session_slug and runtime.carried_session_slug in runtime.indexes.session_by_slug:
+        book = runtime.indexes.session_by_slug[runtime.carried_session_slug]
+        items.append(BrowserItem(item_id=book.session_slug, kind="book", label=book.title, subtitle="carried session"))
+        session_ref = f"session/{book.session_slug}"
+        for candidate in runtime.snapshot.note_entries:
+            if session_ref in candidate.source_refs:
+                items.append(BrowserItem(item_id=candidate.note_id, kind="entry", label=candidate.title, subtitle=f"linked {candidate.note_type}"))
+    if len(items) <= 1:
+        body = "The daemon studies the carried scroll, but no linked materials answered the summons."
+    return OverlayState(mode="counter-links", title="Summoned Materials", body=body, browser_items=items)
+
+
+def run_counter_action(runtime: GameRuntime) -> None:
+    choice = COUNTER_MENU[runtime.overlay.menu_index]
+    if choice == "Summon all linked wikis":
+        runtime.overlay = build_counter_links_overlay(runtime)
+        runtime.status_line = "The daemon summoned linked materials to the counter."
+        set_daemon_state(runtime, "guiding", 4.0)
+        return
+    if choice == "Summarize the scroll":
+        body = summarize_carried_scroll(runtime)
+        runtime.overlay_return = build_counter_menu_overlay(runtime)
+        runtime.overlay = OverlayState(mode="inspect", title="Counter Summary", body=body)
+        runtime.overlay_slide = 1.0
+        runtime.status_line = "The daemon summarizes the scroll."
+        return
+    if choice == "Teleport to the raw material":
+        teleport_to_carried_source(runtime)
+        return
+    close_counter_overlay(runtime)
+
+
+def summarize_carried_scroll(runtime: GameRuntime) -> str:
+    if runtime.carried_entry_id and runtime.carried_entry_id in runtime.indexes.note_by_id:
+        entry = runtime.indexes.note_by_id[runtime.carried_entry_id]
+        return build_linked_digest(entry, runtime.snapshot, runtime.indexes)
+    if runtime.carried_session_slug and runtime.carried_session_slug in runtime.indexes.session_by_slug:
+        book = runtime.indexes.session_by_slug[runtime.carried_session_slug]
+        return f"Summary for {book.title}\n\nThis is a raw session book currently carried to the counter.\n\nOpen it from the counter to inspect the full contents."
+    return "The daemon has nothing to summarize."
+
+
+def teleport_to_carried_source(runtime: GameRuntime) -> None:
+    if runtime.carried_entry_id and runtime.carried_entry_id in runtime.indexes.note_by_id:
+        entry = runtime.indexes.note_by_id[runtime.carried_entry_id]
+        candidates, reason = resolve_jump_candidates(entry, runtime.snapshot, runtime.indexes)
+        if len(candidates) == 1:
+            jump_to_session(runtime, candidates[0], open_overlay=True)
+            runtime.status_line = "The daemon teleported you to the raw source."
+            return
+        if len(candidates) > 1:
+            runtime.overlay = OverlayState(mode="picker", title="Jump To Source", body="Select a source session.")
+            runtime.overlay.picker_index = 0
+            runtime.overlay.picker_candidates = candidates
+            runtime.status_line = "Choose which raw source book to open."
+            return
+        if reason == "non_session_only":
+            runtime.status_line = "The carried scroll has source refs, but none resolve to raw session books."
+            return
+    if runtime.carried_session_slug and runtime.carried_session_slug in runtime.indexes.session_by_slug:
+        jump_to_session(runtime, runtime.indexes.session_by_slug[runtime.carried_session_slug], open_overlay=True)
+        runtime.status_line = "The daemon returned you to the carried raw session."
+        return
+    runtime.status_line = "No raw source is available for the carried scroll."
+
+
+def close_counter_overlay(runtime: GameRuntime) -> None:
+    clear_carried_item(runtime)
+    runtime.selected_daemon_target = None
+    runtime.overlay = OverlayState()
+    runtime.overlay_return = None
+    runtime.overlay_slide = 0.0
+    runtime.status_line = "The daemon returned the summoned materials to their shelves."
+    set_daemon_state(runtime, "sorting", 2.5)
+
+
 def build_onboarding_overlay() -> OverlayState:
     body = (
         "Welcome to MenomicOS\n\n"
@@ -916,7 +1132,7 @@ def build_onboarding_overlay() -> OverlayState:
         "Inspect: Space opens the nearby shelf, board, stair, or note.\n"
         "Trace: J jumps to a source session, and F projects a follow-thread trail.\n"
         "Consult: Step to the daemon counter and press Space for bounded services.\n"
-        "Bookmark: B saves the current note or session, and TAB opens saved routes.\n\n"
+        "Present: B carries the current note or session to the daemon, and TAB opens saved routes.\n\n"
         "Press any key to begin."
     )
     return OverlayState(mode="onboarding", title="Welcome", body=body)
@@ -1279,6 +1495,43 @@ def draw_bookmarks_overlay(surface, runtime: GameRuntime, panel, small_font, tin
     )
 
 
+def draw_counter_overlay(surface, runtime: GameRuntime, panel, small_font, tiny_font, pygame) -> None:
+    if runtime.overlay.mode == "counter-menu":
+        body_lines = render_lines(runtime.overlay.body, 92)
+        for index, line in enumerate(body_lines[:3]):
+            text = _render_markdown_line(line, small_font, tiny_font)
+            surface.blit(text, (panel.x + 24, panel.y + 56 + index * 20))
+        scroll_rect = pygame.Rect(panel.x + 28, panel.y + 122, 72, 92)
+        pygame.draw.rect(surface, (247, 236, 205), scroll_rect, border_radius=8)
+        pygame.draw.rect(surface, (126, 94, 62), scroll_rect, 2, border_radius=8)
+        pygame.draw.line(surface, (126, 94, 62), (scroll_rect.x + 10, scroll_rect.y + 22), (scroll_rect.right - 10, scroll_rect.y + 22), 2)
+        pygame.draw.line(surface, (126, 94, 62), (scroll_rect.x + 10, scroll_rect.y + 38), (scroll_rect.right - 14, scroll_rect.y + 38), 2)
+        for index, item in enumerate(COUNTER_MENU):
+            color = (30, 20, 18) if index == runtime.overlay.menu_index else (90, 80, 70)
+            prefix = "> " if index == runtime.overlay.menu_index else "  "
+            line = small_font.render(prefix + f"{index + 1}. {item}", True, color)
+            surface.blit(line, (panel.x + 132, panel.y + 124 + index * 38))
+        help_line = tiny_font.render("UP/DOWN choose, ENTER or B confirm, ESC place back.", True, (90, 80, 70))
+        surface.blit(help_line, (panel.x + 24, panel.bottom - 36))
+        return
+    header = tiny_font.render(runtime.overlay.body, True, (90, 80, 70))
+    surface.blit(header, (panel.x + 24, panel.y + 58))
+    if runtime.overlay.browser_items:
+        _draw_browser_overlay(
+            surface,
+            runtime,
+            panel,
+            small_font,
+            tiny_font,
+            pygame,
+            help_text="UP/DOWN navigate, ENTER inspect, B back to actions, ESC close.",
+            content_top=panel.y + 96,
+        )
+    else:
+        help_line = tiny_font.render("B returns to actions. ESC places the scroll back.", True, (90, 80, 70))
+        surface.blit(help_line, (panel.x + 24, panel.bottom - 36))
+
+
 def draw_shelf_overlay(surface, runtime: GameRuntime, panel, small_font, tiny_font, pygame) -> None:
     _draw_browser_overlay(
         surface,
@@ -1288,13 +1541,14 @@ def draw_shelf_overlay(surface, runtime: GameRuntime, panel, small_font, tiny_fo
         tiny_font,
         pygame,
         help_text="UP/DOWN navigate, ENTER open, click to open, ESC returns.",
+        content_top=panel.y + 84,
     )
 
 
-def _draw_browser_overlay(surface, runtime: GameRuntime, panel, small_font, tiny_font, pygame, *, help_text: str) -> None:
+def _draw_browser_overlay(surface, runtime, panel, small_font, tiny_font, pygame, *, help_text: str, content_top: int) -> None:
     info = tiny_font.render(help_text, True, (90, 80, 70))
     surface.blit(info, (panel.x + 24, panel.y + 52))
-    for vis_index, (item, rect) in enumerate(shelf_item_rects(runtime, panel, pygame)):
+    for vis_index, (item, rect) in enumerate(shelf_item_rects(runtime, panel, pygame, start_y=content_top)):
         item_index = runtime.overlay.browser_scroll + vis_index
         is_cursor = item_index == runtime.overlay.browser_cursor
         bg = (255, 240, 200) if is_cursor else (232, 224, 205)
@@ -1321,11 +1575,12 @@ def _draw_browser_overlay(surface, runtime: GameRuntime, panel, small_font, tiny
         surface.blit(footer, (panel.x + 24, panel.bottom - 36))
 
 
-def _shelf_page_size(panel) -> int:
+def _shelf_page_size(panel, *, start_y: int | None = None) -> int:
     """Number of items that fit between the header hint and the footer line."""
     item_slot = 62  # height(52) + gap(10)
     bottom = getattr(panel, "bottom", panel.y + panel.height)
-    available = (bottom - 36) - (panel.y + 84)
+    content_top = start_y if start_y is not None else panel.y + 84
+    available = (bottom - 36) - content_top
     return max(1, available // item_slot)
 
 
@@ -1336,11 +1591,11 @@ def _shelf_page_size_for_runtime(runtime: GameRuntime) -> int:
     return max(1, available // item_slot)
 
 
-def shelf_item_rects(runtime: GameRuntime, panel, pygame) -> list[tuple[BrowserItem, object]]:
-    start_y = panel.y + 84
+def shelf_item_rects(runtime: GameRuntime, panel, pygame, *, start_y: int = None) -> list[tuple[BrowserItem, object]]:
+    start_y = start_y if start_y is not None else panel.y + 84
     height = 52
     gap = 10
-    page = _shelf_page_size(panel)
+    page = _shelf_page_size(panel, start_y=start_y)
     rects: list[tuple[BrowserItem, object]] = []
     visible_items = runtime.overlay.browser_items[runtime.overlay.browser_scroll : runtime.overlay.browser_scroll + page]
     for index, item in enumerate(visible_items):
@@ -1351,7 +1606,8 @@ def shelf_item_rects(runtime: GameRuntime, panel, pygame) -> list[tuple[BrowserI
 
 def shelf_item_at_pos(runtime: GameRuntime, pos: tuple[int, int], pygame):
     panel = overlay_panel_rect(runtime, pygame)
-    for item, rect in shelf_item_rects(runtime, panel, pygame):
+    start_y = panel.y + 106 if runtime.overlay.mode == "counter" else panel.y + 84
+    for item, rect in shelf_item_rects(runtime, panel, pygame, start_y=start_y):
         if rect.collidepoint(*pos):
             return item
     return None
