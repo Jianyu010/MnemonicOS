@@ -134,6 +134,8 @@ HTTP transport:
 - `GET /v1/health`
 - `POST /v1/retrieve`
 - `POST /v1/ingest/session`
+- `POST /v1/ingest/artifact`
+- `POST /v1/reprocess/artifact`
 - `POST /v1/sync/vault`
 - `POST /v1/jobs/run`
 - `POST /v1/orchestrator/begin-task`
@@ -143,7 +145,7 @@ HTTP transport:
 These mirror the same internal layers:
 
 - query path: `/v1/retrieve`, `/v1/orchestrator/begin-task`, `/v1/orchestrator/mark-failure`
-- store path: `/v1/ingest/session`, `/v1/orchestrator/finish-task`
+- store path: `/v1/ingest/session`, `/v1/ingest/artifact`, `/v1/reprocess/artifact`, `/v1/orchestrator/finish-task`
 - maintenance path: `/v1/sync/vault`, `/v1/jobs/run`
 
 ## Memory Surfaces
@@ -384,6 +386,7 @@ mnemonicos daemon status
 mnemonicos sync --mode full
 mnemonicos orchestrator begin-task "debug the failing auth deploy"
 mnemonicos ingest-session --bridge-id local-cli --session-id session-001 --file ./notes/session.md
+mnemonicos ingest-artifact --file ./docs/paper.pdf --tag research
 mnemonicos daemon run-job process_promotion_queue
 mnemonicos server --host 127.0.0.1 --port 8000
 ```
@@ -413,6 +416,62 @@ PYTHONPATH=src python3 -m second_brain orchestrator begin-task "debug the failin
 ```
 
 `second_brain` is the internal Python package name. `mnemonicos` is the intended user-facing command.
+
+### West-flange artifact ingest
+
+Use artifact ingest for PDFs, HTML/web clips, DOCX, PPTX, Markdown, plain text, logs, and similar true raw material:
+
+```bash
+mnemonicos ingest-artifact --file /path/to/artifact.pdf --tag research --json
+```
+
+This writes the submitted file as immutable true raw and records operational metadata:
+
+```text
+brain/raw/artifacts/{artifact}/
+  original.pdf
+  manifest.json
+```
+
+If you have source-provided companion files, such as separately downloaded figures from a paper, archive them as true raw attachments:
+
+```bash
+mnemonicos ingest-artifact \
+  --file /path/to/paper.pdf \
+  --attachment /path/to/figure1.png \
+  --tag research \
+  --json
+```
+
+Embedded/rendered figures extracted from PDFs, DOCX, or PPTX are not duplicated to disk by default. They are handled as in-memory payloads for the future VLM path, while only non-content figure metadata is persisted.
+
+Artifact ingest intentionally does **not** create `archive_chunks`; normal retrieval should not inject true raw or usable raw artifact content. Check that invariant with:
+
+```bash
+sqlite3 brain/data/archive.db \
+  "select count(*) from archive_chunks where archive_id like 'artifact/%';"
+```
+
+If extraction fails because an optional parser is missing or the artifact has no extractable text, true raw is still retained and marked repairable:
+
+```bash
+sqlite3 brain/data/archive.db \
+  "select id, source_format, ingest_status, failure_reason from archive where id like 'artifact/%' order by ingested_at desc limit 5;"
+```
+
+After installing a missing parser or manually repairing a preserved raw artifact, reprocess the same archive id instead of ingesting a duplicate:
+
+```bash
+mnemonicos reprocess-artifact --archive-id artifact/2026-04-27-161150-example --json
+```
+
+To retry all failed artifact ingests:
+
+```bash
+mnemonicos reprocess-artifact --failed --json
+```
+
+Reprocessing updates the same `archive` row, rewrites `manifest.json`, replaces figure metadata, and still does not create artifact chunks.
 
 ### API entrypoints
 
