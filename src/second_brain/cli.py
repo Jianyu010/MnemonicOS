@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from pathlib import Path
 import signal
 import socket
 import subprocess
@@ -79,7 +80,8 @@ def _build_parser() -> argparse.ArgumentParser:
     artifact_parser = subparsers.add_parser("ingest-artifact", help="Ingest a true raw artifact without persisting extracted content.")
     artifact_parser.add_argument("--file", required=True, help="Path to the artifact file.")
     artifact_parser.add_argument("--tag", action="append", default=[])
-    artifact_parser.add_argument("--attachment", action="append", default=[], help="Source-provided companion image/file to archive with the artifact.")
+    artifact_parser.add_argument("--attachment", action="append", default=[], metavar="PATH_OR_DIR", help="Source-provided companion file or directory of companion files to archive with the artifact. Directories are expanded to their immediate children; use --attachment-recursive to expand recursively.")
+    artifact_parser.add_argument("--attachment-recursive", action="store_true", default=False, help="When an --attachment path is a directory, expand it recursively instead of only immediate children.")
     artifact_parser.add_argument("--json", action="store_true", help="Emit JSON output.")
 
     reprocess_parser = subparsers.add_parser("reprocess-artifact", help="Rerun artifact extraction against preserved true raw.")
@@ -517,9 +519,31 @@ def _ingest_session(
     return 0
 
 
-def _ingest_artifact(config_path: str, file_path: str, tags: list[str], attachments: list[str], emit_json: bool) -> int:
+def _expand_attachments(raw: list[str], *, recursive: bool = False) -> list[str]:
+    """Expand each entry in *raw*: files pass through; directories expand to
+    their children (immediate by default, recursive when *recursive* is True).
+    Expanded paths are sorted for determinism.  Symlinks to files are included;
+    symlinks to directories are not followed.
+    """
+    expanded: list[str] = []
+    for entry in raw:
+        p = Path(entry).expanduser().resolve()
+        if p.is_dir():
+            children = sorted(
+                str(child)
+                for child in (p.rglob("*") if recursive else p.iterdir())
+                if child.is_file()
+            )
+            expanded.extend(children)
+        else:
+            expanded.append(str(p))
+    return expanded
+
+
+def _ingest_artifact(config_path: str, file_path: str, tags: list[str], attachments: list[str], attachment_recursive: bool, emit_json: bool) -> int:
     config = load_config(config_path)
-    result = ingest_artifact(config, path=file_path, tags=tags, attachments=attachments)
+    resolved_attachments = _expand_attachments(attachments, recursive=attachment_recursive)
+    result = ingest_artifact(config, path=file_path, tags=tags, attachments=resolved_attachments)
     payload = {
         "archive_id": result.archive_id,
         "raw_path": result.raw_path,
@@ -1025,7 +1049,7 @@ def main(argv: list[str] | None = None) -> int:
             args.promote_now,
         )
     if args.command == "ingest-artifact":
-        return _ingest_artifact(args.config, args.file, args.tag, args.attachment, args.json)
+        return _ingest_artifact(args.config, args.file, args.tag, args.attachment, args.attachment_recursive, args.json)
     if args.command == "reprocess-artifact":
         return _reprocess_artifact(args.config, args.archive_id, args.failed, args.json)
     if args.command == "capture":

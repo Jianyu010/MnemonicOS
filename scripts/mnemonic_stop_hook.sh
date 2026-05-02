@@ -76,24 +76,70 @@ CONVERSATION_ID=$(echo "$CONVERSATION_ID" | tr -d '\n')
 EPISODE_ID=$(echo "$EPISODE_ID" | tr -d '\n')
 
 if [[ -n "$CONVERSATION_ID" && -n "$EPISODE_ID" ]]; then
-  if [[ -f "$PENDING" && -s "$PENDING" ]]; then
-    PAYLOAD_FILE=$(mktemp /tmp/mnemo_assistant_payload.XXXXXX.json)
-    python3 - "$PENDING" "$PAYLOAD_FILE" <<'PY' 2>/dev/null || true
-import json
-import sys
-pending, target = sys.argv[1:3]
-content = open(pending, encoding="utf-8").read()
-with open(target, "w", encoding="utf-8") as handle:
-    json.dump({"content": content, "source": "pending_summary"}, handle)
+  # Scrape Claude Code transcript for raw assistant message entries this episode.
+  # Each entry's full content array (text, thinking, tool_use blocks) is appended
+  # as its own assistant_message event — no merging, no filtering.
+  TRANSCRIPT=$(find "$HOME/.claude/projects" -name "${SESSION_ID}.jsonl" 2>/dev/null | head -1)
+  EPISODE_MANIFEST="$REPO_ROOT/brain/raw/sessions/$CONVERSATION_ID/episodes/$EPISODE_ID/manifest.json"
+  if [[ -n "$TRANSCRIPT" && -f "$TRANSCRIPT" && -f "$EPISODE_MANIFEST" ]]; then
+    PAYLOADS_FILE=$(mktemp /tmp/mnemo_transcript_payloads.XXXXXX.jsonl)
+    python3 - "$SESSION_ID" "$TRANSCRIPT" "$EPISODE_MANIFEST" "$PAYLOADS_FILE" <<'PY' 2>/dev/null || true
+import json, sys
+from datetime import datetime
+
+session_id, transcript_path, manifest_path, out_path = sys.argv[1:5]
+
+def parse_ts(s):
+    return datetime.fromisoformat(s.replace("Z", "+00:00"))
+
+try:
+    started_at = parse_ts(json.load(open(manifest_path)).get("started_at", ""))
+except Exception:
+    started_at = None
+
+with open(out_path, "w", encoding="utf-8") as out:
+    for raw in open(transcript_path, encoding="utf-8"):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            entry = json.loads(raw)
+        except Exception:
+            continue
+        if entry.get("type") != "assistant":
+            continue
+        if entry.get("sessionId") != session_id:
+            continue
+        if started_at:
+            try:
+                if parse_ts(entry.get("timestamp", "")) < started_at:
+                    continue
+            except Exception:
+                pass
+        content = entry.get("message", {}).get("content", [])
+        if not content:
+            continue
+        payload = {
+            "content": content,
+            "timestamp": entry.get("timestamp"),
+            "source_uuid": entry.get("uuid"),
+            "request_id": entry.get("requestId"),
+        }
+        out.write(json.dumps(payload) + "\n")
 PY
-    "${CLI[@]}" capture append-event \
-      --bridge-id claude \
-      --conversation-id "$CONVERSATION_ID" \
-      --episode-id "$EPISODE_ID" \
-      --type assistant_message \
-      --payload-file "$PAYLOAD_FILE" \
-      --json >/dev/null 2>&1 || true
-    rm -f "$PAYLOAD_FILE"
+    if [[ -s "$PAYLOADS_FILE" ]]; then
+      while IFS= read -r payload_json; do
+        [[ -z "$payload_json" ]] && continue
+        "${CLI[@]}" capture append-event \
+          --bridge-id claude \
+          --conversation-id "$CONVERSATION_ID" \
+          --episode-id "$EPISODE_ID" \
+          --type assistant_message \
+          --payload-json "$payload_json" \
+          --json >/dev/null 2>&1 || true
+      done < "$PAYLOADS_FILE"
+    fi
+    rm -f "$PAYLOADS_FILE"
   fi
 
   "${CLI[@]}" capture end-episode \

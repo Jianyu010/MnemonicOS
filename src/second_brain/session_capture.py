@@ -387,11 +387,19 @@ def _append_transcript(transcript_path: Path, event_type: str, payload: dict[str
     if event_type not in {"user_message", "assistant_message"}:
         return
     content = payload.get("content")
-    if not isinstance(content, str):
+    if isinstance(content, list):
+        # Extract text blocks from raw API content array; skip thinking/tool_use
+        parts = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"]
+        text = "\n".join(p for p in parts if p).strip()
+        if not text:
+            return
+    elif isinstance(content, str):
+        text = content.strip()
+    else:
         return
     heading = "User" if event_type == "user_message" else "Assistant"
     with transcript_path.open("a", encoding="utf-8") as handle:
-        handle.write(f"\n## {heading}\n\n{content.rstrip()}\n")
+        handle.write(f"\n## {heading}\n\n{text}\n")
 
 
 def _update_manifests_after_append(config: AppConfig, conversation_id: str, episode_id: str, *, artifact_delta: int) -> None:

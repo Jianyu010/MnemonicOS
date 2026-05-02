@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Dr Pepper — The Original</title>
+<style>
+  body {
+    margin: 0;
+    background: #1a0005;
+    font-family: 'Georgia', serif;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+  }
+  .poster {
+    background: linear-gradient(160deg, #6B0F1A 0%, #1a0005 60%, #3d0008 100%);
+    color: #f5e6c8;
+    width: 600px;
+    padding: 60px 44px;
+    text-align: center;
+    border: 3px solid #8B1A1A;
+    border-radius: 4px;
+    box-shadow: 0 0 80px rgba(139,26,26,0.5), inset 0 0 60px rgba(0,0,0,0.4);
+    position: relative;
+  }
+  .poster::before {
+    content: '· · ·';
+    display: block;
+    color: #8B1A1A;
+    letter-spacing: 12px;
+    font-size: 1.2em;
+    margin-bottom: 20px;
+  }
+  .year {
+    font-size: 0.85em;
+    letter-spacing: 6px;
+    color: #c4956a;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+  h1 {
+    font-size: 3.8em;
+    margin: 0 0 4px;
+    letter-spacing: 2px;
+    color: #f5e6c8;
+    text-shadow: 2px 2px 12px rgba(139,26,26,0.8);
+    font-style: italic;
+  }
+  .tagline {
+    font-size: 1em;
+    letter-spacing: 5px;
+    text-transform: uppercase;
+    color: #c4956a;
+    margin-bottom: 40px;
+  }
+  .divider {
+    border: none;
+    border-top: 1px solid #8B1A1A;
+    margin: 0 40px 36px;
+    opacity: 0.6;
+  }
+  .facts {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 40px;
+    text-align: left;
+  }
+  .facts li {
+    padding: 12px 16px;
+    margin-bottom: 10px;
+    font-size: 1.05em;
+    line-height: 1.5;
+    border-left: 3px solid #8B1A1A;
+    background: rgba(139,26,26,0.12);
+  }
+  .facts li strong {
+    color: #c4956a;
+    display: block;
+    font-size: 0.75em;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    margin-bottom: 2px;
+  }
+  .verdict {
+    font-size: 1.3em;
+    font-style: italic;
+    color: #c4956a;
+    border-top: 1px solid #8B1A1A;
+    padding-top: 24px;
+    line-height: 1.6;
+  }
+  .footer {
+    margin-top: 24px;
+    font-size: 0.7em;
+    letter-spacing: 3px;
+    color: rgba(196,149,106,0.4);
+    text-transform: uppercase;
+  }
+</style>
+</head>
+<body>
+<div class="poster">
+  <p class="year">Est. 1885 · Waco, Texas</p>
+  <h1>Dr Pepper</h1>
+  <p class="tagline">Be a Pepper</p>
+  <hr class="divider">
+
+  <ul class="facts">
+    <li>
+      <strong>Origin</strong>
+      Oldest major soft drink in America — predates Coca-Cola by one year.
+    </li>
+    <li>
+      <strong>The Formula</strong>
+      23 flavors. None of them cola. None of them anything you can name. That's the point.
+    </li>
+    <li>
+      <strong>Character</strong>
+      Not a root beer. Not a cola. Not a cherry soda. A category of one.
+    </li>
+    <li>
+      <strong>Cult Following</strong>
+      Texas serves it warm. Texans are correct.
+    </li>
+    <li>
+      <strong>Legacy</strong>
+      Survived every decade, every trend, every "cola war" — unbothered.
+    </li>
+  </ul>
+
+  <p class="verdict">"I'm a Pepper, he's a Pepper,<br>she's a Pepper — wouldn't you like to be a Pepper too?"</p>
+  <p class="footer">MnemonicOS Artifact Test · 2026-04-27</p>
+</div>
+</body>
+</html>
