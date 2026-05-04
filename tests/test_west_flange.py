@@ -18,6 +18,8 @@ if str(SRC) not in sys.path:
 from second_brain.config import load_config
 from second_brain.db import connect_db, run_migrations
 from second_brain.ingest import ingest_artifact, reprocess_artifact, reprocess_failed_artifacts
+from second_brain.projection import ProjectionOptions, ProjectionService, SourceRef
+from second_brain.projection.markers import format_marker, parse_markers
 from second_brain.retrieval import retrieve
 
 
@@ -250,6 +252,212 @@ class WestFlangeTest(unittest.TestCase):
                 self.assertEqual(failed_row["ingest_status"], "accepted")
             finally:
                 db.close()
+
+    def test_exact_duplicate_records_submission_without_duplicate_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            config = load_config(_config(workspace), workspace)
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            connection.close()
+
+            source = workspace / "sample.txt"
+            source.write_text("Same artifact bytes.\n")
+            first = ingest_artifact(config, path=source)
+            second = ingest_artifact(config, path=source)
+
+            self.assertEqual(second.duplicate_state, "exact_duplicate")
+            self.assertEqual(second.canonical_archive_id, first.archive_id)
+            self.assertEqual(second.raw_path, first.raw_path)
+            manifest = json.loads(Path(second.manifest_path).read_text())
+            self.assertTrue(manifest["pre_parse_short_circuited"])
+            self.assertFalse((Path(second.manifest_path).parent / "original.txt").exists())
+
+            db = connect_db(config.paths.db_path)
+            try:
+                rows = db.execute(
+                    """
+                    SELECT id, raw_sha256, duplicate_state, canonical_archive_id
+                    FROM archive
+                    WHERE id IN (?, ?)
+                    ORDER BY id
+                    """,
+                    (first.archive_id, second.archive_id),
+                ).fetchall()
+                by_id = {row["id"]: row for row in rows}
+                self.assertEqual(by_id[second.archive_id]["duplicate_state"], "exact_duplicate")
+                self.assertIsNone(by_id[second.archive_id]["raw_sha256"])
+                self.assertEqual(by_id[second.archive_id]["canonical_archive_id"], first.archive_id)
+                bucket_count = db.execute(
+                    "SELECT COUNT(*) AS n FROM artifact_identity_buckets WHERE archive_id = ?",
+                    (second.archive_id,),
+                ).fetchone()
+                self.assertEqual(int(bucket_count["n"]), 0)
+            finally:
+                db.close()
+
+    def test_canonical_duplicate_labels_but_still_keeps_projection_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            config = load_config(_config(workspace), workspace)
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            connection.close()
+
+            first_source = workspace / "sample.md"
+            second_source = workspace / "sample.txt"
+            first_source.write_text("Canonical identity has the same normalized words!\n")
+            second_source.write_text("canonical identity has the same normalized words\n")
+            first = ingest_artifact(config, path=first_source)
+            second = ingest_artifact(config, path=second_source)
+
+            self.assertEqual(second.duplicate_state, "canonical_duplicate")
+            self.assertEqual(second.canonical_archive_id, first.archive_id)
+            self.assertNotEqual(second.raw_path, first.raw_path)
+            self.assertTrue(Path(second.raw_path).exists())
+
+            db = connect_db(config.paths.db_path)
+            try:
+                row = db.execute(
+                    "SELECT raw_sha256, identity_fingerprint_version FROM archive WHERE id = ?",
+                    (second.archive_id,),
+                ).fetchone()
+                self.assertTrue(row["raw_sha256"])
+                self.assertEqual(row["identity_fingerprint_version"], "text_norm_v1")
+                bucket_count = db.execute(
+                    "SELECT COUNT(*) AS n FROM artifact_identity_buckets WHERE archive_id = ?",
+                    (second.archive_id,),
+                ).fetchone()
+                self.assertEqual(int(bucket_count["n"]), 0)
+            finally:
+                db.close()
+
+    def test_unique_possible_and_overlap_rows_write_identity_buckets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            config = load_config(_config(workspace), workspace)
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            connection.close()
+
+            first_source = workspace / "long-a.txt"
+            second_source = workspace / "long-b.txt"
+            first_source.write_text(("alpha beta gamma delta epsilon zeta eta theta iota kappa " * 8).strip() + "\n")
+            second_source.write_text((("alpha beta gamma delta epsilon zeta eta theta iota kappa " * 7) + "new material").strip() + "\n")
+            first = ingest_artifact(config, path=first_source)
+            second = ingest_artifact(config, path=second_source)
+
+            self.assertEqual(first.duplicate_state, "unique")
+            self.assertIn(second.duplicate_state, {"possible_duplicate", "overlap_related"})
+            db = connect_db(config.paths.db_path)
+            try:
+                for archive_id in (first.archive_id, second.archive_id):
+                    bucket_count = db.execute(
+                        "SELECT COUNT(*) AS n FROM artifact_identity_buckets WHERE archive_id = ?",
+                        (archive_id,),
+                    ).fetchone()
+                    self.assertEqual(int(bucket_count["n"]), 4)
+            finally:
+                db.close()
+
+    def test_reprocess_duplicate_redirects_to_canonical_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            config = load_config(_config(workspace), workspace)
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            connection.close()
+
+            source = workspace / "sample.txt"
+            source.write_text("Duplicate reprocess should redirect.\n")
+            first = ingest_artifact(config, path=source)
+            second = ingest_artifact(config, path=source)
+            result = reprocess_artifact(config, archive_id=second.archive_id)
+
+            self.assertEqual(result.archive_id, second.archive_id)
+            self.assertEqual(result.raw_path, first.raw_path)
+            self.assertEqual(result.duplicate_state, "exact_duplicate")
+            self.assertEqual(result.canonical_archive_id, first.archive_id)
+
+    def test_projection_exact_duplicate_returns_thin_redirect_lease(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            config = load_config(_config(workspace), workspace)
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            connection.close()
+
+            source = workspace / "sample.txt"
+            source.write_text("Projection duplicate source.\n")
+            first = ingest_artifact(config, path=source)
+            second = ingest_artifact(config, path=source)
+            service = ProjectionService(config)
+            lease = service.open_projection(SourceRef("artifact", archive_id=second.archive_id))
+
+            self.assertEqual(lease.duplicate_state, "exact_duplicate")
+            self.assertEqual(lease.canonical_source_ref.archive_id, first.archive_id)
+            self.assertTrue(lease.projection_metadata["pre_parse_short_circuited"])
+            self.assertEqual(list(service.iter_text_windows(lease.lease_id)), [])
+            self.assertEqual(list(service.iter_artifacts(lease.lease_id)), [])
+
+    def test_projection_non_exact_duplicate_yields_text_windows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            config = load_config(_config(workspace), workspace)
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            connection.close()
+
+            first_source = workspace / "sample.md"
+            second_source = workspace / "sample.txt"
+            first_source.write_text("Projection canonical duplicate text!\n")
+            second_source.write_text("projection canonical duplicate text\n")
+            first = ingest_artifact(config, path=first_source)
+            second = ingest_artifact(config, path=second_source)
+            service = ProjectionService(config)
+            lease = service.open_projection(SourceRef("artifact", archive_id=second.archive_id))
+            windows = list(service.iter_text_windows(lease.lease_id))
+
+            self.assertEqual(lease.duplicate_state, "canonical_duplicate")
+            self.assertEqual(lease.canonical_source_ref.archive_id, first.archive_id)
+            self.assertEqual(len(windows), 1)
+            self.assertIn("projection canonical duplicate text", windows[0].text.casefold())
+
+    def test_marker_grammar_round_trips_artifact_markers(self) -> None:
+        marker = format_marker("fig_003", "figure", source="page:3/image:2", needs_visual_pass=True)
+        parsed = parse_markers(f"Before {marker} after")
+
+        self.assertEqual(len(parsed), 1)
+        self.assertEqual(parsed[0].artifact_id, "fig_003")
+        self.assertEqual(parsed[0].kind, "figure")
+        self.assertEqual(parsed[0].attrs["source"], "page:3/image:2")
+        self.assertEqual(parsed[0].attrs["needs_visual_pass"], "true")
+
+    def test_projection_artifact_lane_links_sidecar_and_honors_payload_cap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            config = load_config(_config(workspace), workspace)
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            connection.close()
+
+            source = workspace / "paper.md"
+            source.write_text("# Paper\n\nSee Figure 1.\n")
+            attachment = workspace / "figure1.png"
+            attachment.write_bytes(_png_bytes())
+            result = ingest_artifact(config, path=source, attachments=[attachment])
+            service = ProjectionService(config)
+            lease = service.open_projection(
+                SourceRef("artifact", archive_id=result.archive_id),
+                options=ProjectionOptions(max_per_figure_bytes=4),
+            )
+            artifacts = list(service.iter_artifacts(lease.lease_id))
+
+            self.assertEqual(len(artifacts), 1)
+            self.assertEqual(artifacts[0].source_attachment_path, str((Path(result.raw_path).parent / "attachments" / "figure1.png").resolve()))
+            self.assertIsNone(artifacts[0].payload)
+            self.assertIn("payload_over_per_artifact_cap", artifacts[0].warnings)
+            self.assertEqual(artifacts[0].context_windows, ["tw_000"])
 
 
 if __name__ == "__main__":

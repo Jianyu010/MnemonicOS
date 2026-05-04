@@ -103,6 +103,8 @@ class IngestArtifactResult:
     needs_visual_pass: bool
     needs_manual_projection: bool
     image_only_pdf: bool
+    duplicate_state: str = "unique"
+    canonical_archive_id: str | None = None
 
 
 @dataclass(slots=True)

@@ -11,6 +11,13 @@ from typing import Any
 
 import yaml
 
+from .artifact_identity import (
+    IdentityResult,
+    classify_post_parse_identity,
+    find_exact_duplicate,
+    update_archive_identity,
+    write_identity_buckets,
+)
 from .bridge import decide_upsert, find_existing_candidates, infer_chain_context, parse_summary
 from .config import AppConfig
 from .connectors import ConnectorConfig, connector_for_path, figure_from_bytes
@@ -733,6 +740,21 @@ def _jsonable_figure(figure: Any) -> dict[str, Any]:
     return payload
 
 
+def _jsonable_warnings(value: Any) -> list[str]:
+    if not value:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return [value]
+        if isinstance(parsed, list):
+            return [str(item) for item in parsed]
+    return [str(value)]
+
+
 def _artifact_archive_type(source_format: str) -> str:
     return "web_clip" if source_format == "html" else "doc"
 
@@ -750,7 +772,7 @@ def ingest_artifact(
         raise FileNotFoundError(str(source_path))
 
     now = datetime.now()
-    timestamp = now.strftime("%Y-%m-%d-%H%M%S")
+    timestamp = now.strftime("%Y-%m-%d-%H%M%S-%f")
     source_slug = slugify(source_path.stem) or "artifact"
     archive_name = f"{timestamp}-{source_slug}"
     archive_id = f"artifact/{archive_name}"
@@ -761,6 +783,112 @@ def ingest_artifact(
 
     raw_bytes = raw_path.read_bytes()
     raw_hash = sha256(raw_bytes).hexdigest()
+
+    connection = connect_db(config.paths.db_path)
+    run_migrations(connection, _migrations_dir(config))
+    try:
+        duplicate = find_exact_duplicate(connection, raw_sha256=raw_hash, byte_size=len(raw_bytes))
+    finally:
+        connection.close()
+    if duplicate is not None:
+        canonical_archive_id = str(duplicate["id"])
+        if raw_path.exists():
+            raw_path.unlink()
+        source_format = str(duplicate["source_format"] or source_path.suffix.casefold().lstrip(".") or "unknown")
+        warnings = [f"exact_duplicate_of:{canonical_archive_id}"]
+        manifest_path = artifact_dir / "manifest.json"
+        manifest = {
+            "archive_id": archive_id,
+            "artifact_path": str(duplicate["artifact_path"] or duplicate["path"]),
+            "source_format": source_format,
+            "original_filename": source_path.name,
+            "raw_sha256": None,
+            "canonical_raw_sha256": raw_hash,
+            "byte_size": len(raw_bytes),
+            "connector_name": str(duplicate["connector_name"] or ""),
+            "connector_version": str(duplicate["connector_version"] or ""),
+            "ingest_status": "accepted",
+            "duplicate_state": "exact_duplicate",
+            "canonical_archive_id": canonical_archive_id,
+            "pre_parse_short_circuited": True,
+            "page_count": int(duplicate["page_count"] or 0),
+            "slide_count": int(duplicate["slide_count"] or 0),
+            "figure_count": int(duplicate["figure_count"] or 0),
+            "table_count": int(duplicate["table_count"] or 0),
+            "warnings": warnings,
+            "failure_reason": None,
+            "needs_visual_pass": bool(duplicate["needs_visual_pass"]),
+            "needs_manual_projection": bool(duplicate["needs_manual_projection"]),
+            "image_only_pdf": bool(duplicate["image_only_pdf"]),
+            "figures": [],
+            "ingested_at": now.isoformat(timespec="seconds"),
+        }
+        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+        connection = connect_db(config.paths.db_path)
+        run_migrations(connection, _migrations_dir(config))
+        try:
+            with connection:
+                connection.execute(
+                    """
+                    INSERT INTO archive(
+                        id, type, path, ingested_at, agent, tags, chunk_count,
+                        artifact_path, source_format, original_filename, raw_sha256, byte_size,
+                        connector_name, connector_version, ingest_status, page_count, slide_count,
+                        figure_count, table_count, warnings_json, failure_reason, needs_visual_pass,
+                        needs_manual_projection, image_only_pdf, duplicate_state, canonical_archive_id,
+                        duplicate_confidence, overlap_summary_json
+                    )
+                    VALUES (
+                        ?, ?, ?, datetime('now'), NULL, ?, 0,
+                        ?, ?, ?, NULL, ?,
+                        ?, ?, ?, ?, ?,
+                        ?, ?, ?, NULL, ?,
+                        ?, ?, 'exact_duplicate', ?,
+                        1.0, '{}'
+                    )
+                    """,
+                    (
+                        archive_id,
+                        _artifact_archive_type(source_format),
+                        str(manifest_path.resolve()),
+                        json.dumps(tags or []),
+                        str(duplicate["artifact_path"] or duplicate["path"]),
+                        source_format,
+                        source_path.name,
+                        len(raw_bytes),
+                        manifest["connector_name"],
+                        manifest["connector_version"],
+                        "accepted",
+                        manifest["page_count"],
+                        manifest["slide_count"],
+                        manifest["figure_count"],
+                        manifest["table_count"],
+                        json.dumps(warnings),
+                        1 if manifest["needs_visual_pass"] else 0,
+                        1 if manifest["needs_manual_projection"] else 0,
+                        1 if manifest["image_only_pdf"] else 0,
+                        canonical_archive_id,
+                    ),
+                )
+                _upsert_archive_sync_state(connection, manifest_path, archive_id, raw_hash)
+        finally:
+            connection.close()
+        return IngestArtifactResult(
+            archive_id=archive_id,
+            raw_path=str(duplicate["artifact_path"] or duplicate["path"]),
+            manifest_path=str(manifest_path.resolve()),
+            ingest_status="accepted",
+            source_format=source_format,
+            figure_count=manifest["figure_count"],
+            warnings=warnings,
+            failure_reason=None,
+            needs_visual_pass=manifest["needs_visual_pass"],
+            needs_manual_projection=manifest["needs_manual_projection"],
+            image_only_pdf=manifest["image_only_pdf"],
+            duplicate_state="exact_duplicate",
+            canonical_archive_id=canonical_archive_id,
+        )
+
     connector = connector_for_path(raw_path)
     result = connector.extract(raw_path, config=connector_config or ConnectorConfig())
     metadata = dict(result.metadata)
@@ -903,8 +1031,26 @@ def ingest_artifact(
                         json.dumps(row.get("warnings_json") or []),
                     ),
                 )
+            identity = classify_post_parse_identity(
+                connection,
+                archive_id=archive_id,
+                source_format=source_format,
+                usable_raw_text=result.usable_raw_text,
+            )
+            update_archive_identity(connection, archive_id=archive_id, result=identity)
+            write_identity_buckets(
+                connection,
+                archive_id=archive_id,
+                usable_raw_text=result.usable_raw_text,
+                duplicate_state=identity.duplicate_state,
+            )
     finally:
         connection.close()
+
+    manifest["duplicate_state"] = identity.duplicate_state
+    manifest["canonical_archive_id"] = identity.canonical_archive_id
+    manifest["identity_fingerprint_version"] = identity.identity_fingerprint_version
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
     return IngestArtifactResult(
         archive_id=archive_id,
@@ -918,6 +1064,8 @@ def ingest_artifact(
         needs_visual_pass=needs_visual_pass,
         needs_manual_projection=needs_manual_projection,
         image_only_pdf=image_only_pdf,
+        duplicate_state=identity.duplicate_state,
+        canonical_archive_id=identity.canonical_archive_id,
     )
 
 
@@ -988,7 +1136,8 @@ def reprocess_artifact(
     try:
         row = connection.execute(
             """
-            SELECT id, path, artifact_path, original_filename, tags
+            SELECT id, path, artifact_path, original_filename, tags,
+                   duplicate_state, canonical_archive_id
             FROM archive
             WHERE id = ? AND id LIKE 'artifact/%'
             """,
@@ -996,6 +1145,40 @@ def reprocess_artifact(
         ).fetchone()
         if row is None:
             raise ValueError(f"artifact archive not found: {archive_id}")
+        duplicate_state = str(row["duplicate_state"] or "unique")
+        canonical_archive_id = row["canonical_archive_id"]
+        if duplicate_state in {"exact_duplicate", "canonical_duplicate"} and canonical_archive_id:
+            canonical_id = str(canonical_archive_id)
+            canonical = connection.execute(
+                """
+                SELECT id, path, artifact_path, source_format, ingest_status, figure_count,
+                       warnings_json, failure_reason, needs_visual_pass,
+                       needs_manual_projection, image_only_pdf, duplicate_state,
+                       canonical_archive_id
+                FROM archive
+                WHERE id = ?
+                """,
+                (canonical_id,),
+            ).fetchone()
+            if canonical is None:
+                raise ValueError(f"canonical artifact archive not found: {canonical_id}")
+            raw = str(canonical["artifact_path"] or canonical["path"])
+            manifest_path = str((Path(raw).parent / "manifest.json").resolve())
+            return IngestArtifactResult(
+                archive_id=str(row["id"]),
+                raw_path=raw,
+                manifest_path=manifest_path,
+                ingest_status=str(canonical["ingest_status"] or "accepted"),
+                source_format=str(canonical["source_format"] or "unknown"),
+                figure_count=int(canonical["figure_count"] or 0),
+                warnings=_jsonable_warnings(canonical["warnings_json"]),
+                failure_reason=canonical["failure_reason"],
+                needs_visual_pass=bool(canonical["needs_visual_pass"]),
+                needs_manual_projection=bool(canonical["needs_manual_projection"]),
+                image_only_pdf=bool(canonical["image_only_pdf"]),
+                duplicate_state=duplicate_state,
+                canonical_archive_id=canonical_id,
+            )
         raw_path = Path(str(row["artifact_path"] or row["path"])).resolve()
         if not raw_path.exists() or not raw_path.is_file():
             raise FileNotFoundError(str(raw_path))
@@ -1113,8 +1296,26 @@ def reprocess_artifact(
             _upsert_archive_sync_state(connection, raw_path, archive_id, raw_hash)
             connection.execute("DELETE FROM artifact_figures WHERE archive_id = ?", (archive_id,))
             _insert_artifact_figure_rows(connection, archive_id, figure_rows)
+            identity = classify_post_parse_identity(
+                connection,
+                archive_id=archive_id,
+                source_format=source_format,
+                usable_raw_text=result.usable_raw_text,
+            )
+            update_archive_identity(connection, archive_id=archive_id, result=identity)
+            write_identity_buckets(
+                connection,
+                archive_id=archive_id,
+                usable_raw_text=result.usable_raw_text,
+                duplicate_state=identity.duplicate_state,
+            )
     finally:
         connection.close()
+
+    manifest["duplicate_state"] = identity.duplicate_state
+    manifest["canonical_archive_id"] = identity.canonical_archive_id
+    manifest["identity_fingerprint_version"] = identity.identity_fingerprint_version
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
     return IngestArtifactResult(
         archive_id=archive_id,
@@ -1128,6 +1329,8 @@ def reprocess_artifact(
         needs_visual_pass=needs_visual_pass,
         needs_manual_projection=needs_manual_projection,
         image_only_pdf=image_only_pdf,
+        duplicate_state=identity.duplicate_state,
+        canonical_archive_id=identity.canonical_archive_id,
     )
 
 

@@ -33,6 +33,8 @@ flowchart TD
 - `orchestrator.py` is the agent interface layer: it infers task shape, formats injected context, preserves `task_id`, and wraps the runtime into begin/fail/finish flows.
 - `server.py` exposes the same operations over local HTTP.
 - `ingest.py` owns true raw intake and operational metadata for sessions and artifacts.
+- `artifact_identity.py` labels artifact redundancy without making semantic memory decisions.
+- `projection/` exposes temporary in-memory usable raw as pull-based text windows and artifact views.
 - `bridge.py` remains part of the legacy summary/promotion compatibility path; new bridges should prefer comprehensive raw capture.
 - `daemon.py`, `daemon_jobs.py`, and `jobs.py` run projection, promotion, embedding backfill, and maintenance on schedule.
 
@@ -65,7 +67,7 @@ New material does not become canonical memory immediately by default.
 flowchart LR
     A["Agent / human submits raw<br/>session events / PDF / HTML / DOCX / log / note"] --> B["west-flange intake"]
     B --> C["Immutable true raw archive<br/>original artifact + operational metadata"]
-    C --> D["daemon projection<br/>usable raw generated in memory"]
+    C --> D["projection lease<br/>usable raw generated in memory"]
     D --> E["future VLM over figures<br/>in-memory context"]
     E --> F["future <=8B extraction LLM<br/>structured candidates"]
     F --> G["promotion policy<br/>candidate match / review / upsert decision"]
@@ -551,7 +553,38 @@ mnemonicos ingest-artifact \
   --json
 ```
 
-Embedded/rendered figures extracted from PDFs, DOCX, or PPTX are not duplicated to disk by default. They are handled as in-memory payloads for the future VLM path, while only non-content figure metadata is persisted.
+Embedded/rendered figures extracted from PDFs, DOCX, or PPTX are not duplicated to disk by default. They are exposed as in-memory payloads through a projection lease, while only non-content figure metadata is persisted.
+
+West-flange v1 now has three layers:
+
+- **Intake/archive**: `ingest_artifact()` preserves true raw, writes `manifest.json`, and persists only operational metadata.
+- **Identity/redundancy**: `artifact_identity.py` records `duplicate_state`, `canonical_archive_id`, normalized identity fingerprints, and SimHash LSH buckets. Exact byte duplicates create a submission row only and short-circuit connector/projection work. Canonical, possible, and overlap-related duplicates remain projection-eligible.
+- **Projection/artifact lane**: `ProjectionService` opens temporary in-process leases. It yields `TextWindow` objects and `ArtifactView` objects, with marker links such as `[FIGURE: fig_003 ...]`. Usable raw text, extracted figure payload bytes, OCR text, captions, VLM descriptions, and LLM interpretations are still not persisted as west-flange metadata.
+
+Python projection example:
+
+```python
+from second_brain.projection import ProjectionService, SourceRef
+
+service = ProjectionService(config)
+lease = service.open_projection(SourceRef("artifact", archive_id="artifact/2026-05-04-paper"))
+
+for window in service.iter_text_windows(lease.lease_id):
+    ...
+
+for artifact in service.iter_artifacts(lease.lease_id):
+    ...
+
+service.close_projection(lease.lease_id)
+```
+
+Duplicate-state handoff:
+
+- `exact_duplicate`: returns a thin redirect lease with `canonical_source_ref`, no text windows, and no payloads.
+- `canonical_duplicate`: projects normally and carries `canonical_source_ref`.
+- `possible_duplicate`: projects normally and leaves review/merge judgment to downstream extraction.
+- `overlap_related`: projects normally and preserves unique delta content.
+- `unique`: normal projection.
 
 Artifact ingest intentionally does **not** create `archive_chunks`; normal retrieval should not inject true raw or usable raw artifact content. Check that invariant with:
 
@@ -579,7 +612,9 @@ To retry all failed artifact ingests:
 mnemonicos reprocess-artifact --failed --json
 ```
 
-Reprocessing updates the same `archive` row, rewrites `manifest.json`, replaces figure metadata, and still does not create artifact chunks.
+Reprocessing updates the same `archive` row, rewrites `manifest.json`, replaces figure metadata, and still does not create artifact chunks. Reprocessing exact or canonical duplicate rows redirects to canonical metadata instead of duplicating raw bytes or rerunning Stage 0.
+
+The west flange deliberately stops before model extraction. The next layer should consume `ProjectionLease`, send `ArtifactView` payloads or source attachments to a VLM, combine temporary visual snippets with `TextWindow` content for the extraction LLM, and persist only structured candidates, review items, promotion decisions, and allowed operational metadata.
 
 ### API entrypoints
 

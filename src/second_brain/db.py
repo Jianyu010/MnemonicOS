@@ -37,8 +37,28 @@ def run_migrations(connection: sqlite3.Connection, migrations_dir: Path) -> list
             continue
         script = migration_path.read_text()
         with connection:
-            connection.executescript(script)
+            try:
+                connection.executescript(script)
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).casefold():
+                    raise
+                _executescript_tolerating_duplicate_columns(connection, script)
         executed.append(version)
         applied.add(version)
 
     return executed
+
+
+def _executescript_tolerating_duplicate_columns(connection: sqlite3.Connection, script: str) -> None:
+    for raw_statement in script.split(";"):
+        statement = raw_statement.strip()
+        if not statement:
+            continue
+        try:
+            connection.execute(statement)
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).casefold():
+                raise
+        except sqlite3.IntegrityError:
+            if not statement.casefold().startswith("create unique index"):
+                raise
