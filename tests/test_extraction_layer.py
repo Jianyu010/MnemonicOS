@@ -146,8 +146,96 @@ class ExtractionLayerTest(unittest.TestCase):
             self.assertGreater(int(queue["candidate_count"]), 0)
             self.assertEqual(row["validation_status"], "promotion_ready")
             self.assertEqual(row["promotion_state"], "promotion_ready")
-            self.assertEqual(json.loads(row["payload_json"])["source_refs"], [ingest.archive_id])
+            payload = json.loads(row["payload_json"])
+            self.assertEqual(payload["source_refs"], [ingest.archive_id])
+            self.assertTrue(payload["components"])
+            self.assertEqual(payload["traces"][0]["component_ids"], payload["temporal_order"])
             self.assertFalse((workspace / "brain/wiki").exists())
+
+    def test_agentic_session_extraction_preserves_decomposed_timeline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            config = _config(workspace)
+            session = ingest_session(
+                config,
+                bridge_id="codex",
+                session_id="calculator-build",
+                content=textwrap.dedent(
+                    """
+                    User request: build a calculator app.
+                    Agent tried creating the UI.
+                    Agent failed with TypeError in the button handler.
+                    Agent searched docs and found event delegation guidance.
+                    Agent retried with a delegated click handler.
+                    Agent reported success milestone after tests passed.
+                    """
+                ).strip(),
+            )
+            item = enqueue_extraction(config, source_kind="session", archive_id=session.archive_id)
+
+            result = process_extraction_queue(config, dry_run=False)
+            self.assertEqual(result.processed, 1)
+
+            connection = connect_db(config.paths.db_path)
+            row = connection.execute(
+                """
+                SELECT payload_json
+                FROM extraction_candidates
+                WHERE queue_id = ? AND validation_status = 'promotion_ready'
+                ORDER BY candidate_index
+                LIMIT 1
+                """,
+                (item.id,),
+            ).fetchone()
+            connection.close()
+
+            payload = json.loads(row["payload_json"])
+            component_types = {component["component_type"] for component in payload["components"]}
+            self.assertIn("user_request", component_types)
+            self.assertIn("failure", component_types)
+            self.assertIn("web_finding", component_types)
+            self.assertIn("milestone", component_types)
+            self.assertEqual(len(payload["temporal_order"]), len(payload["components"]))
+
+    def test_document_extraction_preserves_concepts_and_derivations_as_components(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            config = _config(workspace)
+            artifact_path = workspace / "chapter.md"
+            _write(
+                artifact_path,
+                """
+                # Chapter 1
+                Newtonian mechanics is a framework for macroscopic motion.
+                The experiment compares predicted and observed trajectories.
+                Therefore the text derives conservation guidance from the laws.
+                The theorem states momentum remains conserved in the closed system.
+                """,
+            )
+            ingest = ingest_artifact(config, path=str(artifact_path))
+            item = enqueue_extraction(config, source_kind="artifact", archive_id=ingest.archive_id)
+
+            process_extraction_queue(config, dry_run=False)
+
+            connection = connect_db(config.paths.db_path)
+            row = connection.execute(
+                """
+                SELECT payload_json
+                FROM extraction_candidates
+                WHERE queue_id = ? AND validation_status = 'promotion_ready'
+                ORDER BY candidate_index
+                LIMIT 1
+                """,
+                (item.id,),
+            ).fetchone()
+            connection.close()
+
+            payload = json.loads(row["payload_json"])
+            component_types = {component["component_type"] for component in payload["components"]}
+            self.assertIn("definition", component_types)
+            self.assertIn("experiment", component_types)
+            self.assertIn("derivation", component_types)
+            self.assertIn("theorem", component_types)
 
     def test_episode_and_session_sources_project_through_same_worker(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -231,6 +319,52 @@ class ExtractionLayerTest(unittest.TestCase):
         )
         self.assertEqual(candidate.validation_status, "invalid")
         self.assertIn("source_refs_missing_active_source", candidate.validation_errors)
+
+    def test_candidate_validation_rejects_summary_only_and_bad_component_structure(self) -> None:
+        summary_only = validate_candidate(
+            {
+                "type": "concept",
+                "title": "Summary only",
+                "summary": "summary",
+                "body": "body",
+                "confidence": "high",
+                "source_refs": ["artifact/source"],
+                "evidence": [{"kind": "text_window", "id": "window-1"}],
+            },
+            active_source_ref="artifact/source",
+            evidence_ids={"window-1"},
+        )
+        self.assertEqual(summary_only.validation_status, "invalid")
+        self.assertIn("missing_required_field: components", summary_only.validation_errors)
+
+        dangling = validate_candidate(
+            {
+                "type": "concept",
+                "title": "Dangling component",
+                "summary": "summary",
+                "body": "body",
+                "confidence": "high",
+                "source_refs": ["artifact/source"],
+                "evidence": [{"kind": "text_window", "id": "window-1"}],
+                "components": [
+                    {
+                        "component_id": "c1",
+                        "component_type": "claim",
+                        "text": "A grounded claim.",
+                        "evidence": [{"kind": "text_window", "id": "window-1"}],
+                        "links": [{"type": "supports", "target": "missing"}],
+                    }
+                ],
+                "temporal_order": ["c1", "missing"],
+                "traces": [{"trace_id": "t1", "component_ids": ["c1", "missing"]}],
+            },
+            active_source_ref="artifact/source",
+            evidence_ids={"window-1"},
+        )
+        self.assertEqual(dangling.validation_status, "invalid")
+        self.assertIn("component_link_dangling: c1->missing", dangling.validation_errors)
+        self.assertIn("temporal_order_dangling: missing", dangling.validation_errors)
+        self.assertIn("trace_component_dangling: t1->missing", dangling.validation_errors)
 
     def test_server_routes_include_extraction_surfaces(self) -> None:
         self.assertIn("/v1/extraction/queue", _POST_ROUTES)

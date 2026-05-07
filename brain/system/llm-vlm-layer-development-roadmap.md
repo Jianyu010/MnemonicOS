@@ -197,29 +197,25 @@ What is done:
 
 Divergences from plan:
 
-- The fixture provider emits simple `source` and `concept` candidates. It does
-  not yet simulate the full richness of decomposed agentic timelines, textbook
-  sections, procedures, decisions, incidents, experiments, derivations, or
-  component links.
+- The fixture provider emits decomposed `source` and `concept` candidates,
+  including agentic-session timelines and document-local components for concepts,
+  experiments, derivations, and theorems.
 - Ollama output quality is not unit-tested.
-- The current implementation accepts `summary/body` shaped candidates. The next
-  refinement should make `components` first-class and validate component
-  evidence/link integrity.
+- The current implementation makes `components` first-class and validates
+  component evidence, temporal order, trace membership, and dangling links.
 
 Impact:
 
-- The structured candidate pipe is ready, but the extraction contract should be
-  strengthened from summary-shaped candidates toward loss-minimizing
-  decomposition candidates.
+- The structured candidate pipe now uses loss-minimizing decomposition
+  candidates rather than summary-only candidates.
 - Richer prompt shaping and real-model evals can improve content quality without
   changing the downstream candidate contract.
 
 Conclusion:
 
-- Phase 5 is complete for pipeline mechanics and testable candidate storage, but
-  the content contract needs one more refinement before serious promotion work:
-  LLM output should preserve source-local decomposition, not merely provide
-  summaries.
+- Phase 5 is complete for pipeline mechanics and the first decomposer contract:
+  LLM output preserves source-local components and trace hints, while summaries
+  remain index hints.
 
 ## Phase 6: Deterministic Candidate Validation
 
@@ -240,7 +236,8 @@ Divergences from plan:
   candidate shape but do not yet deeply validate every future note-family field.
 - There is not yet a deterministic promotion input model separate from the raw
   candidate payload.
-- Component-level evidence and link validation are not yet implemented.
+- Component-level evidence, temporal order, trace membership, and link validation
+  are implemented for the first decomposer contract.
 
 Impact:
 
@@ -291,11 +288,8 @@ Conclusion:
 - Expand fixture providers to simulate procedures, decisions, incidents, and
   invalid type-specific fields.
 - Deepen type-specific validation before promotion consumption.
-- Make `components` first-class in candidate validation and fixtures.
-- Add tests for agentic-session decomposition: user requests, attempts, errors,
-  searches, findings, retries, milestones, and later user corrections.
-- Add tests for textbook/document decomposition: chapter/section scope,
-  concepts, experiments, deductions, theorems, examples, and historical asides.
+- Expand decomposer tests for later user corrections, multiple traces in one
+  session, richer textbook section boundaries, examples, and historical asides.
 - Add richer extraction status reporting for candidate/error inspection.
 - Add metrics useful for future reward/RL design, such as candidate acceptance
   rate, validation error categories, and promotion outcome feedback.

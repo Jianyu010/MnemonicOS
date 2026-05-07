@@ -23,6 +23,7 @@ A candidate can become `promotion_ready` only when all gates pass:
 - components exist for non-trivial sources and each component has evidence;
 - component links only target declared components, candidate entities, or
   source-grounded refs;
+- trace membership and temporal ordering only reference declared components;
 - candidate can normalize into current MnemonicOS note families;
 - candidate is serializable as deterministic promotion input.
 

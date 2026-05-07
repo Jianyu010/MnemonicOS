@@ -6,6 +6,23 @@ from typing import Any
 
 SUPPORTED_CANDIDATE_TYPES = {"source", "concept", "procedure", "decision", "incident"}
 SUPPORTED_CONFIDENCE = {"low", "medium", "high"}
+SUPPORTED_COMPONENT_TYPES = {
+    "user_request",
+    "agent_action",
+    "failure",
+    "observation",
+    "web_finding",
+    "milestone",
+    "instruction",
+    "definition",
+    "claim",
+    "experiment",
+    "derivation",
+    "theorem",
+    "example",
+    "procedure_step",
+    "open_question",
+}
 SCHEMA_VERSION = "mnemos-extraction-v1"
 
 

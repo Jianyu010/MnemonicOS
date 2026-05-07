@@ -89,6 +89,26 @@ experiments, deductions, derivative theorems, examples, and historical asides.
 It must not invent missing theory; it should only decompose what the usable raw
 supports.
 
+## Authority Boundary
+
+The LLM has authority to propose the source-local decomposition shape:
+
+- how many candidates or nodes a source contains;
+- how many traces, task threads, or document-local sections exist;
+- where one trace starts and ends;
+- how long a trace should be;
+- which components belong in each trace;
+- which source-grounded links likely connect components.
+
+MnemonicOS software has final authority over admissibility and canonical memory:
+
+- component evidence must bind to the active projection;
+- component IDs, trace IDs, temporal order, and links must be internally valid;
+- unsupported types or unsupported confidence/freshness/relevance vocabulary are
+  rejected;
+- candidate rows may become `promotion_ready`, but wiki writes remain the later
+  deterministic promotion layer's responsibility.
+
 ## Defaults
 
 - Local provider: Ollama.

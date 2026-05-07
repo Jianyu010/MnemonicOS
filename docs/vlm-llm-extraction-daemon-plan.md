@@ -171,6 +171,10 @@ decomposing it into components. `summary` is an index hint; `components` is the
 main payload that the deterministic promotion layer uses to build wiki notes,
 procedures, timelines, and graph edges.
 
+The LLM may decide how many nodes, components, traces, and task/document threads
+the source contains. MnemonicOS software validates the proposed structure before
+it can become `promotion_ready`.
+
 ```json
 {
   "schema_version": "mnemos-extraction-v1",

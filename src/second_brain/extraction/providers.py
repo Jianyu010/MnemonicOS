@@ -66,6 +66,8 @@ class FixtureLLMProvider:
         text = str(first_window.get("text") or "").strip()
         title = _title_from_text(text) or "Extracted Source"
         evidence_id = str(first_window.get("window_id") or source_ref)
+        components = _components_from_text(text, evidence_id=evidence_id)
+        temporal_order = [str(component["component_id"]) for component in components]
         candidates = [
             {
                 "type": "source",
@@ -75,6 +77,25 @@ class FixtureLLMProvider:
                 "confidence": "high" if text else "medium",
                 "source_refs": [source_ref],
                 "evidence": [{"kind": "text_window", "id": evidence_id, "quote": text[:160]}],
+                "components": components
+                or [
+                    {
+                        "component_id": "c1",
+                        "component_type": "observation",
+                        "text": "Source projection had no text windows.",
+                        "why_it_matters": "Records that extraction had an empty text lane.",
+                        "evidence": [{"kind": "text_window", "id": evidence_id, "quote": ""}],
+                        "links": [],
+                    }
+                ],
+                "traces": [
+                    {
+                        "trace_id": "trace-1",
+                        "title": title,
+                        "component_ids": temporal_order or ["c1"],
+                    }
+                ],
+                "temporal_order": temporal_order or ["c1"],
             }
         ]
         if text:
@@ -87,6 +108,15 @@ class FixtureLLMProvider:
                     "confidence": "medium",
                     "source_refs": [source_ref],
                     "evidence": [{"kind": "text_window", "id": evidence_id, "quote": text[:160]}],
+                    "components": components,
+                    "traces": [
+                        {
+                            "trace_id": "trace-1",
+                            "title": title,
+                            "component_ids": temporal_order,
+                        }
+                    ],
+                    "temporal_order": temporal_order,
                 }
             )
         return json.dumps(
@@ -154,7 +184,15 @@ class OllamaLLMProvider:
         prompt = (
             "You are the MnemonicOS extraction layer. Return JSON only using schema_version "
             f"{SCHEMA_VERSION}. Required top-level keys: schema_version, candidates. "
-            "Each candidate must include type, title, summary, body, confidence, source_refs, evidence. "
+            "The LLM has authority to propose how many candidates, traces, and components the source contains, "
+            "but software will reject unsupported or ungrounded structure. "
+            "Each candidate must include type, title, summary, body, confidence, source_refs, evidence, components. "
+            "Do not collapse the source into a summary. Decompose usable raw into source-grounded components. "
+            "For agentic sessions preserve chronology: user_request, agent_action, failure, web_finding, "
+            "observation, milestone, instruction, open_question. For documents preserve section-local "
+            "definition, claim, experiment, derivation, theorem, example, procedure_step. "
+            "Each component must include component_id, component_type, text, evidence, links. "
+            "Use traces to group task threads or document sections with component_ids and temporal_order. "
             "Use only the provided packet as evidence.\n\n"
             f"{json.dumps(packet, sort_keys=True)}"
         )
@@ -208,6 +246,55 @@ def _title_from_text(text: str) -> str:
         if cleaned:
             return cleaned[:80]
     return ""
+
+
+def _components_from_text(text: str, *, evidence_id: str) -> list[dict[str, Any]]:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines and text.strip():
+        lines = [text.strip()]
+    components: list[dict[str, Any]] = []
+    for index, line in enumerate(lines[:12], start=1):
+        component_id = f"c{index}"
+        component_type = _infer_component_type(line)
+        links = []
+        if index > 1:
+            links.append({"type": "next", "target": f"c{index - 1}"})
+        components.append(
+            {
+                "component_id": component_id,
+                "component_type": component_type,
+                "text": line,
+                "why_it_matters": "",
+                "evidence": [{"kind": "text_window", "id": evidence_id, "quote": line[:160]}],
+                "links": links,
+            }
+        )
+    return components
+
+
+def _infer_component_type(text: str) -> str:
+    lowered = text.casefold()
+    if "error" in lowered or "failed" in lowered or "failure" in lowered:
+        return "failure"
+    if "user" in lowered and ("request" in lowered or "asked" in lowered):
+        return "user_request"
+    if "agent" in lowered and ("tried" in lowered or "ran" in lowered or "built" in lowered):
+        return "agent_action"
+    if "found" in lowered or "search" in lowered:
+        return "web_finding"
+    if "success" in lowered or "completed" in lowered or "milestone" in lowered:
+        return "milestone"
+    if "definition" in lowered or " is " in lowered:
+        return "definition"
+    if "experiment" in lowered:
+        return "experiment"
+    if "theorem" in lowered:
+        return "theorem"
+    if "therefore" in lowered or "derive" in lowered:
+        return "derivation"
+    if lowered.startswith(("do ", "avoid ", "use ", "run ")):
+        return "procedure_step"
+    return "observation"
 
 
 def _ollama_generate(base_url: str, *, model: str, prompt: str, images: list[str] | None = None) -> str:
