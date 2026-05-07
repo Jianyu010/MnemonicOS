@@ -60,6 +60,8 @@ lower-level replaceable substrate remains an open architecture question.
 
 ## Governing References
 
+### Ingestion Pipeline (West Flange + Extraction)
+
 - [Product Boundary](product-boundary.md): product scope, flange vocabulary, and
   current boundary rules.
 - [West-Flange Development Plan](west-flange-development-plan.md): true raw,
@@ -75,22 +77,50 @@ lower-level replaceable substrate remains an open architecture question.
 - [Bridge Capture Development Plan](bridge-capture-development-plan.md):
   north-flange raw session capture model.
 
-## Known Missing Governing Plans
+### Next Layer (Stub Plans)
 
-These are intentionally not filled in by this cleanup:
+- [Promotion Layer Plan](promotion-layer-plan.md): stub for the deterministic
+  promotion layer — consumes `promotion_ready` candidates and writes canonical
+  wiki notes.
+- [East Flange Plan](east-flange-plan.md): current retrieval state and stub for
+  the future learned retrieval core.
 
-- deterministic promotion layer plan;
-- east-flange retrieval and future learned retrieval-core plan;
-- library RPG interface skeleton;
-- storage/substrate or south-boundary decision note.
+### Runtime Protocol and Agent Bridges
 
-## Obsolete Or Historical Planning Docs
+- [Runtime Protocol](runtime-protocol.md): canonical protocol contract for
+  `resolve_task_context`, `record_outcome`, `decide_writeback`, `run_maintenance`.
+- [Claude Code Bridge](claude-bridge.md): hook wiring, task/session identity,
+  writeback policy, enable/disable switch. Both phases implemented.
+- [Codex Bridge](codex-bridge.md): current skill-based path and planned Phase 2
+  adaptation layer (MCP, wrapper, breakpoint checkpointing).
 
-The following docs are retained only for historical context and should not define
-current implementation work:
+### Retrieval and Quality
 
-- [Old docs boundary pointer](../../docs/boundary.md)
-- [Old implementation plan](../../docs/IMPLEMENTATION_PLAN.md)
-- [Old VLM/LLM extraction daemon plan](../../docs/vlm-llm-extraction-daemon-plan.md)
-- [Old daemon deferred promotion roadmap](../../development/roadmap-daemon-deferred-promotion.md)
-- [Old promotion detach transition plan](promotion-detach-plan.md)
+- [Control Signal Quality Roadmap](control-signal-quality-roadmap.md): ACTIVE —
+  gene strings, content quality gate, chain_id machinery.
+- [Episode-Aware Retrieval](episode-aware-retrieval.md): Phase 1 done (chain
+  metadata on notes); Phases 2–6 deferred until evaluation data exists.
+
+### Interface and Positioning
+
+- [Game Interface Skeleton](game-interface-skeleton.md): non-negotiable design
+  decisions for the library RPG interface.
+- [Competitive Positioning](competitive-positioning.md): positioning statement,
+  differentiators, and market context.
+
+### Vision and Roadmap
+
+- [Humanoid MnemonicOS Core Blueprint](../../development/humanoid-MnemonicOS-core-blueprint.md):
+  grand architectural vision — epistemic metabolism, provenance, abstraction
+  distance, learned reasoning.
+- [Learned Daemon Roadmap](../../development/learned-daemon-and-true-raw-memoryos-roadmap.md):
+  Step 0 (MnemonicOS as MemoryOS), Step 1 (learned daemon), Step 2 (neuro-symbolic
+  core).
+- [Library RPG Roadmap](../../development/roadmap-library-rpg.md): detailed
+  implementation plan for the game interface.
+
+## South Boundary
+
+The storage/index substrate (SQLite, vectors, graph) is currently treated as
+replaceable substrate behind MnemonicOS. Whether to formalize this as a "south
+flange" with explicit adapter contracts remains an open architecture question.
