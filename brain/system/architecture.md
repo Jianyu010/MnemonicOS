@@ -17,35 +17,35 @@ not be rewritten as part of this cleanup.
 ## Current System Shape
 
 ```mermaid
-flowchart TD
+flowchart LR
     A["North callers<br/>Agent / CLI / Hook / HTTP / human"] --> B["North adapter layer<br/>orchestrator.py + server.py + scripts<br/><b>software-driven</b>"]
 
-    B --> C["Runtime layer<br/>runtime.py<br/><b>software-driven</b>"]
-    C --> D["East retrieval layer<br/>retrieval.py + trust.py + graph.py<br/><b>software-driven today</b>"]
-    D --> E["Bounded memory packet<br/>recommendation + warnings + provenance<br/><b>software-driven</b>"]
-    E --> A
+    B --> C["West intake layer<br/>ingest.py + capture + connectors<br/><b>software-driven</b>"]
+    C --> D["Immutable true raw archive<br/>brain/raw/*<br/><b>software-owned witness material</b>"]
+    D --> E["RAM-only usable raw projection<br/>ProjectionLease + TextWindow + ArtifactView<br/><b>software-driven</b>"]
 
-    B --> F["West intake layer<br/>ingest.py + capture + connectors<br/><b>software-driven</b>"]
-    F --> G["Immutable true raw archive<br/>brain/raw/*<br/><b>software-owned witness material</b>"]
-    G --> H["RAM-only usable raw projection<br/>ProjectionLease + TextWindow + ArtifactView<br/><b>software-driven</b>"]
+    F["Daemon + scheduled jobs<br/>daemon.py + daemon_jobs.py + jobs.py<br/><b>software-driven orchestration</b>"] --> E
 
-    I["Daemon + scheduled jobs<br/>daemon.py + daemon_jobs.py + jobs.py<br/><b>software-driven orchestration</b>"] --> H
-    I --> D
+    E --> G["VLM visual snippet layer<br/>figures / media -> descriptions<br/><b>AI-driven</b>"]
+    E --> H["LLM extraction layer<br/>text + visual snippets -> candidate JSON<br/><b>AI-driven</b>"]
+    G --> H
+    H --> I["Candidate validation<br/>schema + provenance + binding checks<br/><b>software-driven</b>"]
+    I --> J["Promotion-ready candidates<br/>extraction_candidates<br/><b>software-owned state</b>"]
+    J --> K["Deterministic promotion layer<br/>create / update / confirm / review<br/><b>software-driven; plan missing</b>"]
 
-    H --> J["VLM visual snippet layer<br/>figures / media -> descriptions<br/><b>AI-driven</b>"]
-    H --> K["LLM extraction layer<br/>text + visual snippets -> candidate JSON<br/><b>AI-driven</b>"]
-    J --> K
-    K --> L["Candidate validation<br/>schema + provenance + binding checks<br/><b>software-driven</b>"]
-    L --> M["Promotion-ready candidates<br/>extraction_candidates<br/><b>software-owned state</b>"]
-    M --> N["Deterministic promotion layer<br/>create / update / confirm / review<br/><b>software-driven; plan missing</b>"]
+    K --> L["Canonical wiki<br/>brain/wiki/*<br/><b>software/human governed memory</b>"]
+    L --> M["SQLite/index substrate<br/>FTS + vectors + graph + state<br/><b>software-driven derived stores</b>"]
 
-    N --> O["Canonical wiki<br/>brain/wiki/*<br/><b>software/human governed memory</b>"]
-    O --> P["SQLite/index substrate<br/>FTS + vectors + graph + state<br/><b>software-driven derived stores</b>"]
-    P --> D
+    M --> N["East retrieval layer<br/>retrieval.py + trust.py + graph.py<br/><b>software-driven today</b>"]
+    B --> O["Runtime layer<br/>runtime.py<br/><b>software-driven</b>"]
+    O --> N
+    F --> N
+    N --> P["Bounded memory packet<br/>recommendation + warnings + provenance<br/><b>software-driven</b>"]
+    P --> A
 
-    Q["Future learned retrieval core<br/>fetch + sort relevant wiki/context<br/><b>AI-driven, read-only, no mutation</b>"] -.-> D
-    P -.-> Q
-    O -.-> Q
+    Q["Future learned retrieval core<br/>fetch + sort relevant wiki/context<br/><b>AI-driven, read-only, no mutation</b>"] -.-> N
+    M -.-> Q
+    L -.-> Q
 ```
 
 The storage/index substrate is currently SQLite plus markdown, FTS, vectors, and
