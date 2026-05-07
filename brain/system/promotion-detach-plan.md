@@ -1,4 +1,6 @@
-# MnemonicOS Refactor: Detach Old Promotion Runtime
+# OBSOLETE: MnemonicOS Refactor: Detach Old Promotion Runtime
+
+This transition plan is superseded by the clean-slate LLM/VLM layer plan. The legacy promotion queue, workers, synchronous promotion helpers, and `--promote-now` path have been removed rather than kept as a compatibility bridge.
 
 ## Context
 

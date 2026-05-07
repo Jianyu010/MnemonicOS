@@ -1,4 +1,13 @@
-# Implementation Plan
+# OBSOLETE: Implementation Plan
+
+This document is historical. It predates the current west-flange and LLM/VLM
+extraction architecture and still contains stale direct-ingest, chunking, and
+promotion assumptions.
+
+Current governing architecture starts at
+[`brain/system/architecture.md`](../brain/system/architecture.md). Use the
+west-flange and LLM/VLM governing plans linked there for current implementation
+truth.
 
 Current status: Phase 4 is implemented locally in this repo. The system now has
 trust/usefulness scoring, freshness states, contradiction reviews, relearn

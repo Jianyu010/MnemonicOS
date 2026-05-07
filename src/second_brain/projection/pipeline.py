@@ -170,12 +170,30 @@ class ProjectionService:
         source_ref: SourceRef,
         options: ProjectionOptions,
     ) -> tuple[ProjectionLease, list[TextWindow], list[ArtifactView]]:
-        text, metadata, warnings = assemble_session_projection(connection, source_ref)
+        if source_ref.source_kind == "session" and source_ref.archive_id:
+            row = connection.execute(
+                """
+                SELECT path
+                FROM archive
+                WHERE id = ? AND type = 'session'
+                """,
+                (source_ref.archive_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"session archive not found: {source_ref.archive_id}")
+            raw_path = Path(str(row["path"]))
+            text = raw_path.read_text()
+            metadata = {"archive_id": source_ref.archive_id}
+            warnings = []
+            source_locator = source_ref.archive_id
+        else:
+            text, metadata, warnings = assemble_session_projection(connection, source_ref)
+            source_locator = f"{source_ref.conversation_id}/{source_ref.episode_id}"
         windows = list(
             iter_text_windows(
                 text,
-                source_kind="episode",
-                source_locator=f"{source_ref.conversation_id}/{source_ref.episode_id}",
+                source_kind=source_ref.source_kind,
+                source_locator=source_locator,
                 token_target=options.window_token_target,
                 token_overlap=options.window_token_overlap,
             )

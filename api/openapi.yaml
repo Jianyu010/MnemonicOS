@@ -131,23 +131,60 @@ paths:
               schema:
                 $ref: '#/components/schemas/EndEpisodeResponse'
 
-  /v1/capture/project-episode:
+  /v1/extraction/queue:
     post:
-      operationId: captureProjectEpisode
-      summary: Project a captured episode in memory and run promotion.
+      operationId: queueExtraction
+      summary: Queue a west-flange source for LLM/VLM extraction.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ProjectEpisodeRequest'
+              $ref: '#/components/schemas/ExtractionQueueRequest'
       responses:
         '200':
-          description: Episode projected
+          description: Extraction queued
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ProjectEpisodeResponse'
+                $ref: '#/components/schemas/ExtractionQueueItem'
+
+  /v1/extraction/process:
+    post:
+      operationId: processExtraction
+      summary: Process pending extraction rows.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExtractionProcessRequest'
+      responses:
+        '200':
+          description: Extraction processing stats
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExtractionProcessResponse'
+
+  /v1/extraction/status:
+    get:
+      operationId: extractionStatus
+      summary: Inspect extraction queue status.
+      parameters:
+        - name: queue_id
+          in: query
+          required: false
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Extraction status
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
 
   /v1/sync/vault:
     post:
@@ -532,36 +569,6 @@ components:
           type: string
       required: [conversation_id, episode_id, status, event_count, content_hash, manifest_path]
 
-    ProjectEpisodeRequest:
-      type: object
-      properties:
-        conversation_id:
-          type: string
-        episode_id:
-          type: string
-      required: [conversation_id, episode_id]
-
-    ProjectEpisodeResponse:
-      type: object
-      properties:
-        archive_id:
-          type: string
-          description: Episode provenance id, not an archive table row.
-        raw_path:
-          type: string
-        chunk_count:
-          type: integer
-          const: 0
-        promoted_notes:
-          type: array
-          items:
-            type: string
-        review_items:
-          type: array
-          items:
-            type: string
-      required: [archive_id, raw_path, chunk_count, promoted_notes, review_items]
-
     SyncVaultRequest:
       type: object
       properties:
@@ -649,11 +656,80 @@ components:
       properties:
         job_name:
           type: string
-          enum: [daily_consolidation, weekly_hygiene, sync_vault_incremental]
+          enum: [daily_consolidation, weekly_hygiene, sync_vault_incremental, process_extraction_queue, embed_backfill, status_report]
         dry_run:
           type: boolean
           default: false
       required: [job_name]
+
+    ExtractionQueueRequest:
+      type: object
+      properties:
+        source_kind:
+          type: string
+          enum: [artifact, episode, session]
+        archive_id:
+          type: string
+        conversation_id:
+          type: string
+        episode_id:
+          type: string
+        bridge_id:
+          type: string
+        session_id:
+          type: string
+        task_id:
+          type: string
+      required: [source_kind]
+
+    ExtractionQueueItem:
+      type: object
+      properties:
+        id:
+          type: integer
+        source_kind:
+          type: string
+        archive_id:
+          type: string
+        conversation_id:
+          type: string
+        episode_id:
+          type: string
+        status:
+          type: string
+        attempt_count:
+          type: integer
+        last_error:
+          type: string
+      required: [id, source_kind, status, attempt_count]
+
+    ExtractionProcessRequest:
+      type: object
+      properties:
+        dry_run:
+          type: boolean
+          default: false
+
+    ExtractionProcessResponse:
+      type: object
+      properties:
+        processed:
+          type: integer
+        skipped:
+          type: integer
+        errors:
+          type: integer
+        windows:
+          type: integer
+        artifacts:
+          type: integer
+        visual_snippets:
+          type: integer
+        candidates:
+          type: integer
+        promotion_ready:
+          type: integer
+      required: [processed, skipped, errors, windows, artifacts, visual_snippets, candidates, promotion_ready]
 
     RunJobResponse:
       type: object

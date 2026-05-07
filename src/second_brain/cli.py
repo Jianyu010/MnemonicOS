@@ -14,11 +14,10 @@ from typing import Any
 from .config import default_config_path, load_config
 from .daemon_status import daemon_status_summary, daemon_unreachable_summary, read_pid, socket_send
 from .db import connect_db, run_migrations
+from .extraction import enqueue_extraction, extraction_status
 from .ingest import (
     ingest_artifact,
     ingest_session,
-    ingest_session_promote,
-    project_episode_for_promotion,
     reprocess_artifact,
     reprocess_failed_artifacts,
 )
@@ -66,7 +65,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sync_parser.add_argument("--mode", choices=("incremental", "full"), default="incremental")
     sync_parser.add_argument("paths", nargs="*", help="Optional subset of files to sync.")
 
-    ingest_parser = subparsers.add_parser("ingest-session", help="Ingest a raw session and promote explicit memory items.")
+    ingest_parser = subparsers.add_parser("ingest-session", help="Archive a raw session for later extraction.")
     ingest_parser.add_argument("--bridge-id")
     ingest_parser.add_argument("--session-id")
     ingest_parser.add_argument("--agent", help="Deprecated alias for --bridge-id.")
@@ -75,7 +74,6 @@ def _build_parser() -> argparse.ArgumentParser:
     ingest_parser.add_argument("--content", help="Inline session content.")
     ingest_parser.add_argument("--tag", action="append", default=[])
     ingest_parser.add_argument("--source-ref", action="append", default=[])
-    ingest_parser.add_argument("--promote-now", action="store_true", help="Bypass the deferred queue and promote immediately.")
 
     artifact_parser = subparsers.add_parser("ingest-artifact", help="Ingest a true raw artifact without persisting extracted content.")
     artifact_parser.add_argument("--file", required=True, help="Path to the artifact file.")
@@ -130,10 +128,19 @@ def _build_parser() -> argparse.ArgumentParser:
     end_capture.add_argument("--metadata-json", default=None)
     end_capture.add_argument("--json", action="store_true", help="Emit JSON output.")
 
-    project_capture = capture_subparsers.add_parser("project-episode", help="Project a captured episode in memory and run promotion.")
-    project_capture.add_argument("--conversation-id", required=True)
-    project_capture.add_argument("--episode-id", required=True)
-    project_capture.add_argument("--json", action="store_true", help="Emit JSON output.")
+    queue_extraction = subparsers.add_parser("queue-extraction", help="Queue a west-flange source for LLM/VLM extraction.")
+    queue_extraction.add_argument("--source-kind", required=True, choices=("artifact", "episode", "session"))
+    queue_extraction.add_argument("--archive-id", default=None)
+    queue_extraction.add_argument("--conversation-id", default=None)
+    queue_extraction.add_argument("--episode-id", default=None)
+    queue_extraction.add_argument("--bridge-id", default=None)
+    queue_extraction.add_argument("--session-id", default=None)
+    queue_extraction.add_argument("--task-id", default=None)
+    queue_extraction.add_argument("--json", action="store_true", help="Emit JSON output.")
+
+    extraction_status_parser = subparsers.add_parser("extraction-status", help="Inspect extraction queue status.")
+    extraction_status_parser.add_argument("--queue-id", type=int, default=None)
+    extraction_status_parser.add_argument("--json", action="store_true", help="Emit JSON output.")
 
     retrieve_parser = subparsers.add_parser("retrieve", help="Run hybrid retrieval across exact, BM25, semantic, graph, and archive channels.")
     retrieve_parser.add_argument("query", help="Query text.")
@@ -198,8 +205,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "daily_consolidation",
             "weekly_hygiene",
             "sync_vault_incremental",
-            "process_promotion_queue",
-            "backfill_promotion_queue",
+            "process_extraction_queue",
             "embed_backfill",
             "status_report",
         ),
@@ -486,7 +492,6 @@ def _ingest_session(
     content: str | None,
     tags: list[str],
     source_refs: list[str],
-    promote_now: bool,
 ) -> int:
     if bool(file_path) == bool(content):
         raise SystemExit("provide exactly one of --file or --content")
@@ -498,8 +503,7 @@ def _ingest_session(
     if file_path is not None:
         payload = open(file_path, encoding="utf-8").read()
     config = load_config(config_path)
-    ingest_fn = ingest_session_promote if promote_now else ingest_session
-    result = ingest_fn(
+    result = ingest_session(
         config,
         bridge_id=resolved_bridge_id,
         session_id=resolved_session_id,
@@ -746,20 +750,34 @@ def _capture_end_episode(
     return _print_or_json(result.to_dict(), emit_json)
 
 
-def _capture_project_episode(config_path: str, conversation_id: str, episode_id: str, emit_json: bool) -> int:
+def _queue_extraction(
+    config_path: str,
+    source_kind: str,
+    archive_id: str | None,
+    conversation_id: str | None,
+    episode_id: str | None,
+    bridge_id: str | None,
+    session_id: str | None,
+    task_id: str | None,
+    emit_json: bool,
+) -> int:
     config = load_config(config_path)
-    result = project_episode_for_promotion(
+    item = enqueue_extraction(
         config,
+        source_kind=source_kind,
+        archive_id=archive_id,
         conversation_id=conversation_id,
         episode_id=episode_id,
+        bridge_id=bridge_id,
+        session_id=session_id,
+        task_id=task_id,
     )
-    payload = {
-        "archive_id": result.archive_id,
-        "raw_path": result.raw_path,
-        "chunk_count": result.chunk_count,
-        "promoted_notes": result.promoted_notes,
-        "review_items": result.review_items,
-    }
+    return _print_or_json(item.to_dict(), emit_json)
+
+
+def _extraction_status(config_path: str, queue_id: int | None, emit_json: bool) -> int:
+    config = load_config(config_path)
+    payload = extraction_status(config, queue_id=queue_id)
     return _print_or_json(payload, emit_json)
 
 
@@ -1046,7 +1064,6 @@ def main(argv: list[str] | None = None) -> int:
             args.content,
             args.tag,
             args.source_ref,
-            args.promote_now,
         )
     if args.command == "ingest-artifact":
         return _ingest_artifact(args.config, args.file, args.tag, args.attachment, args.attachment_recursive, args.json)
@@ -1096,8 +1113,20 @@ def main(argv: list[str] | None = None) -> int:
                 args.metadata_json,
                 args.json,
             )
-        if args.capture_command == "project-episode":
-            return _capture_project_episode(args.config, args.conversation_id, args.episode_id, args.json)
+    if args.command == "queue-extraction":
+        return _queue_extraction(
+            args.config,
+            args.source_kind,
+            args.archive_id,
+            args.conversation_id,
+            args.episode_id,
+            args.bridge_id,
+            args.session_id,
+            args.task_id,
+            args.json,
+        )
+    if args.command == "extraction-status":
+        return _extraction_status(args.config, args.queue_id, args.json)
     if args.command == "retrieve":
         return _retrieve(args.config, args.query, args.top_k, args.query_type_hint, args.json)
     if args.command == "resolve-task-context":

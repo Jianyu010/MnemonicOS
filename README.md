@@ -142,7 +142,6 @@ HTTP transport:
 - `POST /v1/capture/begin-episode`
 - `POST /v1/capture/append-event`
 - `POST /v1/capture/end-episode`
-- `POST /v1/capture/project-episode`
 - `POST /v1/sync/vault`
 - `POST /v1/jobs/run`
 - `POST /v1/orchestrator/begin-task`
@@ -395,7 +394,6 @@ mnemonicos orchestrator begin-task "debug the failing auth deploy"
 mnemonicos capture begin-episode --bridge-id codex --conversation-id thread-001 --episode-id visit-001
 mnemonicos ingest-session --bridge-id local-cli --session-id session-001 --file ./notes/session.md
 mnemonicos ingest-artifact --file ./docs/paper.pdf --tag research
-mnemonicos daemon run-job process_promotion_queue
 mnemonicos server --host 127.0.0.1 --port 8000
 ```
 

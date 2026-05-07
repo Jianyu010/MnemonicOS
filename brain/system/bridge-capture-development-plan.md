@@ -401,7 +401,7 @@ Add a daemon-side episode projection path:
    raw projection.
 
 For an interim bridge to the current promotion machinery, add
-`project_episode_for_promotion(conversation_id, episode_id)`:
+`project_episode_for_promotion(conversation_id, episode_id)` (obsolete legacy promotion path):
 
 - builds session-like markdown in memory from the event stream
 - calls candidate extraction/promotion helpers directly

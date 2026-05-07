@@ -16,7 +16,6 @@ if str(SRC) not in sys.path:
 
 from second_brain.config import load_config
 from second_brain.db import connect_db
-from second_brain.ingest import project_episode_for_promotion
 from second_brain.models import AppendEventRequest, BeginEpisodeRequest, EndEpisodeRequest
 from second_brain.server import _POST_ROUTES
 from second_brain.session_capture import append_event, begin_episode, end_episode
@@ -223,7 +222,7 @@ class SessionCaptureTest(unittest.TestCase):
             finally:
                 db.close()
 
-    def test_project_episode_promotes_without_archive_chunks(self) -> None:
+    def test_episode_capture_remains_raw_until_extraction_layer_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             workspace = Path(tmp_dir)
             config = load_config(_config(workspace), workspace)
@@ -241,12 +240,7 @@ class SessionCaptureTest(unittest.TestCase):
                     payload={
                         "content": textwrap.dedent(
                             """
-                            ```memory
-                            - type: concept
-                              title: Captured episode projection works
-                              confidence: high
-                              summary: Captured raw episodes can promote from in-memory projection.
-                            ```
+                            Raw captured episodes should stay raw until the extraction daemon consumes them.
                             """
                         ).strip()
                     },
@@ -262,20 +256,11 @@ class SessionCaptureTest(unittest.TestCase):
                 ),
             )
 
-            result = project_episode_for_promotion(
-                config,
-                conversation_id=begin.conversation_id,
-                episode_id=begin.episode_id,
-            )
-
-            self.assertEqual(result.archive_id, "episode/thread-promote/episode-promote")
-            self.assertEqual(result.chunk_count, 0)
-            self.assertIn("concept/captured-episode-projection-works", result.promoted_notes)
             db = connect_db(config.paths.db_path)
             try:
-                archive_row = db.execute("SELECT id FROM archive WHERE id = ?", (result.archive_id,)).fetchone()
+                archive_row = db.execute("SELECT id FROM archive WHERE id = ?", ("episode/thread-promote/episode-promote",)).fetchone()
                 self.assertIsNone(archive_row)
-                chunks = db.execute("SELECT COUNT(*) AS n FROM archive_chunks WHERE archive_id = ?", (result.archive_id,)).fetchone()
+                chunks = db.execute("SELECT COUNT(*) AS n FROM archive_chunks WHERE archive_id = ?", ("episode/thread-promote/episode-promote",)).fetchone()
                 self.assertEqual(int(chunks["n"]), 0)
                 episode = db.execute(
                     """
@@ -285,8 +270,8 @@ class SessionCaptureTest(unittest.TestCase):
                     """,
                     (begin.conversation_id, begin.episode_id),
                 ).fetchone()
-                self.assertEqual(episode["projection_status"], "projected")
-                self.assertEqual(int(episode["promoted_count"]), 1)
+                self.assertEqual(episode["projection_status"], "not_projected")
+                self.assertEqual(int(episode["promoted_count"]), 0)
                 self.assertEqual(int(episode["review_count"]), 0)
             finally:
                 db.close()
@@ -355,7 +340,7 @@ class SessionCaptureTest(unittest.TestCase):
         self.assertIn("/v1/capture/begin-episode", _POST_ROUTES)
         self.assertIn("/v1/capture/append-event", _POST_ROUTES)
         self.assertIn("/v1/capture/end-episode", _POST_ROUTES)
-        self.assertIn("/v1/capture/project-episode", _POST_ROUTES)
+        self.assertNotIn("/v1/capture/project-episode", _POST_ROUTES)
 
 
 if __name__ == "__main__":

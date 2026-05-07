@@ -51,7 +51,6 @@ Fast path:
 
 Slow path:
 
-- `process_promotion_queue`
 - `embed_backfill`
 - `daily_consolidation`
 - `weekly_hygiene`
@@ -59,10 +58,10 @@ Slow path:
 
 Rules:
 
-- `ingest-session` archives immediately and queues a promotion candidate by default
+- `ingest-session` archives immediately as raw intake
 - canonical note mutation does not happen in default intake
-- pending promotion candidates are not directly retrievable memory
-- retrieval lag before promotion is an explicit tradeoff in exchange for lower writeback latency
+- extraction queue behavior belongs to the LLM/VLM layer plan and is not part of this legacy runtime protocol yet
+- raw archive chunks may be retrievable only through archive fallback, not as canonical wiki memory
 
 ## Shared Concepts
 

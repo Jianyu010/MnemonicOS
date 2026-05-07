@@ -67,6 +67,16 @@ class TrustConfig:
 
 
 @dataclass(slots=True)
+class ExtractionConfig:
+    vlm_provider: str = "fixture"
+    vlm_model: str = "llama3.2-vision:latest"
+    llm_provider: str = "fixture"
+    llm_model: str = "gemma4:e4b"
+    ollama_base_url: str = "http://127.0.0.1:11434"
+    max_queue_batch: int = 10
+
+
+@dataclass(slots=True)
 class BridgeConfig:
     session_prefix: str
     can_promote: bool
@@ -90,6 +100,7 @@ class AppConfig:
     embeddings: EmbeddingsConfig = field(default_factory=EmbeddingsConfig)
     graph: GraphConfig = field(default_factory=GraphConfig)
     trust: TrustConfig = field(default_factory=TrustConfig)
+    extraction: ExtractionConfig = field(default_factory=ExtractionConfig)
     daemon: DaemonConfig | None = None
     bridges: dict[str, BridgeConfig] = field(default_factory=dict)
     config_path: Path | None = None
@@ -203,6 +214,16 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
         section_limit=int(trust_data.get("section_limit", 5)),
     )
 
+    extraction_data = data.get("extraction", {})
+    extraction = ExtractionConfig(
+        vlm_provider=str(extraction_data.get("vlm_provider", "fixture")),
+        vlm_model=str(extraction_data.get("vlm_model", "llama3.2-vision:latest")),
+        llm_provider=str(extraction_data.get("llm_provider", "fixture")),
+        llm_model=str(extraction_data.get("llm_model", "gemma4:e4b")),
+        ollama_base_url=str(extraction_data.get("ollama_base_url", "http://127.0.0.1:11434")),
+        max_queue_batch=int(extraction_data.get("max_queue_batch", 10)),
+    )
+
     daemon_data = data.get("daemon", {})
     daemon_schedules = daemon_data.get("schedules", {})
     daemon = DaemonConfig(
@@ -231,6 +252,7 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
         embeddings=embeddings,
         graph=graph,
         trust=trust,
+        extraction=extraction,
         daemon=daemon,
         bridges=bridges,
         config_path=resolved_config,
