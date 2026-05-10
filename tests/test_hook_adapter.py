@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -26,6 +27,10 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 PREFLIGHT = str(SCRIPTS / "mnemonic_hook_preflight.sh")
 STOP_HOOK = str(SCRIPTS / "mnemonic_stop_hook.sh")
+CODEX_PREFLIGHT = str(SCRIPTS / "mnemonic_codex_hook_preflight.sh")
+CODEX_STOP_HOOK = str(SCRIPTS / "mnemonic_codex_stop_hook.sh")
+CODEX_NOTIFY_BRIDGE = SCRIPTS / "codex_notify_bridge.sh"
+CODEX_NOTIFY_IMPORTER = SCRIPTS / "mnemonic_codex_notify_bridge.py"
 
 
 def _make_env(*, state_file: str, mnemo_enabled: str = "1", extra: dict | None = None) -> dict:
@@ -124,7 +129,10 @@ class TestPreflightHook(unittest.TestCase):
         # If state file exists, it must contain a non-empty task_id
         if os.path.exists(self._state_file):
             content = Path(self._state_file).read_text().strip()
-            self.assertTrue(content.startswith("task-"), f"Unexpected task_id: {content!r}")
+            parsed = json.loads(content)
+            self.assertTrue(parsed.get("task_id", "").startswith("task-"), f"Unexpected state: {content!r}")
+            self.assertTrue(parsed.get("conversation_id"), f"Missing conversation_id: {content!r}")
+            self.assertTrue(parsed.get("episode_id"), f"Missing episode_id: {content!r}")
 
     def test_stdout_is_valid_json_context_when_state_file_written(self) -> None:
         """If orchestrator ran and wrote a state file, stdout must be valid JSON {"context": ...}."""
@@ -155,6 +163,15 @@ class TestPreflightHook(unittest.TestCase):
                 os.unlink(self._state_file)
             except FileNotFoundError:
                 pass
+
+
+class TestCodexNotifyBridge(unittest.TestCase):
+    """Tests for Codex Desktop notify capture wrapper."""
+
+    def test_does_not_launch_computer_use_helper_by_default(self) -> None:
+        content = CODEX_NOTIFY_BRIDGE.read_text(encoding="utf-8")
+        self.assertNotIn("computer-use/1.0.758", content)
+        self.assertIn("MNEMO_CODEX_NOTIFY_RUN_ORIGINAL", content)
 
 
 class TestStopHook(unittest.TestCase):
@@ -304,7 +321,8 @@ class TestHookRoundTrip(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
 
             if os.path.exists(self._state_file):
-                tid = Path(self._state_file).read_text().strip()
+                raw_state = Path(self._state_file).read_text().strip()
+                tid = json.loads(raw_state).get("task_id", "")
                 if tid:
                     task_ids.append(tid)
 
@@ -419,6 +437,126 @@ class TestHookDisableSwitch(unittest.TestCase):
                 actual_flag.unlink()
             except FileNotFoundError:
                 pass
+
+
+class TestCodexHookAdapter(unittest.TestCase):
+    """Tests for the Codex-specific hook wrappers."""
+
+    def setUp(self) -> None:
+        self._state_tmp = tempfile.NamedTemporaryFile(prefix="mnemo_codex_state_", delete=False)
+        self._state_tmp.close()
+        self._state_file = self._state_tmp.name
+        os.unlink(self._state_file)
+        self._session_id = "codex-unit-hook-session"
+        self._raw_session_dir = ROOT / "brain" / "raw" / "sessions" / self._session_id
+        shutil.rmtree(self._raw_session_dir, ignore_errors=True)
+
+    def tearDown(self) -> None:
+        try:
+            os.unlink(self._state_file)
+        except FileNotFoundError:
+            pass
+        shutil.rmtree(self._raw_session_dir, ignore_errors=True)
+
+    def test_codex_preflight_and_stop_capture_turn(self) -> None:
+        """Codex hooks write a raw codex episode without using Claude hook state."""
+        env = _make_env(state_file=self._state_file)
+        prompt_payload = json.dumps(
+            {
+                "session_id": self._session_id,
+                "turn_id": "turn-unit-001",
+                "prompt": "Codex hook adapter unit test prompt",
+                "cwd": str(ROOT),
+                "model": "gpt-test",
+            }
+        )
+        preflight = subprocess.run(
+            ["bash", CODEX_PREFLIGHT],
+            input=prompt_payload,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=30,
+        )
+        self.assertEqual(preflight.returncode, 0, preflight.stderr)
+        self.assertTrue(os.path.exists(self._state_file))
+
+        stop_payload = json.dumps(
+            {
+                "session_id": self._session_id,
+                "turn_id": "turn-unit-001",
+                "last_assistant_message": "Codex hook adapter unit test response.",
+            }
+        )
+        stop = subprocess.run(
+            ["bash", CODEX_STOP_HOOK],
+            input=stop_payload,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=30,
+        )
+        self.assertEqual(stop.returncode, 0, stop.stderr)
+        self.assertFalse(os.path.exists(self._state_file))
+
+        event_files = list(self._raw_session_dir.glob("episodes/*/events.jsonl"))
+        self.assertEqual(len(event_files), 1)
+        events = [json.loads(line) for line in event_files[0].read_text().splitlines()]
+        self.assertEqual([event["type"] for event in events], [
+            "episode_started",
+            "user_message",
+            "assistant_message",
+            "episode_ended",
+        ])
+        self.assertTrue(all(event["bridge_id"] == "codex" for event in events))
+
+    def test_codex_notify_payload_captures_one_complete_turn(self) -> None:
+        """Codex notify payloads should become one readable turn episode."""
+        session_id = "codex-unit-notify-session"
+        turn_id = "turn-unit-notify-001"
+        raw_session_dir = ROOT / "brain" / "raw" / "sessions" / session_id
+        shutil.rmtree(raw_session_dir, ignore_errors=True)
+        try:
+            payload = json.dumps(
+                {
+                    "type": "agent-turn-complete",
+                    "thread-id": session_id,
+                    "turn-id": turn_id,
+                    "cwd": str(ROOT),
+                    "client": "Codex Desktop",
+                    "input-messages": ["first user message", "second user message"],
+                    "last-assistant-message": "assistant response",
+                }
+            )
+            result = subprocess.run(
+                [sys.executable, str(CODEX_NOTIFY_IMPORTER), "turn-ended", payload],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            event_files = list(raw_session_dir.glob("episodes/*/events.jsonl"))
+            self.assertEqual(len(event_files), 1)
+            self.assertEqual(event_files[0].parent.name, turn_id)
+            events = [json.loads(line) for line in event_files[0].read_text().splitlines()]
+            self.assertEqual(
+                [event["type"] for event in events],
+                [
+                    "episode_started",
+                    "user_message",
+                    "user_message",
+                    "assistant_message",
+                    "episode_ended",
+                ],
+            )
+
+            transcript = (event_files[0].parent / "transcript.md").read_text()
+            self.assertIn("first user message", transcript)
+            self.assertIn("second user message", transcript)
+            self.assertIn("assistant response", transcript)
+        finally:
+            shutil.rmtree(raw_session_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

@@ -103,10 +103,10 @@ def daemon_status_summary(response: dict[str, object]) -> str:
     service = response.get("service") if isinstance(response.get("service"), dict) else {}
     health = response.get("health") if isinstance(response.get("health"), dict) else {}
     queue = health.get("queue") if isinstance(health, dict) and isinstance(health.get("queue"), dict) else {}
+    promo = health.get("promotion") if isinstance(health, dict) and isinstance(health.get("promotion"), dict) else {}
     storage = health.get("storage") if isinstance(health, dict) and isinstance(health.get("storage"), dict) else {}
     recent_runs = health.get("recent_job_runs") if isinstance(health, dict) and isinstance(health.get("recent_job_runs"), list) else []
     scheduled_jobs = service.get("scheduled_jobs") if isinstance(service, dict) and isinstance(service.get("scheduled_jobs"), list) else []
-
     pending_count = int(queue.get("pending_count", 0) or 0) if isinstance(queue, dict) else 0
     error_count = int(queue.get("error_count", 0) or 0) if isinstance(queue, dict) else 0
     oldest_age = queue.get("oldest_pending_age_minutes") if isinstance(queue, dict) else None
@@ -116,13 +116,21 @@ def daemon_status_summary(response: dict[str, object]) -> str:
     vault_bytes = storage.get("vault_bytes") if isinstance(storage, dict) else None
     vectors_bytes = storage.get("vectors_bytes") if isinstance(storage, dict) else None
     graph_bytes = storage.get("graph_bytes") if isinstance(storage, dict) else None
-
+    next_extraction_run = None
     next_promotion_run = None
     if isinstance(scheduled_jobs, list):
         for item in scheduled_jobs:
-            if isinstance(item, dict) and item.get("name") == "process_promotion_queue":
-                next_promotion_run = item.get("next_run_utc")
-                break
+            if isinstance(item, dict):
+                if item.get("name") == "process_extraction_queue":
+                    next_extraction_run = item.get("next_run_utc")
+                elif item.get("name") == "process_promotion_queue":
+                    next_promotion_run = item.get("next_run_utc")
+
+    promo_ready = int(promo.get("promotion_ready", 0) or 0) if isinstance(promo, dict) else 0
+    promo_promoted = int(promo.get("promoted", 0) or 0) if isinstance(promo, dict) else 0
+    promo_review = int(promo.get("review_routed", 0) or 0) if isinstance(promo, dict) else 0
+    promo_rejected = int(promo.get("rejected", 0) or 0) if isinstance(promo, dict) else 0
+    promo_last_run = str(promo.get("last_run_at") or "never") if isinstance(promo, dict) else "unknown"
 
     last_job_line = "none"
     if isinstance(recent_runs, list) and recent_runs:
@@ -134,10 +142,16 @@ def daemon_status_summary(response: dict[str, object]) -> str:
         f"Daemon: {status}",
         f"Running job: {running_job or 'idle'}",
         "",
-        "Promotion Queue",
+        "Extraction Queue",
         f"  pending: {pending_count} item(s)",
         f"  errors: {error_count} item(s)",
         f"  oldest pending age: {format_minutes(oldest_age if isinstance(oldest_age, int) else None)}",
+        f"  next extraction run: {next_extraction_run or 'unknown'}",
+        "",
+        "Promotion Queue",
+        f"  ready: {promo_ready} item(s)",
+        f"  promoted: {promo_promoted}  review: {promo_review}  rejected: {promo_rejected}",
+        f"  last run: {promo_last_run}",
         f"  next promotion run: {next_promotion_run or 'unknown'}",
         "",
         "Storage",

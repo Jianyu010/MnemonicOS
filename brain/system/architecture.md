@@ -1,0 +1,188 @@
+# MnemonicOS Architecture
+
+This is the governing index for MnemonicOS architecture documentation.
+
+## Authority Order
+
+When documents conflict, use this order:
+
+1. Current governing files under `brain/system/`.
+2. Current runtime/API implementation and tests.
+3. Strategic roadmaps under `development/`.
+4. Historical or obsolete docs marked `OBSOLETE`.
+
+The west-flange, LLM/VLM extraction, promotion, review command, and knowledge
+maintenance governing plans are authoritative for their respective layers.
+
+## Current System Shape
+
+```mermaid
+flowchart TD
+    A["North callers<br/>Agent / CLI / Hook / HTTP / human"] --> B["North adapter layer<br/>orchestrator.py + server.py + scripts<br/><b>software-driven</b>"]
+    B --> C["Runtime layer<br/>runtime.py<br/><b>software-driven</b>"]
+    C --> D["Push-triggered ingestion compiler<br/>west intake -> projection -> extraction candidates<br/><b>mixed: software orchestration + AI extraction</b>"]
+    D --> E["Deterministic promotion layer<br/>gate -> decide -> render -> write<br/><b>software-driven</b>"]
+    E --> R["Human review path<br/>promotion review CLI/TUI<br/><b>human governed + software-guarded</b>"]
+    R --> F["Canonical memory store<br/>brain/wiki/* + SQLite/index substrate<br/><b>software/human governed + derived stores</b>"]
+    E --> F
+    F --> M["Knowledge maintenance layer<br/>graph, lifecycle, importance, dedup, health<br/><b>software-driven; planned rollout</b>"]
+    M --> F
+    F --> G["East retrieval layer<br/>retrieval.py + trust.py + graph.py<br/><b>software-driven today</b>"]
+    G --> H["Bounded memory packet<br/>recommendation + warnings + provenance<br/><b>software-driven</b>"]
+    H --> A
+
+    subgraph W["West ingestion detail"]
+        W1["Raw intake<br/>ingest.py + capture + connectors<br/><b>software-driven</b>"]
+        W2["Immutable true raw archive<br/>brain/raw/*<br/><b>software-owned witness material</b>"]
+        W3["RAM-only usable raw projection<br/>ProjectionLease + TextWindow + ArtifactView<br/><b>software-driven</b>"]
+        W1 --> W2 --> W3
+    end
+
+    subgraph X["AI extraction detail"]
+        X1["VLM visual snippets<br/>figures / media -> descriptions<br/><b>AI-driven</b>"]
+        X2["LLM candidate bundle<br/>text + visual snippets -> candidate JSON<br/><b>AI-driven</b>"]
+        X3["Candidate validation<br/>schema + provenance + binding checks<br/><b>software-driven</b>"]
+        X4["Promotion-ready candidates<br/>extraction_candidates<br/><b>software-owned state</b>"]
+        X1 --> X2 --> X3 --> X4
+    end
+
+    subgraph P["Promotion detail"]
+        P1["Promotion gate<br/>policy + provenance + component checks"]
+        P2["Decision engine<br/>new / confirm / update / review"]
+        P3["Renderer<br/>candidate -> canonical NoteRecord markdown"]
+        P4["Writer<br/>atomic wiki write + promotion_decisions ledger"]
+        P1 --> P2 --> P3 --> P4
+    end
+
+    D -.->|breakdown| W
+    W3 --> X1
+    W3 --> X2
+    X4 -.->|feeds| D
+    E -.->|breakdown| P
+
+    I["Daemon + scheduled jobs<br/>daemon.py + daemon_jobs.py + jobs.py<br/><b>software-driven orchestration</b>"] --> D
+    I --> E
+    I --> M
+    I --> G
+
+    Q["Future learned retrieval core<br/>fetch + sort relevant wiki/context<br/><b>AI-driven, read-only, no mutation</b>"] -.->|future read-only rerank/fetch| G
+    F -.-> Q
+```
+
+The storage/index substrate is currently SQLite plus markdown, FTS, vectors, and
+graph/cache tables. Whether this should be treated as a full south flange or a
+lower-level replaceable substrate remains an open architecture question.
+
+The primary ingestion path is now push-triggered: artifact intake, archived
+session intake, and episode close all enqueue extraction and trigger extraction
+then promotion immediately. Scheduled daemon jobs are maintenance and recovery
+surfaces, not the primary mechanism for discovering unprocessed true raw.
+
+## Open Architecture Gaps
+
+These are intentionally marked as guidance, not binding design. They identify
+where the current system should evolve next without freezing implementation
+details too early.
+
+- **Knowledge maintenance is planned, not active.** The next layer should treat
+  the full wiki as a living graph: bulk graph rebuild, lifecycle audit,
+  importance scoring, semantic duplicate routing, and health reporting. The
+  governing plan exists, but the roadmap marks all phases as not started.
+- **East retrieval remains legacy-shaped.** Retrieval currently depends on
+  software ranking, trust, freshness, graph expansion, and bounded context packet
+  assembly. The future learned retrieval core should remain read-only and should
+  improve fetch/rank quality without gaining mutation authority.
+- **South boundary is unresolved.** SQLite, markdown, FTS, vectors, and graph
+  tables are treated as replaceable substrate today. It is still undecided
+  whether to formalize them as a south flange with explicit adapter contracts.
+- **Review namespaces are shared but filtered.** Promotion review, maintenance
+  verification review, merge review, and contradiction review can coexist under
+  `brain/wiki/review/`. Promotion review commands must continue to filter by
+  lifecycle/header contract so human promotion review does not consume unrelated
+  maintenance items.
+- **Verification depth trails architecture.** West-flange format fixtures,
+  real-model LLM/VLM checks, promotion confirm/update end-to-end coverage, and
+  maintenance-layer tests should expand as each layer becomes relied on in
+  production use.
+- **Learned components are advisory.** Any future learned daemon, learned
+  retrieval core, or AI-assisted maintenance must preserve the current authority
+  boundary: learned systems may suggest, rank, classify, or route, but canonical
+  mutation remains software-gated and provenance-preserving.
+
+## Governing References
+
+### Ingestion Pipeline (West Flange + Extraction)
+
+- [Product Boundary](product-boundary.md): product scope, flange vocabulary, and
+  current boundary rules.
+- [West-Flange Development Plan](west-flange-development-plan.md): true raw,
+  artifact identity, RAM projection, text windows, artifact views, and extraction
+  handoff.
+- [West-Flange Development Roadmap](west-flange-development-roadmap.md): current
+  west-flange implementation status and remaining verification gaps.
+- [LLM/VLM Layer Development Plan](llm-vlm-layer-development-plan.md): extraction
+  queue, VLM snippets, LLM candidate bundles, deterministic validation, and the
+  stop at `promotion_ready`.
+- [LLM/VLM Layer Development Roadmap](llm-vlm-layer-development-roadmap.md):
+  current extraction-layer implementation status and remaining work.
+- [Bridge Capture Development Plan](bridge-capture-development-plan.md):
+  north-flange raw session capture model.
+
+### Promotion, Review, and Maintenance
+
+- [Promotion Layer Development Plan](promotion-layer-development-plan.md):
+  deterministic gate, decision, renderer, writer, daemon/admin surfaces, and
+  promotion ledger.
+- [Promotion Layer Development Roadmap](promotion-layer-development-roadmap.md):
+  implementation status and remaining integration-test gaps.
+- [Review Command Development Plan](review-command-development-plan.md): human
+  approval/rejection path for promotion-routed notes.
+- [Review Command Development Roadmap](review-command-development-roadmap.md):
+  current review CLI/TUI status and hardening history.
+- [Knowledge Maintenance Layer Development Plan](knowledge-maintenance-development-plan.md):
+  planned full-wiki graph maintenance, lifecycle audit, importance scoring,
+  semantic duplicate routing, and health reporting.
+- [Knowledge Maintenance Layer Development Roadmap](knowledge-maintenance-development-roadmap.md):
+  implementation status for the maintenance layer.
+- [East Flange Plan](east-flange-plan.md): current retrieval state and stub for
+  the future learned retrieval core.
+
+### Runtime Protocol and Agent Bridges
+
+- [Runtime Protocol](runtime-protocol.md): canonical protocol contract for
+  `resolve_task_context`, `record_outcome`, `decide_writeback`, `run_maintenance`.
+- [Claude Code Bridge](claude-bridge.md): hook wiring, task/session identity,
+  writeback policy, enable/disable switch. Both phases implemented.
+- [Codex Bridge](codex-bridge.md): current skill-based path and planned Phase 2
+  adaptation layer (MCP, wrapper, breakpoint checkpointing).
+
+### Retrieval and Quality
+
+- [Control Signal Quality Roadmap](control-signal-quality-roadmap.md): ACTIVE —
+  gene strings, content quality gate, chain_id machinery.
+- [Episode-Aware Retrieval](episode-aware-retrieval.md): Phase 1 done (chain
+  metadata on notes); Phases 2–6 deferred until evaluation data exists.
+
+### Interface and Positioning
+
+- [Game Interface Skeleton](game-interface-skeleton.md): non-negotiable design
+  decisions for the library RPG interface.
+- [Competitive Positioning](competitive-positioning.md): positioning statement,
+  differentiators, and market context.
+
+### Vision and Roadmap
+
+- [Humanoid MnemonicOS Core Blueprint](../../development/humanoid-MnemonicOS-core-blueprint.md):
+  grand architectural vision — epistemic metabolism, provenance, abstraction
+  distance, learned reasoning.
+- [Learned Daemon Roadmap](../../development/learned-daemon-and-true-raw-memoryos-roadmap.md):
+  Step 0 (MnemonicOS as MemoryOS), Step 1 (learned daemon), Step 2 (neuro-symbolic
+  core).
+- [Library RPG Roadmap](../../development/roadmap-library-rpg.md): detailed
+  implementation plan for the game interface.
+
+## South Boundary
+
+The storage/index substrate (SQLite, vectors, graph) is currently treated as
+replaceable substrate behind MnemonicOS. Whether to formalize this as a "south
+flange" with explicit adapter contracts remains an open architecture question.

@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: MnemonicOS Local API
   version: 0.5.0
-  description: Local API for ingest, sync, retrieval, trust/freshness scoring, graph expansion, maintenance jobs, and the shared orchestrator facade.
+  description: Local API for raw capture, ingest, sync, retrieval, trust/freshness scoring, graph expansion, maintenance jobs, and the shared orchestrator facade.
 servers:
   - url: http://127.0.0.1:8000
 paths:
@@ -40,6 +40,151 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IngestSessionResponse'
+
+  /v1/ingest/artifact:
+    post:
+      operationId: ingestArtifact
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestArtifactRequest'
+      responses:
+        '200':
+          description: Artifact ingested
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestArtifactResponse'
+
+  /v1/reprocess/artifact:
+    post:
+      operationId: reprocessArtifact
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReprocessArtifactRequest'
+      responses:
+        '200':
+          description: Artifact reprocessed
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/IngestArtifactResponse'
+                  - $ref: '#/components/schemas/ReprocessArtifactBatchResponse'
+
+  /v1/capture/begin-episode:
+    post:
+      operationId: captureBeginEpisode
+      summary: Begin a software-enforced raw capture episode.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BeginEpisodeRequest'
+      responses:
+        '200':
+          description: Episode initialized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BeginEpisodeResponse'
+
+  /v1/capture/append-event:
+    post:
+      operationId: captureAppendEvent
+      summary: Append one raw event to an episode JSONL log.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppendEventRequest'
+      responses:
+        '200':
+          description: Event appended
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppendEventResponse'
+
+  /v1/capture/end-episode:
+    post:
+      operationId: captureEndEpisode
+      summary: End a raw capture episode and finalize episode metadata.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EndEpisodeRequest'
+      responses:
+        '200':
+          description: Episode finalized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EndEpisodeResponse'
+
+  /v1/extraction/queue:
+    post:
+      operationId: queueExtraction
+      summary: Queue a west-flange source for LLM/VLM extraction.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExtractionQueueRequest'
+      responses:
+        '200':
+          description: Extraction queued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExtractionQueueItem'
+
+  /v1/extraction/process:
+    post:
+      operationId: processExtraction
+      summary: Process pending extraction rows.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExtractionProcessRequest'
+      responses:
+        '200':
+          description: Extraction processing stats
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExtractionProcessResponse'
+
+  /v1/extraction/status:
+    get:
+      operationId: extractionStatus
+      summary: Inspect extraction queue status.
+      parameters:
+        - name: queue_id
+          in: query
+          required: false
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Extraction status
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
 
   /v1/sync/vault:
     post:
@@ -218,6 +363,212 @@ components:
           type: string
       required: [archive_id, promoted_notes, review_items, sync_mode]
 
+    IngestArtifactRequest:
+      type: object
+      properties:
+        path:
+          type: string
+          description: Local path to the raw artifact file.
+        tags:
+          type: array
+          items:
+            type: string
+        attachments:
+          type: array
+          description: Source-provided companion files to archive as true raw attachments.
+          items:
+            type: string
+      required: [path]
+
+    IngestArtifactResponse:
+      type: object
+      properties:
+        archive_id:
+          type: string
+        raw_path:
+          type: string
+        manifest_path:
+          type: string
+        ingest_status:
+          type: string
+          enum: [accepted, accepted_with_warnings, failed_extraction, manual_fix_needed]
+        source_format:
+          type: string
+        figure_count:
+          type: integer
+        warnings:
+          type: array
+          items:
+            type: string
+        failure_reason:
+          type: string
+        needs_visual_pass:
+          type: boolean
+        needs_manual_projection:
+          type: boolean
+        image_only_pdf:
+          type: boolean
+      required: [archive_id, raw_path, manifest_path, ingest_status, source_format,
+                 figure_count, warnings, needs_visual_pass, needs_manual_projection,
+                 image_only_pdf]
+
+    ReprocessArtifactRequest:
+      type: object
+      properties:
+        archive_id:
+          type: string
+          description: Artifact archive id to reprocess.
+        failed:
+          type: boolean
+          default: false
+          description: Reprocess all artifacts currently marked failed_extraction.
+
+    ReprocessArtifactBatchResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/IngestArtifactResponse'
+      required: [results]
+
+    BeginEpisodeRequest:
+      type: object
+      properties:
+        bridge_id:
+          type: string
+        conversation_id:
+          type: string
+          description: Durable thread id. Generated or recovered from bridge state when absent.
+        episode_id:
+          type: string
+          description: Visit/run id. Generated when absent.
+        parent_conversation_id:
+          type: string
+        related_conversation_ids:
+          type: array
+          items:
+            type: string
+        task_id:
+          type: string
+        cwd:
+          type: string
+        repo:
+          type: string
+        branch:
+          type: string
+        model:
+          type: string
+        agent_runtime:
+          type: string
+        platform_thread_id:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
+      required: [bridge_id]
+
+    BeginEpisodeResponse:
+      type: object
+      properties:
+        conversation_id:
+          type: string
+        episode_id:
+          type: string
+        conversation_path:
+          type: string
+        episode_path:
+          type: string
+        events_path:
+          type: string
+        transcript_path:
+          type: string
+        artifacts_path:
+          type: string
+      required: [conversation_id, episode_id, conversation_path, episode_path,
+                 events_path, transcript_path, artifacts_path]
+
+    AppendEventRequest:
+      type: object
+      properties:
+        bridge_id:
+          type: string
+        conversation_id:
+          type: string
+        episode_id:
+          type: string
+        type:
+          type: string
+          enum: [episode_started, user_message, assistant_message, tool_call, tool_result,
+                 file_changed, artifact_created, retrieval_packet, failure, branch_started,
+                 branch_completed, conversation_reference, episode_ended]
+        payload:
+          type: object
+          additionalProperties: true
+        task_id:
+          type: string
+        branch_id:
+          type: string
+          default: main
+        timestamp:
+          type: string
+          description: Optional ISO timestamp supplied by the bridge.
+      required: [bridge_id, conversation_id, episode_id, type]
+
+    AppendEventResponse:
+      type: object
+      properties:
+        conversation_id:
+          type: string
+        episode_id:
+          type: string
+        seq:
+          type: integer
+        events_path:
+          type: string
+        transcript_path:
+          type: string
+        artifact_paths:
+          type: array
+          items:
+            type: string
+      required: [conversation_id, episode_id, seq, events_path, transcript_path, artifact_paths]
+
+    EndEpisodeRequest:
+      type: object
+      properties:
+        bridge_id:
+          type: string
+        conversation_id:
+          type: string
+        episode_id:
+          type: string
+        status:
+          type: string
+          enum: [success, failure, partial, abandoned]
+          default: success
+        metadata:
+          type: object
+          additionalProperties: true
+      required: [bridge_id, conversation_id, episode_id]
+
+    EndEpisodeResponse:
+      type: object
+      properties:
+        conversation_id:
+          type: string
+        episode_id:
+          type: string
+        status:
+          type: string
+        event_count:
+          type: integer
+        content_hash:
+          type: string
+        manifest_path:
+          type: string
+      required: [conversation_id, episode_id, status, event_count, content_hash, manifest_path]
+
     SyncVaultRequest:
       type: object
       properties:
@@ -305,11 +656,80 @@ components:
       properties:
         job_name:
           type: string
-          enum: [daily_consolidation, weekly_hygiene, sync_vault_incremental]
+          enum: [daily_consolidation, weekly_hygiene, sync_vault_incremental, process_extraction_queue, embed_backfill, status_report]
         dry_run:
           type: boolean
           default: false
       required: [job_name]
+
+    ExtractionQueueRequest:
+      type: object
+      properties:
+        source_kind:
+          type: string
+          enum: [artifact, episode, session]
+        archive_id:
+          type: string
+        conversation_id:
+          type: string
+        episode_id:
+          type: string
+        bridge_id:
+          type: string
+        session_id:
+          type: string
+        task_id:
+          type: string
+      required: [source_kind]
+
+    ExtractionQueueItem:
+      type: object
+      properties:
+        id:
+          type: integer
+        source_kind:
+          type: string
+        archive_id:
+          type: string
+        conversation_id:
+          type: string
+        episode_id:
+          type: string
+        status:
+          type: string
+        attempt_count:
+          type: integer
+        last_error:
+          type: string
+      required: [id, source_kind, status, attempt_count]
+
+    ExtractionProcessRequest:
+      type: object
+      properties:
+        dry_run:
+          type: boolean
+          default: false
+
+    ExtractionProcessResponse:
+      type: object
+      properties:
+        processed:
+          type: integer
+        skipped:
+          type: integer
+        errors:
+          type: integer
+        windows:
+          type: integer
+        artifacts:
+          type: integer
+        visual_snippets:
+          type: integer
+        candidates:
+          type: integer
+        promotion_ready:
+          type: integer
+      required: [processed, skipped, errors, windows, artifacts, visual_snippets, candidates, promotion_ready]
 
     RunJobResponse:
       type: object

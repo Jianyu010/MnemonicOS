@@ -5,19 +5,26 @@ from hashlib import sha256
 import json
 from pathlib import Path
 import re
+import shutil
 import sqlite3
 from typing import Any
 
 import yaml
 
-from .bridge import decide_upsert, find_existing_candidates, infer_chain_context, parse_summary
+from .artifact_identity import (
+    IdentityResult,
+    classify_post_parse_identity,
+    find_exact_duplicate,
+    update_archive_identity,
+    write_identity_buckets,
+)
 from .config import AppConfig
+from .connectors import ConnectorConfig, connector_for_path, figure_from_bytes
 from .db import connect_db, run_migrations
-from .models import CandidateMatch, IngestSessionResult
-from .review import create_review_item, slugify
+from .models import IngestArtifactResult, IngestSessionResult
+from .review import slugify
 from .semantics import encode_text, upsert_archive_chunk_vector
 from .summaries import summarize_text
-from .sync import sync_vault
 
 
 MEMORY_BLOCK_PATTERN = re.compile(r"```(?:memory|mnemonic)\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
@@ -26,6 +33,7 @@ INLINE_ITEM_PATTERN = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 WORD_PATTERN = re.compile(r"\S+")
+_PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 
 # Patterns for session content extraction (options A and B)
 _NUANCE_LINE_RE = re.compile(r"^Nuance:\s*(.+?)$", re.MULTILINE)
@@ -43,7 +51,12 @@ _ERROR_TOKEN_RE = re.compile(
 )
 
 
-def _synthesize_summary(item: dict[str, Any], session_content: str) -> str:
+def _migrations_dir(config: AppConfig) -> Path:
+    configured = config.paths.workspace_root / "migrations"
+    return configured if configured.exists() else _PACKAGE_ROOT / "migrations"
+
+
+def _synthesize_summary(item: dict[str, Any], item_context: str) -> str:
     """Build a compact, vocabulary-rich summary if item lacks one.
 
     Priority:
@@ -63,20 +76,20 @@ def _synthesize_summary(item: dict[str, Any], session_content: str) -> str:
 
     item_type = str(item.get("type", "")).casefold()
 
-    nuance = _line_value(_NUANCE_LINE_RE, session_content)
-    next_line = _line_value(_NEXT_LINE_RE, session_content)
+    nuance = _line_value(_NUANCE_LINE_RE, item_context)
+    next_line = _line_value(_NEXT_LINE_RE, item_context)
     if nuance:
         if next_line and not _looks_like_control_signal(nuance):
             return f"WHEN {nuance} → {next_line}"
         return nuance
 
-    takeaway_section = _TAKEAWAY_SECTION_RE.search(session_content)
+    takeaway_section = _TAKEAWAY_SECTION_RE.search(item_context)
     if takeaway_section:
         bullet = _TAKEAWAY_BULLET_RE.search(takeaway_section.group(1))
         if bullet:
             return bullet.group(1).strip()
 
-    what_line = _line_value(_WHAT_LINE_RE, session_content)
+    what_line = _line_value(_WHAT_LINE_RE, item_context)
     if what_line:
         return what_line
 
@@ -123,24 +136,31 @@ def _is_placeholder_signal(text: str) -> bool:
     )
 
 
-def _extract_error_aliases(item: dict[str, Any], session_content: str = "") -> list[str]:
-    """Extract error/exception class names from item fields for alias injection.
-
-    Scans item-level fields and the surrounding session text.  The session text
-    catches AI Firm tool-experience entries where the future query term appears
-    in Nuance/What/Next lines rather than the explicit memory item.
-    """
+def _item_context_text(item: dict[str, Any]) -> str:
     fields = [
         str(item.get("title", "")),
         str(item.get("summary", "")),
         str(item.get("body", "")),
         str(item.get("symptom", "")),
         str(item.get("fix", "")),
-        session_content,
     ]
     for step in (item.get("steps") or []):
         fields.append(str(step))
-    combined = " ".join(fields)
+    for mode in (item.get("failure_modes") or []):
+        if isinstance(mode, dict):
+            fields.extend(str(value) for value in mode.values())
+        else:
+            fields.append(str(mode))
+    return "\n".join(field for field in fields if field)
+
+
+def _extract_error_aliases(item: dict[str, Any], item_context: str = "") -> list[str]:
+    """Extract error/exception class names from item fields for alias injection.
+
+    Scans only item-level fields so one promoted memory item cannot inherit
+    error tokens from unrelated notes in the same session.
+    """
+    combined = item_context or _item_context_text(item)
     return list(dict.fromkeys(_ERROR_TOKEN_RE.findall(combined)))
 
 TYPE_TO_DIRECTORY = {
@@ -661,7 +681,7 @@ def _archive_session(
     raw_path.write_text(content.rstrip() + "\n")
 
     connection = connect_db(config.paths.db_path)
-    run_migrations(connection, config.paths.workspace_root / "migrations")
+    run_migrations(connection, _migrations_dir(config))
 
     chunks = _chunk_text(
         content,
@@ -711,53 +731,716 @@ def _archive_session(
     return archive_id, raw_path, chunks, connection
 
 
-def _enqueue_promotion_candidate(
-    connection: sqlite3.Connection,
+def _jsonable_figure(figure: Any) -> dict[str, Any]:
+    payload = figure.to_dict()
+    warnings = payload.pop("warnings", [])
+    payload["warnings_json"] = list(warnings or [])
+    return payload
+
+
+def _jsonable_warnings(value: Any) -> list[str]:
+    if not value:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return [value]
+        if isinstance(parsed, list):
+            return [str(item) for item in parsed]
+    return [str(value)]
+
+
+def _artifact_archive_type(source_format: str) -> str:
+    return "web_clip" if source_format == "html" else "doc"
+
+
+def ingest_artifact(
+    config: AppConfig,
+    *,
+    path: str | Path,
+    tags: list[str] | None = None,
+    attachments: list[str | Path] | None = None,
+    connector_config: ConnectorConfig | None = None,
+) -> IngestArtifactResult:
+    source_path = Path(path).expanduser().resolve()
+    if not source_path.exists() or not source_path.is_file():
+        raise FileNotFoundError(str(source_path))
+
+    now = datetime.now()
+    timestamp = now.strftime("%Y-%m-%d-%H%M%S-%f")
+    source_slug = slugify(source_path.stem) or "artifact"
+    archive_name = f"{timestamp}-{source_slug}"
+    archive_id = f"artifact/{archive_name}"
+    artifact_dir = config.paths.vault_root / "raw" / "artifacts" / archive_name
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    raw_path = artifact_dir / f"original{source_path.suffix.casefold()}"
+    shutil.copy2(source_path, raw_path)
+
+    raw_bytes = raw_path.read_bytes()
+    raw_hash = sha256(raw_bytes).hexdigest()
+
+    connection = connect_db(config.paths.db_path)
+    run_migrations(connection, _migrations_dir(config))
+    try:
+        duplicate = find_exact_duplicate(connection, raw_sha256=raw_hash, byte_size=len(raw_bytes))
+    finally:
+        connection.close()
+    if duplicate is not None:
+        canonical_archive_id = str(duplicate["id"])
+        if raw_path.exists():
+            raw_path.unlink()
+        source_format = str(duplicate["source_format"] or source_path.suffix.casefold().lstrip(".") or "unknown")
+        warnings = [f"exact_duplicate_of:{canonical_archive_id}"]
+        manifest_path = artifact_dir / "manifest.json"
+        manifest = {
+            "archive_id": archive_id,
+            "artifact_path": str(duplicate["artifact_path"] or duplicate["path"]),
+            "source_format": source_format,
+            "original_filename": source_path.name,
+            "raw_sha256": None,
+            "canonical_raw_sha256": raw_hash,
+            "byte_size": len(raw_bytes),
+            "connector_name": str(duplicate["connector_name"] or ""),
+            "connector_version": str(duplicate["connector_version"] or ""),
+            "ingest_status": "accepted",
+            "duplicate_state": "exact_duplicate",
+            "canonical_archive_id": canonical_archive_id,
+            "pre_parse_short_circuited": True,
+            "page_count": int(duplicate["page_count"] or 0),
+            "slide_count": int(duplicate["slide_count"] or 0),
+            "figure_count": int(duplicate["figure_count"] or 0),
+            "table_count": int(duplicate["table_count"] or 0),
+            "warnings": warnings,
+            "failure_reason": None,
+            "needs_visual_pass": bool(duplicate["needs_visual_pass"]),
+            "needs_manual_projection": bool(duplicate["needs_manual_projection"]),
+            "image_only_pdf": bool(duplicate["image_only_pdf"]),
+            "figures": [],
+            "ingested_at": now.isoformat(timespec="seconds"),
+        }
+        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+        connection = connect_db(config.paths.db_path)
+        run_migrations(connection, _migrations_dir(config))
+        try:
+            with connection:
+                connection.execute(
+                    """
+                    INSERT INTO archive(
+                        id, type, path, ingested_at, agent, tags, chunk_count,
+                        artifact_path, source_format, original_filename, raw_sha256, byte_size,
+                        connector_name, connector_version, ingest_status, page_count, slide_count,
+                        figure_count, table_count, warnings_json, failure_reason, needs_visual_pass,
+                        needs_manual_projection, image_only_pdf, duplicate_state, canonical_archive_id,
+                        duplicate_confidence, overlap_summary_json
+                    )
+                    VALUES (
+                        ?, ?, ?, datetime('now'), NULL, ?, 0,
+                        ?, ?, ?, NULL, ?,
+                        ?, ?, ?, ?, ?,
+                        ?, ?, ?, NULL, ?,
+                        ?, ?, 'exact_duplicate', ?,
+                        1.0, '{}'
+                    )
+                    """,
+                    (
+                        archive_id,
+                        _artifact_archive_type(source_format),
+                        str(manifest_path.resolve()),
+                        json.dumps(tags or []),
+                        str(duplicate["artifact_path"] or duplicate["path"]),
+                        source_format,
+                        source_path.name,
+                        len(raw_bytes),
+                        manifest["connector_name"],
+                        manifest["connector_version"],
+                        "accepted",
+                        manifest["page_count"],
+                        manifest["slide_count"],
+                        manifest["figure_count"],
+                        manifest["table_count"],
+                        json.dumps(warnings),
+                        1 if manifest["needs_visual_pass"] else 0,
+                        1 if manifest["needs_manual_projection"] else 0,
+                        1 if manifest["image_only_pdf"] else 0,
+                        canonical_archive_id,
+                    ),
+                )
+                _upsert_archive_sync_state(connection, manifest_path, archive_id, raw_hash)
+        finally:
+            connection.close()
+        return IngestArtifactResult(
+            archive_id=archive_id,
+            raw_path=str(duplicate["artifact_path"] or duplicate["path"]),
+            manifest_path=str(manifest_path.resolve()),
+            ingest_status="accepted",
+            source_format=source_format,
+            figure_count=manifest["figure_count"],
+            warnings=warnings,
+            failure_reason=None,
+            needs_visual_pass=manifest["needs_visual_pass"],
+            needs_manual_projection=manifest["needs_manual_projection"],
+            image_only_pdf=manifest["image_only_pdf"],
+            duplicate_state="exact_duplicate",
+            canonical_archive_id=canonical_archive_id,
+        )
+
+    connector = connector_for_path(raw_path)
+    result = connector.extract(raw_path, config=connector_config or ConnectorConfig())
+    metadata = dict(result.metadata)
+    source_format = str(metadata.get("source_format") or getattr(connector, "source_format", "unknown"))
+    warnings = list(result.warnings)
+    figure_rows = [_jsonable_figure(figure) for figure in result.figures]
+    source_attachments = [Path(item).expanduser().resolve() for item in (attachments or [])]
+    if source_attachments:
+        attachments_dir = artifact_dir / "attachments"
+        attachments_dir.mkdir(parents=True, exist_ok=True)
+        start_index = len(figure_rows) + 1
+        for offset, attachment_source in enumerate(source_attachments, start=start_index):
+            if not attachment_source.exists() or not attachment_source.is_file():
+                warnings.append(f"attachment_missing:{attachment_source}")
+                continue
+            target = attachments_dir / attachment_source.name
+            shutil.copy2(attachment_source, target)
+            data = target.read_bytes()
+            figure = figure_from_bytes(
+                figure_id=f"fig_{offset:03d}",
+                data=data,
+                storage_policy="source_attachment",
+                attachment_path=str(target.resolve()),
+                source_index=offset,
+                structural_location=f"attachment:{attachment_source.name}",
+            )
+            figure_rows.append(_jsonable_figure(figure))
+    ingest_status = result.status
+    if ingest_status not in {"accepted", "accepted_with_warnings", "failed_extraction", "manual_fix_needed"}:
+        ingest_status = "failed_extraction"
+        warnings.append(f"invalid_connector_status:{result.status}")
+    failure_reason = result.failure_reason
+    needs_manual_projection = bool(metadata.get("needs_manual_projection")) or ingest_status == "failed_extraction"
+    needs_visual_pass = bool(metadata.get("needs_visual_pass")) or any(bool(row.get("needs_visual_pass")) for row in figure_rows)
+    image_only_pdf = bool(metadata.get("image_only_pdf"))
+    figure_count = max(int(metadata.get("figure_count") or 0), len(figure_rows))
+    table_count = int(metadata.get("table_count") or 0)
+    page_count = int(metadata.get("page_count") or 0)
+    slide_count = int(metadata.get("slide_count") or 0)
+
+    manifest = {
+        "archive_id": archive_id,
+        "artifact_path": str(raw_path.resolve()),
+        "source_format": source_format,
+        "original_filename": source_path.name,
+        "raw_sha256": raw_hash,
+        "byte_size": len(raw_bytes),
+        "connector_name": str(metadata.get("connector_name") or getattr(connector, "name", "unknown_connector")),
+        "connector_version": str(metadata.get("connector_version") or ""),
+        "ingest_status": ingest_status,
+        "page_count": page_count,
+        "slide_count": slide_count,
+        "figure_count": figure_count,
+        "table_count": table_count,
+        "warnings": warnings,
+        "failure_reason": failure_reason,
+        "needs_visual_pass": needs_visual_pass,
+        "needs_manual_projection": needs_manual_projection,
+        "image_only_pdf": image_only_pdf,
+        "figures": figure_rows,
+        "ingested_at": now.isoformat(timespec="seconds"),
+    }
+    manifest_path = artifact_dir / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+
+    connection = connect_db(config.paths.db_path)
+    run_migrations(connection, _migrations_dir(config))
+    try:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO archive(
+                    id, type, path, ingested_at, agent, tags, chunk_count,
+                    artifact_path, source_format, original_filename, raw_sha256, byte_size,
+                    connector_name, connector_version, ingest_status, page_count, slide_count,
+                    figure_count, table_count, warnings_json, failure_reason, needs_visual_pass,
+                    needs_manual_projection, image_only_pdf
+                )
+                VALUES (
+                    ?, ?, ?, datetime('now'), NULL, ?, 0,
+                    ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?,
+                    ?, ?
+                )
+                """,
+                (
+                    archive_id,
+                    _artifact_archive_type(source_format),
+                    str(raw_path.resolve()),
+                    json.dumps(tags or []),
+                    str(raw_path.resolve()),
+                    source_format,
+                    source_path.name,
+                    raw_hash,
+                    len(raw_bytes),
+                    manifest["connector_name"],
+                    manifest["connector_version"],
+                    ingest_status,
+                    page_count,
+                    slide_count,
+                    figure_count,
+                    table_count,
+                    json.dumps(warnings),
+                    failure_reason,
+                    1 if needs_visual_pass else 0,
+                    1 if needs_manual_projection else 0,
+                    1 if image_only_pdf else 0,
+                ),
+            )
+            _upsert_archive_sync_state(connection, raw_path, archive_id, raw_hash)
+            for row in figure_rows:
+                connection.execute(
+                    """
+                    INSERT INTO artifact_figures(
+                        archive_id, figure_id, storage_policy, attachment_path,
+                        source_page, source_slide, source_index, width_px, height_px,
+                        mime_type, byte_size, sha256, structural_location,
+                        has_caption, referenced_by_label, needs_visual_pass, warnings_json
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        archive_id,
+                        row.get("figure_id"),
+                        row.get("storage_policy") or "in_memory_extracted",
+                        row.get("attachment_path"),
+                        row.get("source_page"),
+                        row.get("source_slide"),
+                        row.get("source_index"),
+                        row.get("width_px"),
+                        row.get("height_px"),
+                        row.get("mime_type"),
+                        row.get("byte_size"),
+                        row.get("sha256"),
+                        row.get("structural_location"),
+                        1 if row.get("has_caption") else 0,
+                        1 if row.get("referenced_by_label") else 0,
+                        1 if row.get("needs_visual_pass") else 0,
+                        json.dumps(row.get("warnings_json") or []),
+                    ),
+                )
+            identity = classify_post_parse_identity(
+                connection,
+                archive_id=archive_id,
+                source_format=source_format,
+                usable_raw_text=result.usable_raw_text,
+            )
+            update_archive_identity(connection, archive_id=archive_id, result=identity)
+            write_identity_buckets(
+                connection,
+                archive_id=archive_id,
+                usable_raw_text=result.usable_raw_text,
+                duplicate_state=identity.duplicate_state,
+            )
+    finally:
+        connection.close()
+
+    manifest["duplicate_state"] = identity.duplicate_state
+    manifest["canonical_archive_id"] = identity.canonical_archive_id
+    manifest["identity_fingerprint_version"] = identity.identity_fingerprint_version
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+
+    from .extraction.queue import enqueue_extraction as _enqueue_extraction
+    _enqueue_extraction(config, source_kind="artifact", archive_id=archive_id, content_hash=raw_hash)
+    if config.ingest.auto_trigger_pipeline:
+        from .pipeline import trigger_pipeline as _trigger_pipeline
+        _trigger_pipeline(config)
+
+    return IngestArtifactResult(
+        archive_id=archive_id,
+        raw_path=str(raw_path.resolve()),
+        manifest_path=str(manifest_path.resolve()),
+        ingest_status=ingest_status,
+        source_format=source_format,
+        figure_count=figure_count,
+        warnings=warnings,
+        failure_reason=failure_reason,
+        needs_visual_pass=needs_visual_pass,
+        needs_manual_projection=needs_manual_projection,
+        image_only_pdf=image_only_pdf,
+        duplicate_state=identity.duplicate_state,
+        canonical_archive_id=identity.canonical_archive_id,
+    )
+
+
+def _figure_rows_from_source_attachments(rows: list[sqlite3.Row], *, start_index: int, warnings: list[str]) -> list[dict[str, Any]]:
+    figure_rows: list[dict[str, Any]] = []
+    for offset, row in enumerate(rows, start=start_index):
+        attachment_path = str(row["attachment_path"] or "")
+        path = Path(attachment_path)
+        if not attachment_path or not path.exists():
+            warnings.append(f"attachment_missing:{attachment_path or row['figure_id']}")
+            continue
+        data = path.read_bytes()
+        figure = figure_from_bytes(
+            figure_id=f"fig_{offset:03d}",
+            data=data,
+            storage_policy="source_attachment",
+            attachment_path=str(path.resolve()),
+            source_index=offset,
+            structural_location=str(row["structural_location"] or f"attachment:{path.name}"),
+            mime_type=str(row["mime_type"] or "") or None,
+        )
+        figure_rows.append(_jsonable_figure(figure))
+    return figure_rows
+
+
+def _insert_artifact_figure_rows(connection: sqlite3.Connection, archive_id: str, figure_rows: list[dict[str, Any]]) -> None:
+    for row in figure_rows:
+        connection.execute(
+            """
+            INSERT INTO artifact_figures(
+                archive_id, figure_id, storage_policy, attachment_path,
+                source_page, source_slide, source_index, width_px, height_px,
+                mime_type, byte_size, sha256, structural_location,
+                has_caption, referenced_by_label, needs_visual_pass, warnings_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                archive_id,
+                row.get("figure_id"),
+                row.get("storage_policy") or "in_memory_extracted",
+                row.get("attachment_path"),
+                row.get("source_page"),
+                row.get("source_slide"),
+                row.get("source_index"),
+                row.get("width_px"),
+                row.get("height_px"),
+                row.get("mime_type"),
+                row.get("byte_size"),
+                row.get("sha256"),
+                row.get("structural_location"),
+                1 if row.get("has_caption") else 0,
+                1 if row.get("referenced_by_label") else 0,
+                1 if row.get("needs_visual_pass") else 0,
+                json.dumps(row.get("warnings_json") or []),
+            ),
+        )
+
+
+def reprocess_artifact(
+    config: AppConfig,
     *,
     archive_id: str,
-    bridge_id: str,
-    session_id: str,
-    task_id: str | None,
-    task_kind: str | None,
-    content: str,
-    summary_payload: dict[str, Any],
-    chain_extraction: str,
-    chain_reason: str,
-) -> None:
-    connection.execute(
-        """
-        INSERT INTO promotion_queue(
-            archive_id, bridge_id, session_id, task_id, task_kind, content, summary_payload,
-            chain_extraction, chain_reason, status
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
-        ON CONFLICT(archive_id) DO UPDATE SET
-            bridge_id = excluded.bridge_id,
-            session_id = excluded.session_id,
-            task_id = excluded.task_id,
-            task_kind = excluded.task_kind,
-            content = excluded.content,
-            summary_payload = excluded.summary_payload,
-            chain_extraction = excluded.chain_extraction,
-            chain_reason = excluded.chain_reason,
-            status = CASE
-                WHEN promotion_queue.status = 'processed' THEN promotion_queue.status
-                ELSE 'pending'
-            END,
-            last_error = NULL
-        """,
-        (
-            archive_id,
-            bridge_id,
-            session_id,
-            task_id,
-            task_kind,
-            content,
-            json.dumps(summary_payload, default=str),
-            chain_extraction,
-            chain_reason,
-        ),
+    connector_config: ConnectorConfig | None = None,
+) -> IngestArtifactResult:
+    connection = connect_db(config.paths.db_path)
+    run_migrations(connection, _migrations_dir(config))
+    try:
+        row = connection.execute(
+            """
+            SELECT id, path, artifact_path, original_filename, tags,
+                   duplicate_state, canonical_archive_id
+            FROM archive
+            WHERE id = ? AND id LIKE 'artifact/%'
+            """,
+            (archive_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"artifact archive not found: {archive_id}")
+        duplicate_state = str(row["duplicate_state"] or "unique")
+        canonical_archive_id = row["canonical_archive_id"]
+        if duplicate_state in {"exact_duplicate", "canonical_duplicate"} and canonical_archive_id:
+            canonical_id = str(canonical_archive_id)
+            canonical = connection.execute(
+                """
+                SELECT id, path, artifact_path, source_format, ingest_status, figure_count,
+                       warnings_json, failure_reason, needs_visual_pass,
+                       needs_manual_projection, image_only_pdf, duplicate_state,
+                       canonical_archive_id
+                FROM archive
+                WHERE id = ?
+                """,
+                (canonical_id,),
+            ).fetchone()
+            if canonical is None:
+                raise ValueError(f"canonical artifact archive not found: {canonical_id}")
+            raw = str(canonical["artifact_path"] or canonical["path"])
+            manifest_path = str((Path(raw).parent / "manifest.json").resolve())
+            return IngestArtifactResult(
+                archive_id=str(row["id"]),
+                raw_path=raw,
+                manifest_path=manifest_path,
+                ingest_status=str(canonical["ingest_status"] or "accepted"),
+                source_format=str(canonical["source_format"] or "unknown"),
+                figure_count=int(canonical["figure_count"] or 0),
+                warnings=_jsonable_warnings(canonical["warnings_json"]),
+                failure_reason=canonical["failure_reason"],
+                needs_visual_pass=bool(canonical["needs_visual_pass"]),
+                needs_manual_projection=bool(canonical["needs_manual_projection"]),
+                image_only_pdf=bool(canonical["image_only_pdf"]),
+                duplicate_state=duplicate_state,
+                canonical_archive_id=canonical_id,
+            )
+        raw_path = Path(str(row["artifact_path"] or row["path"])).resolve()
+        if not raw_path.exists() or not raw_path.is_file():
+            raise FileNotFoundError(str(raw_path))
+        source_attachment_rows = connection.execute(
+            """
+            SELECT figure_id, attachment_path, mime_type, structural_location
+            FROM artifact_figures
+            WHERE archive_id = ? AND storage_policy = 'source_attachment'
+            ORDER BY source_index, figure_id
+            """,
+            (archive_id,),
+        ).fetchall()
+    finally:
+        connection.close()
+
+    now = datetime.now()
+    raw_bytes = raw_path.read_bytes()
+    raw_hash = sha256(raw_bytes).hexdigest()
+    connector = connector_for_path(raw_path)
+    result = connector.extract(raw_path, config=connector_config or ConnectorConfig())
+    metadata = dict(result.metadata)
+    source_format = str(metadata.get("source_format") or getattr(connector, "source_format", "unknown"))
+    warnings = list(result.warnings)
+    figure_rows = [_jsonable_figure(figure) for figure in result.figures]
+    figure_rows.extend(_figure_rows_from_source_attachments(source_attachment_rows, start_index=len(figure_rows) + 1, warnings=warnings))
+    ingest_status = result.status
+    if ingest_status not in {"accepted", "accepted_with_warnings", "failed_extraction", "manual_fix_needed"}:
+        ingest_status = "failed_extraction"
+        warnings.append(f"invalid_connector_status:{result.status}")
+    failure_reason = result.failure_reason
+    needs_manual_projection = bool(metadata.get("needs_manual_projection")) or ingest_status == "failed_extraction"
+    needs_visual_pass = bool(metadata.get("needs_visual_pass")) or any(bool(item.get("needs_visual_pass")) for item in figure_rows)
+    image_only_pdf = bool(metadata.get("image_only_pdf"))
+    figure_count = max(int(metadata.get("figure_count") or 0), len(figure_rows))
+    table_count = int(metadata.get("table_count") or 0)
+    page_count = int(metadata.get("page_count") or 0)
+    slide_count = int(metadata.get("slide_count") or 0)
+    artifact_dir = raw_path.parent
+    manifest_path = artifact_dir / "manifest.json"
+    manifest = {
+        "archive_id": archive_id,
+        "artifact_path": str(raw_path.resolve()),
+        "source_format": source_format,
+        "original_filename": str(row["original_filename"] or raw_path.name),
+        "raw_sha256": raw_hash,
+        "byte_size": len(raw_bytes),
+        "connector_name": str(metadata.get("connector_name") or getattr(connector, "name", "unknown_connector")),
+        "connector_version": str(metadata.get("connector_version") or ""),
+        "ingest_status": ingest_status,
+        "page_count": page_count,
+        "slide_count": slide_count,
+        "figure_count": figure_count,
+        "table_count": table_count,
+        "warnings": warnings,
+        "failure_reason": failure_reason,
+        "needs_visual_pass": needs_visual_pass,
+        "needs_manual_projection": needs_manual_projection,
+        "image_only_pdf": image_only_pdf,
+        "figures": figure_rows,
+        "reprocessed_at": now.isoformat(timespec="seconds"),
+    }
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+
+    connection = connect_db(config.paths.db_path)
+    run_migrations(connection, _migrations_dir(config))
+    try:
+        with connection:
+            connection.execute(
+                """
+                UPDATE archive
+                SET type = ?,
+                    path = ?,
+                    artifact_path = ?,
+                    source_format = ?,
+                    original_filename = ?,
+                    raw_sha256 = ?,
+                    byte_size = ?,
+                    connector_name = ?,
+                    connector_version = ?,
+                    ingest_status = ?,
+                    page_count = ?,
+                    slide_count = ?,
+                    figure_count = ?,
+                    table_count = ?,
+                    warnings_json = ?,
+                    failure_reason = ?,
+                    needs_visual_pass = ?,
+                    needs_manual_projection = ?,
+                    image_only_pdf = ?
+                WHERE id = ?
+                """,
+                (
+                    _artifact_archive_type(source_format),
+                    str(raw_path.resolve()),
+                    str(raw_path.resolve()),
+                    source_format,
+                    manifest["original_filename"],
+                    raw_hash,
+                    len(raw_bytes),
+                    manifest["connector_name"],
+                    manifest["connector_version"],
+                    ingest_status,
+                    page_count,
+                    slide_count,
+                    figure_count,
+                    table_count,
+                    json.dumps(warnings),
+                    failure_reason,
+                    1 if needs_visual_pass else 0,
+                    1 if needs_manual_projection else 0,
+                    1 if image_only_pdf else 0,
+                    archive_id,
+                ),
+            )
+            _upsert_archive_sync_state(connection, raw_path, archive_id, raw_hash)
+            connection.execute("DELETE FROM artifact_figures WHERE archive_id = ?", (archive_id,))
+            _insert_artifact_figure_rows(connection, archive_id, figure_rows)
+            identity = classify_post_parse_identity(
+                connection,
+                archive_id=archive_id,
+                source_format=source_format,
+                usable_raw_text=result.usable_raw_text,
+            )
+            update_archive_identity(connection, archive_id=archive_id, result=identity)
+            write_identity_buckets(
+                connection,
+                archive_id=archive_id,
+                usable_raw_text=result.usable_raw_text,
+                duplicate_state=identity.duplicate_state,
+            )
+    finally:
+        connection.close()
+
+    manifest["duplicate_state"] = identity.duplicate_state
+    manifest["canonical_archive_id"] = identity.canonical_archive_id
+    manifest["identity_fingerprint_version"] = identity.identity_fingerprint_version
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+
+    return IngestArtifactResult(
+        archive_id=archive_id,
+        raw_path=str(raw_path.resolve()),
+        manifest_path=str(manifest_path.resolve()),
+        ingest_status=ingest_status,
+        source_format=source_format,
+        figure_count=figure_count,
+        warnings=warnings,
+        failure_reason=failure_reason,
+        needs_visual_pass=needs_visual_pass,
+        needs_manual_projection=needs_manual_projection,
+        image_only_pdf=image_only_pdf,
+        duplicate_state=identity.duplicate_state,
+        canonical_archive_id=identity.canonical_archive_id,
     )
+
+
+def reprocess_failed_artifacts(config: AppConfig) -> list[IngestArtifactResult]:
+    connection = connect_db(config.paths.db_path)
+    run_migrations(connection, _migrations_dir(config))
+    try:
+        rows = connection.execute(
+            """
+            SELECT id
+            FROM archive
+            WHERE id LIKE 'artifact/%' AND ingest_status = 'failed_extraction'
+            ORDER BY ingested_at, id
+            """
+        ).fetchall()
+    finally:
+        connection.close()
+    return [reprocess_artifact(config, archive_id=str(row["id"])) for row in rows]
+
+
+
+def _load_episode_event_payload(event: dict[str, Any], episode_dir: Path) -> dict[str, Any]:
+    payload = event.get("payload")
+    if not isinstance(payload, dict):
+        return {}
+    if payload.get("externalized_payload") and payload.get("artifact"):
+        artifact_path = episode_dir / str(payload["artifact"])
+        try:
+            loaded = json.loads(artifact_path.read_text())
+            return loaded if isinstance(loaded, dict) else payload
+        except (OSError, json.JSONDecodeError):
+            return payload
+    return payload
+
+
+def _project_episode_markdown(
+    *,
+    conversation_id: str,
+    episode_id: str,
+    bridge_id: str,
+    task_id: str | None,
+    events: list[dict[str, Any]],
+    episode_dir: Path,
+) -> str:
+    lines = [
+        f"agent: {bridge_id}",
+        f"session_date: {datetime.now().strftime('%Y-%m-%d')}",
+        "task_kind: general",
+        f"task_id: {task_id or ''}",
+        f"conversation_id: {conversation_id}",
+        f"episode_id: {episode_id}",
+        "",
+        "## Raw Episode Projection",
+        "",
+    ]
+    for event in events:
+        event_type = str(event.get("type") or "event")
+        seq = event.get("seq")
+        ts = event.get("ts")
+        payload = _load_episode_event_payload(event, episode_dir)
+        prefix = f"### {event_type}"
+        if seq is not None:
+            prefix += f" seq={seq}"
+        if ts:
+            prefix += f" ts={ts}"
+        lines.extend([prefix, ""])
+        if event_type in {"user_message", "assistant_message"}:
+            content = str(payload.get("content") or "").strip()
+            if content:
+                lines.extend([content, ""])
+                continue
+        if event_type == "tool_call":
+            lines.extend(
+                [
+                    f"tool_name: {payload.get('tool_name', '')}",
+                    f"call_id: {payload.get('call_id', '')}",
+                    "",
+                    "```json",
+                    json.dumps(payload.get("input") or {}, indent=2, sort_keys=True),
+                    "```",
+                    "",
+                ]
+            )
+            continue
+        if event_type == "tool_result":
+            output = str(payload.get("output") or "").strip()
+            lines.extend(
+                [
+                    f"tool_name: {payload.get('tool_name', '')}",
+                    f"call_id: {payload.get('call_id', '')}",
+                    f"is_error: {bool(payload.get('is_error'))}",
+                    "",
+                ]
+            )
+            if output:
+                lines.extend(["```text", output, "```", ""])
+            continue
+        if event_type == "failure":
+            message = str(payload.get("message") or "").strip()
+            if message:
+                lines.extend([message, ""])
+            lines.extend(["```json", json.dumps(payload, indent=2, sort_keys=True), "```", ""])
+            continue
+        lines.extend(["```json", json.dumps(payload, indent=2, sort_keys=True), "```", ""])
+    return "\n".join(lines).rstrip() + "\n"
+
 
 
 def ingest_session(
@@ -781,31 +1464,21 @@ def ingest_session(
         tags=tags,
         skip_vectors=True,
     )
-    session_summary = parse_summary(content)
-    chain_context = infer_chain_context(
-        session_summary,
-        session_id=resolved_session_id,
-        task_id=session_summary.metadata.get("task_id", "").strip() or None,
-    )
-    with connection:
-        _enqueue_promotion_candidate(
-            connection,
-            archive_id=archive_id,
-            bridge_id=resolved_bridge_id,
-            session_id=resolved_session_id,
-            task_id=session_summary.metadata.get("task_id", "").strip() or None,
-            task_kind=session_summary.metadata.get("task_kind", "").strip() or None,
-            content=content,
-            summary_payload={
-                "metadata": session_summary.metadata,
-                "sections": session_summary.sections,
-                "memory_items": session_summary.memory_items,
-                "source_refs": list(source_refs or []),
-            },
-            chain_extraction=chain_context.get("chain_extraction", "no_chain"),
-            chain_reason=chain_context.get("chain_reason", ""),
-        )
     connection.close()
+
+    _session_hash = sha256((content.rstrip() + "\n").encode()).hexdigest()
+    from .extraction.queue import enqueue_extraction as _enqueue_extraction
+    _enqueue_extraction(
+        config,
+        source_kind="session",
+        archive_id=archive_id,
+        bridge_id=resolved_bridge_id,
+        session_id=resolved_session_id,
+        content_hash=_session_hash,
+    )
+    if config.ingest.auto_trigger_pipeline:
+        from .pipeline import trigger_pipeline as _trigger_pipeline
+        _trigger_pipeline(config)
 
     return IngestSessionResult(
         archive_id=archive_id,
@@ -813,343 +1486,4 @@ def ingest_session(
         chunk_count=len(chunks),
         promoted_notes=[],
         review_items=[],
-    )
-
-
-def _promote_session_content(
-    config: AppConfig,
-    *,
-    connection: sqlite3.Connection,
-    archive_id: str,
-    resolved_bridge_id: str,
-    resolved_session_id: str,
-    content: str,
-    source_refs: list[str] | None,
-) -> tuple[list[str], list[str]]:
-    now = datetime.now()
-    raw_items = _read_memory_items(content, config.ingest.explicit_markers_only)
-    session_summary = parse_summary(content)
-    chain_context = infer_chain_context(
-        session_summary,
-        session_id=resolved_session_id,
-        task_id=session_summary.metadata.get("task_id", "").strip() or None,
-    )
-    promoted_notes: list[str] = []
-    review_items: list[str] = []
-    changed_paths: list[str] = []
-    extra_source_refs = list(source_refs or [])
-    chain_seen_types: set[str] = set()
-    new_count = 0
-    update_count = 0
-    confirm_count = 0
-    skip_count = 0
-
-    for raw_item in raw_items:
-        normalized = _normalize_item(raw_item, archive_id=archive_id, now=now)
-        if normalized is None:
-            continue
-
-        # Option A: enrich summary with vocabulary-rich signal if item lacks one.
-        synthesized = _synthesize_summary(raw_item, content)
-        if synthesized:
-            existing_summary = str(normalized.get("summary", "")).strip()
-            title = str(normalized.get("title", "")).strip()
-            if not existing_summary or existing_summary.casefold() == title.casefold():
-                normalized["summary"] = synthesized
-
-        # Option B: inject error/exception token aliases for exact-hit retrieval.
-        error_aliases = _extract_error_aliases(raw_item, content)
-        if error_aliases:
-            normalized["aliases"] = _merge_unique(
-                list(normalized.get("aliases") or []), error_aliases
-            )
-
-        if chain_context.get("chain_extraction") != "no_chain":
-            for key in ("chain_id", "chain_confidence", "chain_question", "chain_summary", "problem_class"):
-                value = chain_context.get(key, "").strip()
-                if value and not str(normalized.get(key, "")).strip():
-                    normalized[key] = value
-            chain_id_value = str(normalized.get("chain_id", "")).strip()
-            if chain_id_value:
-                relations = normalized.get("relations")
-                if not isinstance(relations, list):
-                    relations = []
-                if not any(
-                    isinstance(entry, dict)
-                    and str(entry.get("type", "")).strip() == "part_of_chain"
-                    and str(entry.get("target", "")).strip() == chain_id_value
-                    for entry in relations
-                ):
-                    relations = [*relations, {"type": "part_of_chain", "target": chain_id_value}]
-                normalized["relations"] = relations
-        normalized["source_refs"] = _merge_unique(normalized.get("source_refs", []), extra_source_refs)
-        item_type = normalized["type"]
-        confidence = str(normalized.get("confidence", "medium"))
-        chain_id = str(normalized.get("chain_id", "")).strip() or None
-
-        if chain_id and item_type in CHAIN_BOUNDED_TYPES and item_type in chain_seen_types:
-            review_path = create_review_item(
-                config,
-                review_type="bounded_promotion_review",
-                suggested_action=f"review extra {item_type} for {chain_id}",
-                reason=f"additional {item_type} candidate within bounded chain promotion",
-                confidence="medium",
-                bridge_id=resolved_bridge_id,
-                source_refs=list(normalized["source_refs"]),
-                context=normalized.get("summary", "") or normalized.get("body", ""),
-                slug_seed=f"bounded-{chain_id.replace('/', '-')}-{item_type}",
-                extra_metadata={
-                    "chain_id": chain_id,
-                    "note_type": item_type,
-                    "candidate_title": normalized["title"],
-                },
-            )
-            review_items.append(f"review/{review_path.stem}")
-            continue
-
-        if item_type in {"preference", "convention"}:
-            if confidence != "high":
-                review_path = create_review_item(
-                    config,
-                    review_type="promotion_review",
-                    suggested_action=f"review {item_type}",
-                    reason=normalized["title"],
-                    confidence=confidence,
-                    bridge_id=resolved_bridge_id,
-                    source_refs=list(normalized["source_refs"]),
-                    context=normalized["summary"],
-                    slug_seed=f"{item_type}-{normalized['title']}",
-                )
-                review_items.append(f"review/{review_path.stem}")
-                continue
-
-            if item_type == "preference":
-                changed = _append_system_memory(
-                    config.paths.vault_root / "system" / "USER.md",
-                    "Preferences",
-                    normalized["title"],
-                )
-                if changed:
-                    changed_paths.append(str((config.paths.vault_root / "system" / "USER.md").resolve()))
-                continue
-
-            changed = _append_system_memory(
-                config.paths.vault_root / "system" / "MEMORY.md",
-                "Agent Behavior",
-                normalized["title"],
-            )
-            if changed:
-                changed_paths.append(str((config.paths.vault_root / "system" / "MEMORY.md").resolve()))
-            continue
-
-        if confidence != "high":
-            review_path = create_review_item(
-                config,
-                review_type="promotion_review",
-                suggested_action=f"promote {normalized['id']}",
-                reason=normalized["title"],
-                confidence=confidence,
-                bridge_id=resolved_bridge_id,
-                source_refs=list(normalized["source_refs"]),
-                context=normalized.get("summary", ""),
-                slug_seed=normalized["id"].replace("/", "-"),
-            )
-            review_items.append(f"review/{review_path.stem}")
-            continue
-
-        item_candidates = find_existing_candidates(
-            connection,
-            config,
-            note_type=normalized["type"],
-            title=normalized["title"],
-            summary=normalized.get("summary", "") or normalized.get("body", "") or normalized["title"],
-        )
-        same_chain_target = _same_chain_candidate(connection, note_type=normalized["type"], chain_id=chain_id)
-        if chain_id:
-            if same_chain_target:
-                item_candidates = [
-                    CandidateMatch(
-                        note_id=same_chain_target,
-                        title=normalized["title"],
-                        note_type=normalized["type"],
-                        score=1.01,
-                        reason="same_chain",
-                    )
-                ]
-            else:
-                item_candidates = []
-        upsert_decision = decide_upsert(
-            connection,
-            config,
-            summary=session_summary,
-            note_type=normalized["type"],
-            title=normalized["title"],
-            summary_text=normalized.get("summary", "") or normalized.get("body", "") or normalized["title"],
-            existing_candidates=item_candidates,
-        )
-        if upsert_decision.decision == "skip_duplicate":
-            skip_count += 1
-            continue
-        if upsert_decision.decision == "needs_review":
-            review_path = create_review_item(
-                config,
-                review_type="merge_review",
-                suggested_action=f"review duplicate candidate for {normalized['id']}",
-                reason=upsert_decision.reason,
-                confidence="medium",
-                bridge_id=resolved_bridge_id,
-                source_refs=list(normalized["source_refs"]),
-                candidates=upsert_decision.candidates,
-                context=normalized.get("summary", ""),
-                slug_seed=f"duplicate-{normalized['id'].replace('/', '-')}",
-                extra_metadata={"target_candidates": upsert_decision.targets},
-            )
-            review_items.append(f"review/{review_path.stem}")
-            continue
-
-        target_path = _path_for_item(config, normalized)
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        target_preexisting = target_path.exists()
-        metadata = dict(normalized)
-        if upsert_decision.targets:
-            metadata["linked_notes"] = _merge_unique(list(metadata.get("linked_notes") or []), list(upsert_decision.targets))
-            if upsert_decision.decision == "update_existing":
-                metadata["source_refs"] = _merge_unique(list(metadata.get("source_refs") or []), list(upsert_decision.targets))
-        metadata = _apply_note_defaults(metadata, normalized["type"])
-
-        if upsert_decision.decision in {"update_existing", "confirm_existing"} and upsert_decision.targets:
-            existing_id = upsert_decision.targets[0]
-            existing_slug = existing_id.split("/", 1)[1]
-            if normalized["type"] == "procedure":
-                procedure_root = config.paths.vault_root / "wiki" / "procedures"
-                for directory in ("drafts", "active", "retired"):
-                    candidate_path = procedure_root / directory / f"{existing_slug}.md"
-                    if candidate_path.exists():
-                        target_path = candidate_path
-                        break
-            else:
-                target_path = _path_for_item(config, {"type": normalized["type"], "id": existing_id})
-            metadata["id"] = existing_id
-            if upsert_decision.decision == "confirm_existing" and target_path.exists():
-                if _touch_existing_note(target_path, list(metadata.get("source_refs") or []), now.strftime("%Y-%m-%d")):
-                    changed_paths.append(str(target_path.resolve()))
-                    promoted_notes.append(existing_id)
-                    confirm_count += 1
-                    if chain_id and item_type in CHAIN_BOUNDED_TYPES:
-                        chain_seen_types.add(item_type)
-                continue
-
-        body = _render_note_body(normalized["type"], normalized)
-        if target_path.exists():
-            from .parser import split_frontmatter
-
-            parsed = split_frontmatter(target_path.read_text())
-            metadata = _merge_note_metadata(parsed.metadata, metadata, now_date=now.strftime("%Y-%m-%d"))
-            metadata = _apply_note_defaults(metadata, normalized["type"])
-            existing_body = parsed.body.strip()
-            if len(existing_body) > len(body):
-                body = existing_body
-
-        metadata = _project_obsidian_links(config, metadata)
-        target_path.write_text(_render_note(metadata, body))
-        changed_paths.append(str(target_path.resolve()))
-        promoted_notes.append(normalized["id"])
-        if upsert_decision.decision == "update_existing" or target_preexisting:
-            update_count += 1
-        else:
-            new_count += 1
-        if chain_id and item_type in CHAIN_BOUNDED_TYPES:
-            chain_seen_types.add(item_type)
-
-    sync_vault(config, mode="incremental", selected_paths=changed_paths)
-
-    log_path = config.paths.vault_root / "wiki" / "log.md"
-    log_lines = [log_path.read_text().rstrip()] if log_path.exists() else ["# Change Log", "", "# Format", "- `YYYY-MM-DD HH:MM | bridge_id | action | note_id | reason`"]
-    stamp = now.strftime("%Y-%m-%d %H:%M")
-    for note_id in promoted_notes:
-        log_lines.append(f"{stamp} | {resolved_bridge_id} | ingested | {note_id} | promoted from {archive_id}")
-    for review_id in review_items:
-        log_lines.append(f"{stamp} | {resolved_bridge_id} | review | {review_id} | needs promotion review from {archive_id}")
-    log_path.write_text("\n".join(log_lines).rstrip() + "\n")
-    with connection:
-        connection.execute(
-            """
-            INSERT INTO session_metrics(
-                session_id, bridge_id, archive_id, task_id, task_kind, chain_extraction, chain_reason,
-                promoted_count, review_count, new_count, update_count, confirm_count, skip_count, note_delta
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(session_id) DO UPDATE SET
-                bridge_id = excluded.bridge_id,
-                archive_id = excluded.archive_id,
-                task_id = excluded.task_id,
-                task_kind = excluded.task_kind,
-                chain_extraction = excluded.chain_extraction,
-                chain_reason = excluded.chain_reason,
-                promoted_count = excluded.promoted_count,
-                review_count = excluded.review_count,
-                new_count = excluded.new_count,
-                update_count = excluded.update_count,
-                confirm_count = excluded.confirm_count,
-                skip_count = excluded.skip_count,
-                note_delta = excluded.note_delta
-            """,
-            (
-                resolved_session_id,
-                resolved_bridge_id,
-                archive_id,
-                session_summary.metadata.get("task_id", "").strip() or None,
-                session_summary.metadata.get("task_kind", "").strip() or None,
-                chain_context.get("chain_extraction", "no_chain"),
-                chain_context.get("chain_reason", ""),
-                len(promoted_notes),
-                len(review_items),
-                new_count,
-                update_count,
-                confirm_count,
-                skip_count,
-                new_count,
-            ),
-        )
-    return promoted_notes, review_items
-
-
-def ingest_session_promote(
-    config: AppConfig,
-    *,
-    bridge_id: str | None = None,
-    session_id: str | None = None,
-    content: str,
-    tags: list[str] | None = None,
-    source_refs: list[str] | None = None,
-    agent: str | None = None,
-    slug: str | None = None,
-) -> IngestSessionResult:
-    resolved_bridge_id = (bridge_id or agent or "local").strip()
-    resolved_session_id = (session_id or slug or datetime.now().strftime("%Y-%m-%d-%H%M%S")).strip()
-    archive_id, raw_path, chunks, connection = _archive_session(
-        config,
-        resolved_bridge_id=resolved_bridge_id,
-        resolved_session_id=resolved_session_id,
-        content=content,
-        tags=tags,
-        skip_vectors=False,
-    )
-    promoted_notes, review_items = _promote_session_content(
-        config,
-        connection=connection,
-        archive_id=archive_id,
-        resolved_bridge_id=resolved_bridge_id,
-        resolved_session_id=resolved_session_id,
-        content=content,
-        source_refs=source_refs,
-    )
-    connection.close()
-
-    return IngestSessionResult(
-        archive_id=archive_id,
-        raw_path=str(raw_path.resolve()),
-        chunk_count=len(chunks),
-        promoted_notes=promoted_notes,
-        review_items=review_items,
     )

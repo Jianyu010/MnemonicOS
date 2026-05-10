@@ -3,16 +3,24 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from pathlib import Path
 import signal
 import socket
 import subprocess
 import sys
 import time
+from typing import Any
 
 from .config import default_config_path, load_config
 from .daemon_status import daemon_status_summary, daemon_unreachable_summary, read_pid, socket_send
 from .db import connect_db, run_migrations
-from .ingest import ingest_session, ingest_session_promote
+from .extraction import enqueue_extraction, extraction_status
+from .ingest import (
+    ingest_artifact,
+    ingest_session,
+    reprocess_artifact,
+    reprocess_failed_artifacts,
+)
 from .jobs import run_job
 from .models import ResolveTaskContextRequest
 from .retrieval import result_to_json, retrieve
@@ -24,6 +32,7 @@ from .runtime import (
     resolve_task_context,
     resolve_task_context_to_json,
 )
+from .session_capture import append_event, begin_episode, end_episode
 from .sync import sync_vault
 from .orchestrator import (
     OrchestratorFailureRequest,
@@ -56,7 +65,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sync_parser.add_argument("--mode", choices=("incremental", "full"), default="incremental")
     sync_parser.add_argument("paths", nargs="*", help="Optional subset of files to sync.")
 
-    ingest_parser = subparsers.add_parser("ingest-session", help="Ingest a raw session and promote explicit memory items.")
+    ingest_parser = subparsers.add_parser("ingest-session", help="Archive a raw session for later extraction.")
     ingest_parser.add_argument("--bridge-id")
     ingest_parser.add_argument("--session-id")
     ingest_parser.add_argument("--agent", help="Deprecated alias for --bridge-id.")
@@ -65,7 +74,92 @@ def _build_parser() -> argparse.ArgumentParser:
     ingest_parser.add_argument("--content", help="Inline session content.")
     ingest_parser.add_argument("--tag", action="append", default=[])
     ingest_parser.add_argument("--source-ref", action="append", default=[])
-    ingest_parser.add_argument("--promote-now", action="store_true", help="Bypass the deferred queue and promote immediately.")
+
+    artifact_parser = subparsers.add_parser("ingest-artifact", help="Ingest a true raw artifact without persisting extracted content.")
+    artifact_parser.add_argument("--file", required=True, help="Path to the artifact file.")
+    artifact_parser.add_argument("--tag", action="append", default=[])
+    artifact_parser.add_argument("--attachment", action="append", default=[], metavar="PATH_OR_DIR", help="Source-provided companion file or directory of companion files to archive with the artifact. Directories are expanded to their immediate children; use --attachment-recursive to expand recursively.")
+    artifact_parser.add_argument("--attachment-recursive", action="store_true", default=False, help="When an --attachment path is a directory, expand it recursively instead of only immediate children.")
+    artifact_parser.add_argument("--json", action="store_true", help="Emit JSON output.")
+
+    reprocess_parser = subparsers.add_parser("reprocess-artifact", help="Rerun artifact extraction against preserved true raw.")
+    reprocess_group = reprocess_parser.add_mutually_exclusive_group(required=True)
+    reprocess_group.add_argument("--archive-id", help="Artifact archive id to reprocess.")
+    reprocess_group.add_argument("--failed", action="store_true", help="Reprocess all failed artifact ingests.")
+    reprocess_parser.add_argument("--json", action="store_true", help="Emit JSON output.")
+
+    capture_parser = subparsers.add_parser("capture", help="Comprehensive raw bridge capture operations.")
+    capture_subparsers = capture_parser.add_subparsers(dest="capture_command", required=True)
+
+    begin_capture = capture_subparsers.add_parser("begin-episode", help="Create or reopen a raw conversation and begin an episode.")
+    begin_capture.add_argument("--bridge-id", required=True)
+    begin_capture.add_argument("--conversation-id", default=None)
+    begin_capture.add_argument("--episode-id", default=None)
+    begin_capture.add_argument("--parent-conversation-id", default=None)
+    begin_capture.add_argument("--related-conversation-id", action="append", default=[])
+    begin_capture.add_argument("--task-id", default=None)
+    begin_capture.add_argument("--cwd", default=None)
+    begin_capture.add_argument("--repo", default=None)
+    begin_capture.add_argument("--branch", default=None)
+    begin_capture.add_argument("--model", default=None)
+    begin_capture.add_argument("--agent-runtime", default=None)
+    begin_capture.add_argument("--platform-thread-id", default=None)
+    begin_capture.add_argument("--metadata-json", default=None)
+    begin_capture.add_argument("--json", action="store_true", help="Emit JSON output.")
+
+    append_capture = capture_subparsers.add_parser("append-event", help="Append one raw event to an episode.")
+    append_capture.add_argument("--bridge-id", required=True)
+    append_capture.add_argument("--conversation-id", required=True)
+    append_capture.add_argument("--episode-id", required=True)
+    append_capture.add_argument("--type", required=True, dest="event_type")
+    append_capture.add_argument("--payload-json", default=None)
+    append_capture.add_argument("--payload-file", default=None)
+    append_capture.add_argument("--content", default=None, help="Shortcut payload for user/assistant message content.")
+    append_capture.add_argument("--task-id", default=None)
+    append_capture.add_argument("--branch-id", default="main")
+    append_capture.add_argument("--timestamp", default=None)
+    append_capture.add_argument("--json", action="store_true", help="Emit JSON output.")
+
+    end_capture = capture_subparsers.add_parser("end-episode", help="Close an active raw capture episode.")
+    end_capture.add_argument("--bridge-id", required=True)
+    end_capture.add_argument("--conversation-id", required=True)
+    end_capture.add_argument("--episode-id", required=True)
+    end_capture.add_argument("--status", default="success", choices=("success", "failure", "partial", "abandoned"))
+    end_capture.add_argument("--metadata-json", default=None)
+    end_capture.add_argument("--json", action="store_true", help="Emit JSON output.")
+
+    queue_extraction = subparsers.add_parser("queue-extraction", help="Queue a west-flange source for LLM/VLM extraction.")
+    queue_extraction.add_argument("--source-kind", required=True, choices=("artifact", "episode", "session"))
+    queue_extraction.add_argument("--archive-id", default=None)
+    queue_extraction.add_argument("--conversation-id", default=None)
+    queue_extraction.add_argument("--episode-id", default=None)
+    queue_extraction.add_argument("--bridge-id", default=None)
+    queue_extraction.add_argument("--session-id", default=None)
+    queue_extraction.add_argument("--task-id", default=None)
+    queue_extraction.add_argument("--json", action="store_true", help="Emit JSON output.")
+
+    extraction_status_parser = subparsers.add_parser("extraction-status", help="Inspect extraction queue status.")
+    extraction_status_parser.add_argument("--queue-id", type=int, default=None)
+    extraction_status_parser.add_argument("--json", action="store_true", help="Emit JSON output.")
+
+    promote_status_parser = subparsers.add_parser("promote-status", help="Show promotion queue health (pending/promoted/review/rejected counts).")
+    promote_status_parser.add_argument("--json", action="store_true", help="Emit JSON output.")
+
+    review_parser = subparsers.add_parser("review", help="Review routed notes awaiting human approval.")
+    review_subs = review_parser.add_subparsers(dest="review_command", required=False)
+    rl = review_subs.add_parser("list", help="List pending review items.")
+    rl.add_argument("--json", action="store_true", help="Emit JSON output.")
+    rs = review_subs.add_parser("show", help="Display a review item.")
+    rs.add_argument("name", help="Filename (with or without .md) or filename prefix.")
+    ra = review_subs.add_parser("approve", help="Approve and promote a review item to the wiki.")
+    ra.add_argument("name", help="Filename (with or without .md) or filename prefix.")
+    ra.add_argument("--lifecycle-state", dest="lifecycle_state", default=None,
+                    choices=["draft", "verified", "canonical", "contested", "archived"],
+                    help="Override lifecycle state (default: type-specific LIFECYCLE_DEFAULTS).")
+    ra.add_argument("--dry-run", action="store_true", help="Print what would happen without writing.")
+    rr = review_subs.add_parser("reject", help="Reject and delete a review item.")
+    rr.add_argument("name", help="Filename (with or without .md) or filename prefix.")
+    rr.add_argument("--dry-run", action="store_true", help="Print what would happen without deleting.")
 
     retrieve_parser = subparsers.add_parser("retrieve", help="Run hybrid retrieval across exact, BM25, semantic, graph, and archive channels.")
     retrieve_parser.add_argument("query", help="Query text.")
@@ -130,8 +224,9 @@ def _build_parser() -> argparse.ArgumentParser:
             "daily_consolidation",
             "weekly_hygiene",
             "sync_vault_incremental",
+            "process_extraction_queue",
             "process_promotion_queue",
-            "backfill_promotion_queue",
+            "expire_stale_episodes",
             "embed_backfill",
             "status_report",
         ),
@@ -418,7 +513,6 @@ def _ingest_session(
     content: str | None,
     tags: list[str],
     source_refs: list[str],
-    promote_now: bool,
 ) -> int:
     if bool(file_path) == bool(content):
         raise SystemExit("provide exactly one of --file or --content")
@@ -430,8 +524,7 @@ def _ingest_session(
     if file_path is not None:
         payload = open(file_path, encoding="utf-8").read()
     config = load_config(config_path)
-    ingest_fn = ingest_session_promote if promote_now else ingest_session
-    result = ingest_fn(
+    result = ingest_session(
         config,
         bridge_id=resolved_bridge_id,
         session_id=resolved_session_id,
@@ -448,6 +541,329 @@ def _ingest_session(
     print(f"review_items={len(result.review_items)}")
     for review_id in result.review_items:
         print(f"  review={review_id}")
+    return 0
+
+
+def _expand_attachments(raw: list[str], *, recursive: bool = False) -> list[str]:
+    """Expand each entry in *raw*: files pass through; directories expand to
+    their children (immediate by default, recursive when *recursive* is True).
+    Expanded paths are sorted for determinism.  Symlinks to files are included;
+    symlinks to directories are not followed.
+    """
+    expanded: list[str] = []
+    for entry in raw:
+        p = Path(entry).expanduser().resolve()
+        if p.is_dir():
+            children = sorted(
+                str(child)
+                for child in (p.rglob("*") if recursive else p.iterdir())
+                if child.is_file()
+            )
+            expanded.extend(children)
+        else:
+            expanded.append(str(p))
+    return expanded
+
+
+def _ingest_artifact(config_path: str, file_path: str, tags: list[str], attachments: list[str], attachment_recursive: bool, emit_json: bool) -> int:
+    config = load_config(config_path)
+    resolved_attachments = _expand_attachments(attachments, recursive=attachment_recursive)
+    result = ingest_artifact(config, path=file_path, tags=tags, attachments=resolved_attachments)
+    payload = {
+        "archive_id": result.archive_id,
+        "raw_path": result.raw_path,
+        "manifest_path": result.manifest_path,
+        "ingest_status": result.ingest_status,
+        "source_format": result.source_format,
+        "figure_count": result.figure_count,
+        "warnings": result.warnings,
+        "failure_reason": result.failure_reason,
+        "needs_visual_pass": result.needs_visual_pass,
+        "needs_manual_projection": result.needs_manual_projection,
+        "image_only_pdf": result.image_only_pdf,
+    }
+    if emit_json:
+        print(json.dumps(payload, sort_keys=True))
+        return 0
+    for key, value in payload.items():
+        if isinstance(value, list):
+            if not value:
+                print(f"{key}=[]")
+            for item in value:
+                print(f"{key}={item}")
+        else:
+            print(f"{key}={value}")
+    return 0
+
+
+def _artifact_payload(result: Any) -> dict[str, object]:
+    return {
+        "archive_id": result.archive_id,
+        "raw_path": result.raw_path,
+        "manifest_path": result.manifest_path,
+        "ingest_status": result.ingest_status,
+        "source_format": result.source_format,
+        "figure_count": result.figure_count,
+        "warnings": result.warnings,
+        "failure_reason": result.failure_reason,
+        "needs_visual_pass": result.needs_visual_pass,
+        "needs_manual_projection": result.needs_manual_projection,
+        "image_only_pdf": result.image_only_pdf,
+    }
+
+
+def _reprocess_artifact(config_path: str, archive_id: str | None, failed: bool, emit_json: bool) -> int:
+    config = load_config(config_path)
+    results = reprocess_failed_artifacts(config) if failed else [reprocess_artifact(config, archive_id=archive_id or "")]
+    payloads = [_artifact_payload(result) for result in results]
+    if emit_json:
+        print(json.dumps(payloads if failed else payloads[0], sort_keys=True))
+        return 0
+    if failed:
+        print(f"reprocessed={len(payloads)}")
+    for payload in payloads:
+        print(f"archive_id={payload['archive_id']}")
+        print(f"ingest_status={payload['ingest_status']}")
+        print(f"raw_path={payload['raw_path']}")
+        if payload.get("failure_reason"):
+            print(f"failure_reason={payload['failure_reason']}")
+        for warning in payload.get("warnings", []):
+            print(f"warning={warning}")
+    return 0
+
+
+def _json_arg(value: str | None, *, field_name: str) -> dict[str, Any]:
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"{field_name} must be valid JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise SystemExit(f"{field_name} must be a JSON object")
+    return parsed
+
+
+def _capture_payload(payload_json: str | None, payload_file: str | None, content: str | None) -> dict[str, Any]:
+    provided = sum(1 for item in (payload_json, payload_file, content) if item is not None)
+    if provided > 1:
+        raise SystemExit("provide only one of --payload-json, --payload-file, or --content")
+    if payload_json is not None:
+        return _json_arg(payload_json, field_name="--payload-json")
+    if payload_file is not None:
+        return _json_arg(open(payload_file, encoding="utf-8").read(), field_name="--payload-file")
+    if content is not None:
+        return {"content": content}
+    return {}
+
+
+def _print_or_json(payload: dict[str, Any], emit_json: bool) -> int:
+    if emit_json:
+        print(json.dumps(payload, sort_keys=True))
+        return 0
+    for key, value in payload.items():
+        if isinstance(value, list):
+            if not value:
+                print(f"{key}=[]")
+            for item in value:
+                print(f"{key}={item}")
+        else:
+            print(f"{key}={value}")
+    return 0
+
+
+def _capture_begin_episode(
+    config_path: str,
+    bridge_id: str,
+    conversation_id: str | None,
+    episode_id: str | None,
+    parent_conversation_id: str | None,
+    related_conversation_ids: list[str],
+    task_id: str | None,
+    cwd: str | None,
+    repo: str | None,
+    branch: str | None,
+    model: str | None,
+    agent_runtime: str | None,
+    platform_thread_id: str | None,
+    metadata_json: str | None,
+    emit_json: bool,
+) -> int:
+    from .models import BeginEpisodeRequest
+
+    config = load_config(config_path)
+    result = begin_episode(
+        config,
+        BeginEpisodeRequest(
+            bridge_id=bridge_id,
+            conversation_id=conversation_id,
+            episode_id=episode_id,
+            parent_conversation_id=parent_conversation_id,
+            related_conversation_ids=related_conversation_ids,
+            task_id=task_id,
+            cwd=cwd,
+            repo=repo,
+            branch=branch,
+            model=model,
+            agent_runtime=agent_runtime,
+            platform_thread_id=platform_thread_id,
+            metadata=_json_arg(metadata_json, field_name="--metadata-json"),
+        ),
+    )
+    return _print_or_json(result.to_dict(), emit_json)
+
+
+def _capture_append_event(
+    config_path: str,
+    bridge_id: str,
+    conversation_id: str,
+    episode_id: str,
+    event_type: str,
+    payload_json: str | None,
+    payload_file: str | None,
+    content: str | None,
+    task_id: str | None,
+    branch_id: str,
+    timestamp: str | None,
+    emit_json: bool,
+) -> int:
+    from .models import AppendEventRequest
+
+    config = load_config(config_path)
+    result = append_event(
+        config,
+        AppendEventRequest(
+            bridge_id=bridge_id,
+            conversation_id=conversation_id,
+            episode_id=episode_id,
+            event_type=event_type,
+            payload=_capture_payload(payload_json, payload_file, content),
+            task_id=task_id,
+            branch_id=branch_id,
+            timestamp=timestamp,
+        ),
+    )
+    return _print_or_json(result.to_dict(), emit_json)
+
+
+def _capture_end_episode(
+    config_path: str,
+    bridge_id: str,
+    conversation_id: str,
+    episode_id: str,
+    status: str,
+    metadata_json: str | None,
+    emit_json: bool,
+) -> int:
+    from .models import EndEpisodeRequest
+
+    config = load_config(config_path)
+    result = end_episode(
+        config,
+        EndEpisodeRequest(
+            bridge_id=bridge_id,
+            conversation_id=conversation_id,
+            episode_id=episode_id,
+            status=status,
+            metadata=_json_arg(metadata_json, field_name="--metadata-json"),
+        ),
+    )
+    return _print_or_json(result.to_dict(), emit_json)
+
+
+def _queue_extraction(
+    config_path: str,
+    source_kind: str,
+    archive_id: str | None,
+    conversation_id: str | None,
+    episode_id: str | None,
+    bridge_id: str | None,
+    session_id: str | None,
+    task_id: str | None,
+    emit_json: bool,
+) -> int:
+    config = load_config(config_path)
+    item = enqueue_extraction(
+        config,
+        source_kind=source_kind,
+        archive_id=archive_id,
+        conversation_id=conversation_id,
+        episode_id=episode_id,
+        bridge_id=bridge_id,
+        session_id=session_id,
+        task_id=task_id,
+    )
+    return _print_or_json(item.to_dict(), emit_json)
+
+
+def _extraction_status(config_path: str, queue_id: int | None, emit_json: bool) -> int:
+    config = load_config(config_path)
+    payload = extraction_status(config, queue_id=queue_id)
+    return _print_or_json(payload, emit_json)
+
+
+def _promote_status(config_path: str, emit_json: bool) -> int:
+    from .jobs import promotion_status
+    config = load_config(config_path)
+    payload = promotion_status(config)
+    return _print_or_json(payload, emit_json)
+
+
+def _review(config_path: str, args: argparse.Namespace) -> int:
+    from dataclasses import asdict
+    from .promotion.review_ops import (
+        approve_review_item,
+        get_review_item,
+        list_review_items,
+        reject_review_item,
+    )
+    config = load_config(config_path)
+    sub = getattr(args, "review_command", None)
+
+    if sub is None:
+        from .promotion.review_tui import run_interactive_review
+        run_interactive_review(config)
+        return 0
+
+    if sub == "list":
+        items = list_review_items(config)
+        if not items:
+            print("No review items.")
+            return 0
+        if args.json:
+            import json as _json
+            print(_json.dumps([asdict(i) for i in items], default=str))
+            return 0
+        for idx, item in enumerate(items, 1):
+            print(f"{idx:3d}  {item.reason:<22}  {item.note_type:<10}  {item.title}")
+        return 0
+
+    if sub == "show":
+        item = get_review_item(config, args.name)
+        print(item.path.read_text(encoding="utf-8"))
+        return 0
+
+    if sub == "approve":
+        try:
+            final = approve_review_item(
+                config,
+                args.name,
+                lifecycle_state=args.lifecycle_state,
+                dry_run=args.dry_run,
+            )
+        except FileExistsError as exc:
+            print(f"error: {exc}")
+            return 1
+        if not args.dry_run:
+            print(f"approved={final}")
+        return 0
+
+    if sub == "reject":
+        reject_review_item(config, args.name, dry_run=args.dry_run)
+        if not args.dry_run:
+            print("rejected")
+        return 0
+
     return 0
 
 
@@ -734,8 +1150,73 @@ def main(argv: list[str] | None = None) -> int:
             args.content,
             args.tag,
             args.source_ref,
-            args.promote_now,
         )
+    if args.command == "ingest-artifact":
+        return _ingest_artifact(args.config, args.file, args.tag, args.attachment, args.attachment_recursive, args.json)
+    if args.command == "reprocess-artifact":
+        return _reprocess_artifact(args.config, args.archive_id, args.failed, args.json)
+    if args.command == "capture":
+        if args.capture_command == "begin-episode":
+            return _capture_begin_episode(
+                args.config,
+                args.bridge_id,
+                args.conversation_id,
+                args.episode_id,
+                args.parent_conversation_id,
+                args.related_conversation_id,
+                args.task_id,
+                args.cwd,
+                args.repo,
+                args.branch,
+                args.model,
+                args.agent_runtime,
+                args.platform_thread_id,
+                args.metadata_json,
+                args.json,
+            )
+        if args.capture_command == "append-event":
+            return _capture_append_event(
+                args.config,
+                args.bridge_id,
+                args.conversation_id,
+                args.episode_id,
+                args.event_type,
+                args.payload_json,
+                args.payload_file,
+                args.content,
+                args.task_id,
+                args.branch_id,
+                args.timestamp,
+                args.json,
+            )
+        if args.capture_command == "end-episode":
+            return _capture_end_episode(
+                args.config,
+                args.bridge_id,
+                args.conversation_id,
+                args.episode_id,
+                args.status,
+                args.metadata_json,
+                args.json,
+            )
+    if args.command == "queue-extraction":
+        return _queue_extraction(
+            args.config,
+            args.source_kind,
+            args.archive_id,
+            args.conversation_id,
+            args.episode_id,
+            args.bridge_id,
+            args.session_id,
+            args.task_id,
+            args.json,
+        )
+    if args.command == "extraction-status":
+        return _extraction_status(args.config, args.queue_id, args.json)
+    if args.command == "promote-status":
+        return _promote_status(args.config, args.json)
+    if args.command == "review":
+        return _review(args.config, args)
     if args.command == "retrieve":
         return _retrieve(args.config, args.query, args.top_k, args.query_type_hint, args.json)
     if args.command == "resolve-task-context":

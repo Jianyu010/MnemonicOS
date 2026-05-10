@@ -1,0 +1,166 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">MnemonicOS Architecture, Slide View</title>
+  <desc id="desc">Compact architecture diagram showing software-driven runtime, west ingestion, AI extraction, deterministic promotion, canonical memory, and retrieval packet flow.</desc>
+  <defs>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#0f172a" flood-opacity="0.16"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.4" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-soft" viewBox="0 0 10 10" refX="8.4" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/>
+    </marker>
+    <style>
+      .bg { fill: #f8fafc; }
+      .title { font: 700 42px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .subtitle { font: 500 21px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .section-label { font: 700 18px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: .08em; text-transform: uppercase; }
+      .node-title { font: 700 24px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .node-body { font: 500 17px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #334155; }
+      .small-title { font: 700 19px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .small-body { font: 500 14.5px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .tag { font: 800 13px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: .07em; }
+      .card { rx: 18; filter: url(#shadow); }
+      .soft-card { rx: 16; }
+      .line { stroke: #334155; stroke-width: 4; fill: none; marker-end: url(#arrow); }
+      .soft-line { stroke: #64748b; stroke-width: 3; fill: none; stroke-dasharray: 8 8; marker-end: url(#arrow-soft); }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1600" height="900"/>
+  <text class="title" x="76" y="76">MnemonicOS Architecture</text>
+  <text class="subtitle" x="78" y="112">True raw enters from the west, AI compiles candidates, software governs memory, retrieval serves bounded packets.</text>
+
+  <g transform="translate(82 145)">
+    <rect x="0" y="0" width="1436" height="76" rx="20" fill="#e2e8f0"/>
+    <g transform="translate(26 20)">
+      <rect x="0" y="0" width="150" height="36" rx="18" fill="#dbeafe"/>
+      <text class="tag" x="75" y="24" text-anchor="middle" fill="#1d4ed8">SOFTWARE</text>
+    </g>
+    <g transform="translate(198 20)">
+      <rect x="0" y="0" width="112" height="36" rx="18" fill="#ede9fe"/>
+      <text class="tag" x="56" y="24" text-anchor="middle" fill="#7c3aed">AI</text>
+    </g>
+    <g transform="translate(332 20)">
+      <rect x="0" y="0" width="178" height="36" rx="18" fill="#dcfce7"/>
+      <text class="tag" x="89" y="24" text-anchor="middle" fill="#15803d">GOVERNED</text>
+    </g>
+    <text class="node-body" x="550" y="35">Solid arrows: current software path. Purple boxes: model-driven extraction.</text>
+    <text class="node-body" x="550" y="58">Dashed arrow: future read-only learned retrieval core.</text>
+  </g>
+
+  <!-- Main track -->
+  <g transform="translate(82 265)">
+    <rect class="card" x="0" y="0" width="250" height="140" fill="#eff6ff" stroke="#93c5fd" stroke-width="2"/>
+    <text class="node-title" x="24" y="44">North Callers</text>
+    <text class="node-body" x="24" y="77">Agent, CLI, hook,</text>
+    <text class="node-body" x="24" y="101">HTTP, human</text>
+    <rect x="24" y="112" width="132" height="26" rx="13" fill="#dbeafe"/>
+    <text class="tag" x="90" y="131" text-anchor="middle" fill="#1d4ed8">SOFTWARE</text>
+  </g>
+
+  <path class="line" d="M 332 335 L 398 335"/>
+
+  <g transform="translate(398 265)">
+    <rect class="card" x="0" y="0" width="250" height="140" fill="#eff6ff" stroke="#93c5fd" stroke-width="2"/>
+    <text class="node-title" x="24" y="44">Runtime</text>
+    <text class="node-body" x="24" y="77">orchestrator.py</text>
+    <text class="node-body" x="24" y="101">runtime.py</text>
+    <rect x="24" y="112" width="132" height="26" rx="13" fill="#dbeafe"/>
+    <text class="tag" x="90" y="131" text-anchor="middle" fill="#1d4ed8">SOFTWARE</text>
+  </g>
+
+  <path class="line" d="M 648 335 L 714 335"/>
+
+  <g transform="translate(714 238)">
+    <rect class="card" x="0" y="0" width="452" height="194" fill="#f8fafc" stroke="#cbd5e1" stroke-width="2"/>
+    <text class="node-title" x="26" y="42">Ingestion Compiler</text>
+    <text class="node-body" x="26" y="72">west intake -> RAM projection -> AI candidates</text>
+    <rect x="28" y="100" width="118" height="38" rx="19" fill="#dbeafe"/>
+    <text class="tag" x="87" y="125" text-anchor="middle" fill="#1d4ed8">WEST</text>
+    <path d="M 154 119 L 206 119" stroke="#64748b" stroke-width="3" fill="none" marker-end="url(#arrow-soft)"/>
+    <rect x="216" y="100" width="100" height="38" rx="19" fill="#ede9fe"/>
+    <text class="tag" x="266" y="125" text-anchor="middle" fill="#7c3aed">VLM/LLM</text>
+    <path d="M 326 119 L 378 119" stroke="#64748b" stroke-width="3" fill="none" marker-end="url(#arrow-soft)"/>
+    <rect x="386" y="100" width="42" height="38" rx="19" fill="#dbeafe"/>
+    <text class="tag" x="407" y="125" text-anchor="middle" fill="#1d4ed8">OK</text>
+    <text class="small-body" x="28" y="164">Mixed: software orchestration plus AI extraction</text>
+  </g>
+
+  <path class="line" d="M 1166 335 L 1232 335"/>
+
+  <g transform="translate(1232 265)">
+    <rect class="card" x="0" y="0" width="286" height="140" fill="#ecfdf5" stroke="#86efac" stroke-width="2"/>
+    <text class="node-title" x="24" y="44">Promotion</text>
+    <text class="node-body" x="24" y="77">create / update / confirm</text>
+    <text class="node-body" x="24" y="101">review, then wiki write</text>
+    <rect x="24" y="112" width="132" height="26" rx="13" fill="#dcfce7"/>
+    <text class="tag" x="90" y="131" text-anchor="middle" fill="#15803d">GOVERNED</text>
+  </g>
+
+  <!-- Lower return track -->
+  <path class="line" d="M 1375 405 L 1375 492"/>
+
+  <g transform="translate(1208 492)">
+    <rect class="card" x="0" y="0" width="310" height="132" fill="#ecfdf5" stroke="#86efac" stroke-width="2"/>
+    <text class="node-title" x="24" y="42">Canonical Memory</text>
+    <text class="node-body" x="24" y="74">brain/wiki + SQLite indexes</text>
+    <text class="node-body" x="24" y="98">FTS, vectors, graph, state</text>
+  </g>
+
+  <path class="line" d="M 1208 558 L 1046 558"/>
+
+  <g transform="translate(760 492)">
+    <rect class="card" x="0" y="0" width="286" height="132" fill="#eff6ff" stroke="#93c5fd" stroke-width="2"/>
+    <text class="node-title" x="24" y="42">East Retrieval</text>
+    <text class="node-body" x="24" y="74">retrieval.py + trust.py</text>
+    <text class="node-body" x="24" y="98">graph.py, freshness, policy</text>
+  </g>
+
+  <path class="line" d="M 760 558 L 598 558"/>
+
+  <g transform="translate(292 492)">
+    <rect class="card" x="0" y="0" width="306" height="132" fill="#eff6ff" stroke="#93c5fd" stroke-width="2"/>
+    <text class="node-title" x="24" y="42">Memory Packet</text>
+    <text class="node-body" x="24" y="74">bounded context</text>
+    <text class="node-body" x="24" y="98">warnings + provenance</text>
+  </g>
+
+  <path class="line" d="M 292 558 L 207 558 L 207 405"/>
+
+  <!-- Detail panel -->
+  <g transform="translate(82 690)">
+    <rect x="0" y="0" width="1436" height="142" rx="22" fill="#ffffff" stroke="#cbd5e1" stroke-width="2" filter="url(#shadow)"/>
+    <text class="section-label" x="28" y="40" fill="#334155">Ingestion compiler detail</text>
+
+    <g transform="translate(30 66)">
+      <rect class="soft-card" x="0" y="0" width="292" height="54" fill="#eff6ff" stroke="#bfdbfe" stroke-width="2"/>
+      <text class="small-title" x="20" y="23">True raw intake</text>
+      <text class="small-body" x="20" y="43">software preserves witness raw</text>
+    </g>
+    <path d="M 404 784 L 466 784" stroke="#64748b" stroke-width="3" fill="none" marker-end="url(#arrow-soft)"/>
+    <g transform="translate(466 66)">
+      <rect class="soft-card" x="0" y="0" width="292" height="54" fill="#eff6ff" stroke="#bfdbfe" stroke-width="2"/>
+      <text class="small-title" x="20" y="23">RAM projection</text>
+      <text class="small-body" x="20" y="43">text windows + artifact views</text>
+    </g>
+    <path d="M 840 784 L 902 784" stroke="#64748b" stroke-width="3" fill="none" marker-end="url(#arrow-soft)"/>
+    <g transform="translate(902 66)">
+      <rect class="soft-card" x="0" y="0" width="232" height="54" fill="#f3e8ff" stroke="#d8b4fe" stroke-width="2"/>
+      <text class="small-title" x="20" y="23">AI extraction</text>
+      <text class="small-body" x="20" y="43">VLM snippets + candidate JSON</text>
+    </g>
+    <path d="M 1216 784 L 1278 784" stroke="#64748b" stroke-width="3" fill="none" marker-end="url(#arrow-soft)"/>
+    <g transform="translate(1278 66)">
+      <rect class="soft-card" x="0" y="0" width="128" height="54" fill="#eff6ff" stroke="#bfdbfe" stroke-width="2"/>
+      <text class="small-title" x="18" y="23">Validate</text>
+      <text class="small-body" x="18" y="43">software gates</text>
+    </g>
+  </g>
+
+  <!-- Future learned retrieval -->
+  <path class="soft-line" d="M 1363 624 C 1320 686, 1030 682, 930 624"/>
+  <text class="small-body" x="970" y="704" fill="#7c3aed">Future learned retrieval core</text>
+  <text class="small-body" x="970" y="724" fill="#7c3aed">AI-driven, read-only fetch/rerank, no mutation</text>
+</svg>

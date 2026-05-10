@@ -22,6 +22,7 @@ chunk_tokens = 400
 chunk_overlap_tokens = 50
 default_archive_type = "session"
 explicit_markers_only = false
+auto_trigger_pipeline = true
 
 [embeddings]
 enabled = true
@@ -43,6 +44,14 @@ current_query_contested_penalty = 0.65
 historical_query_relief = 0.20
 section_limit = 5
 
+[promotion]
+enabled = true
+max_components_per_candidate = 50
+max_candidates_per_run = 20
+min_confidence_for_direct_write = "medium"
+auto_review_on_conflict = true
+retry_after_hours = 24
+
 [jobs]
 sync_on_startup = true
 sync_after_ingest = true
@@ -55,9 +64,12 @@ pid_path = "brain/data/mnemonic.pid"
 log_path = "brain/logs/daemon.log"
 max_pending = 200
 max_oldest_age_minutes = 1440
+stale_episode_threshold_hours = 2
 
 [daemon.schedules]
+process_extraction_queue = "*/5 * * * *"
 process_promotion_queue = "*/5 * * * *"
+expire_stale_episodes = "0 * * * *"
 embed_backfill = "15 * * * *"
 daily_consolidation = "0 3 * * *"
 weekly_hygiene = "0 4 * * 0"

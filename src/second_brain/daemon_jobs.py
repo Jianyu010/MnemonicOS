@@ -9,7 +9,9 @@ from .jobs import run_job
 from .models import JobRunResult
 
 _DEFAULT_SCHEDULES = {
+    "process_extraction_queue": "*/5 * * * *",
     "process_promotion_queue": "*/5 * * * *",
+    "expire_stale_episodes": "0 * * * *",
     "embed_backfill": "15 * * * *",
     "daily_consolidation": "0 3 * * *",
     "weekly_hygiene": "0 4 * * 0",

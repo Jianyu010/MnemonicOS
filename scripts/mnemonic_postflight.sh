@@ -7,7 +7,6 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BRIDGE_ID=""
 SESSION_ID=""
 SUMMARY_FILE=""
-PROMOTE_NOW=0
 TAGS=()
 SOURCE_REFS=()
 DRY_RUN=0
@@ -21,14 +20,14 @@ while [[ $# -gt 0 ]]; do
     --summary-file) SUMMARY_FILE="$2"; shift 2 ;;
     --tag)          TAGS+=("$2"); shift 2 ;;
     --source-ref)   SOURCE_REFS+=("$2"); shift 2 ;;
-    --promote-now)  PROMOTE_NOW=1; shift ;;
+    --promote-now)  echo "Error: --promote-now was removed with the legacy promotion queue." >&2; exit 2 ;;
     --dry-run)      DRY_RUN=1; shift ;;
     *)              echo "Unknown option: $1" >&2; exit 1 ;;
   esac
 done
 
 if [[ -z "$BRIDGE_ID" || -z "$SESSION_ID" || -z "$SUMMARY_FILE" ]]; then
-  echo "Usage: mnemonic_postflight.sh --bridge-id <id> --session-id <id> --summary-file <path> [--promote-now]" >&2
+  echo "Usage: mnemonic_postflight.sh --bridge-id <id> --session-id <id> --summary-file <path>" >&2
   exit 1
 fi
 
@@ -42,6 +41,10 @@ if [[ -f "$REPO_ROOT/config/memory.toml" ]]; then
 else
   CONFIG="$REPO_ROOT/config/memory.example.toml"
 fi
+
+# Postflight is part of hook/writeback shutdown. It should archive and enqueue,
+# leaving extraction/promotion to direct capture calls or daemon pickup.
+export MNEMOS_AUTO_TRIGGER_PIPELINE="${MNEMOS_AUTO_TRIGGER_PIPELINE:-0}"
 
 if command -v mnemonicos >/dev/null 2>&1; then
   CLI=(mnemonicos --config "$CONFIG")
@@ -57,24 +60,12 @@ done
 for ref in "${SOURCE_REFS[@]+"${SOURCE_REFS[@]}"}"; do
   INGEST_CMD+=(--source-ref "$ref")
 done
-if [[ $PROMOTE_NOW -eq 1 ]]; then
-  INGEST_CMD+=(--promote-now)
-fi
 
 if [[ $DRY_RUN -eq 1 ]]; then
   echo "[DRY RUN] Would run: ${INGEST_CMD[*]}"
-  if [[ $PROMOTE_NOW -eq 1 ]]; then
-    echo "[DRY RUN] Deferred processing bypass enabled."
-  else
-    echo "[DRY RUN] Session will be archived and queued for daemon/background promotion."
-  fi
+  echo "[DRY RUN] Session will be archived as raw intake for later extraction."
   exit 0
 fi
 
 echo "=== MnemonicOS: Ingesting session summary ==="
 "${INGEST_CMD[@]}"
-
-if [[ $PROMOTE_NOW -eq 1 ]]; then
-  echo ""
-  echo "=== MnemonicOS: Immediate promotion requested ==="
-fi

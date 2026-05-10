@@ -1,10 +1,20 @@
 """
 MnemonicOS HTTP server — stdlib-only, no external dependencies.
 
-Implements api/openapi.yaml v0.4.0 plus the orchestrator extension:
+Implements api/openapi.yaml v0.5.0 plus the orchestrator extension:
   GET  /v1/health
   POST /v1/retrieve
   POST /v1/ingest/session
+  POST /v1/ingest/artifact
+  POST /v1/reprocess/artifact
+  POST /v1/capture/begin-episode
+  POST /v1/capture/append-event
+  POST /v1/capture/end-episode
+  POST /v1/extraction/queue
+  POST /v1/extraction/process
+  GET  /v1/extraction/status
+  POST /v1/promotion/process
+  GET  /v1/promotion/status
   POST /v1/sync/vault
   POST /v1/jobs/run
   POST /v1/orchestrator/begin-task
@@ -21,6 +31,7 @@ import json
 import logging
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 from .config import AppConfig
 
@@ -78,6 +89,116 @@ def _handle_ingest_session(config: AppConfig, body: dict[str, Any]) -> dict[str,
     }
 
 
+def _handle_ingest_artifact(config: AppConfig, body: dict[str, Any]) -> dict[str, Any]:
+    _require(body, "path")
+    from .ingest import ingest_artifact
+    result = ingest_artifact(
+        config,
+        path=body["path"],
+        tags=body.get("tags") or [],
+        attachments=body.get("attachments") or [],
+    )
+    return {
+        "archive_id": result.archive_id,
+        "raw_path": result.raw_path,
+        "manifest_path": result.manifest_path,
+        "ingest_status": result.ingest_status,
+        "source_format": result.source_format,
+        "figure_count": result.figure_count,
+        "warnings": result.warnings,
+        "failure_reason": result.failure_reason,
+        "needs_visual_pass": result.needs_visual_pass,
+        "needs_manual_projection": result.needs_manual_projection,
+        "image_only_pdf": result.image_only_pdf,
+    }
+
+
+def _artifact_response(result: Any) -> dict[str, Any]:
+    return {
+        "archive_id": result.archive_id,
+        "raw_path": result.raw_path,
+        "manifest_path": result.manifest_path,
+        "ingest_status": result.ingest_status,
+        "source_format": result.source_format,
+        "figure_count": result.figure_count,
+        "warnings": result.warnings,
+        "failure_reason": result.failure_reason,
+        "needs_visual_pass": result.needs_visual_pass,
+        "needs_manual_projection": result.needs_manual_projection,
+        "image_only_pdf": result.image_only_pdf,
+    }
+
+
+def _handle_reprocess_artifact(config: AppConfig, body: dict[str, Any]) -> dict[str, Any]:
+    from .ingest import reprocess_artifact, reprocess_failed_artifacts
+    if body.get("failed"):
+        return {"results": [_artifact_response(result) for result in reprocess_failed_artifacts(config)]}
+    _require(body, "archive_id")
+    return _artifact_response(reprocess_artifact(config, archive_id=body["archive_id"]))
+
+
+def _handle_capture_begin_episode(config: AppConfig, body: dict[str, Any]) -> dict[str, Any]:
+    _require(body, "bridge_id")
+    from .models import BeginEpisodeRequest
+    from .session_capture import begin_episode
+    result = begin_episode(
+        config,
+        BeginEpisodeRequest(
+            bridge_id=body["bridge_id"],
+            conversation_id=body.get("conversation_id"),
+            episode_id=body.get("episode_id"),
+            parent_conversation_id=body.get("parent_conversation_id"),
+            related_conversation_ids=body.get("related_conversation_ids") or [],
+            task_id=body.get("task_id"),
+            cwd=body.get("cwd"),
+            repo=body.get("repo"),
+            branch=body.get("branch"),
+            model=body.get("model"),
+            agent_runtime=body.get("agent_runtime"),
+            platform_thread_id=body.get("platform_thread_id"),
+            metadata=body.get("metadata") or {},
+        ),
+    )
+    return result.to_dict()
+
+
+def _handle_capture_append_event(config: AppConfig, body: dict[str, Any]) -> dict[str, Any]:
+    _require(body, "bridge_id", "conversation_id", "episode_id", "type")
+    from .models import AppendEventRequest
+    from .session_capture import append_event
+    result = append_event(
+        config,
+        AppendEventRequest(
+            bridge_id=body["bridge_id"],
+            conversation_id=body["conversation_id"],
+            episode_id=body["episode_id"],
+            event_type=body["type"],
+            payload=body.get("payload") or {},
+            task_id=body.get("task_id"),
+            branch_id=body.get("branch_id") or "main",
+            timestamp=body.get("timestamp"),
+        ),
+    )
+    return result.to_dict()
+
+
+def _handle_capture_end_episode(config: AppConfig, body: dict[str, Any]) -> dict[str, Any]:
+    _require(body, "bridge_id", "conversation_id", "episode_id")
+    from .models import EndEpisodeRequest
+    from .session_capture import end_episode
+    result = end_episode(
+        config,
+        EndEpisodeRequest(
+            bridge_id=body["bridge_id"],
+            conversation_id=body["conversation_id"],
+            episode_id=body["episode_id"],
+            status=body.get("status") or "success",
+            metadata=body.get("metadata") or {},
+        ),
+    )
+    return result.to_dict()
+
+
 def _handle_sync_vault(config: AppConfig, body: dict[str, Any]) -> dict[str, Any]:
     _require(body, "mode")
     from .sync import sync_vault
@@ -100,6 +221,44 @@ def _handle_jobs_run(config: AppConfig, body: dict[str, Any]) -> dict[str, Any]:
         "stats": result.stats,
         "review_items_created": result.review_items_created,
     }
+
+
+def _handle_extraction_queue(config: AppConfig, body: dict[str, Any]) -> dict[str, Any]:
+    _require(body, "source_kind")
+    from .extraction import enqueue_extraction
+    item = enqueue_extraction(
+        config,
+        source_kind=body["source_kind"],
+        archive_id=body.get("archive_id"),
+        conversation_id=body.get("conversation_id"),
+        episode_id=body.get("episode_id"),
+        bridge_id=body.get("bridge_id"),
+        session_id=body.get("session_id"),
+        task_id=body.get("task_id"),
+    )
+    return item.to_dict()
+
+
+def _handle_extraction_process(config: AppConfig, body: dict[str, Any]) -> dict[str, Any]:
+    from .extraction import process_extraction_queue
+    result = process_extraction_queue(config, dry_run=bool(body.get("dry_run")))
+    return result.to_stats()
+
+
+def _handle_extraction_status(config: AppConfig, queue_id: int | None = None) -> dict[str, Any]:
+    from .extraction import extraction_status
+    return extraction_status(config, queue_id=queue_id)
+
+
+def _handle_promotion_process(config: AppConfig, body: dict[str, Any]) -> dict[str, Any]:
+    from .promotion import process_promotion_queue
+    result = process_promotion_queue(config, dry_run=bool(body.get("dry_run")))
+    return result.to_stats()
+
+
+def _handle_promotion_status(config: AppConfig) -> dict[str, Any]:
+    from .jobs import promotion_status
+    return promotion_status(config)
 
 
 def _handle_orchestrator_begin_task(config: AppConfig, body: dict[str, Any]) -> dict[str, Any]:
@@ -176,6 +335,14 @@ def _handle_orchestrator_finish_task(config: AppConfig, body: dict[str, Any]) ->
 _POST_ROUTES: dict[str, Any] = {
     "/v1/retrieve": _handle_retrieve,
     "/v1/ingest/session": _handle_ingest_session,
+    "/v1/ingest/artifact": _handle_ingest_artifact,
+    "/v1/reprocess/artifact": _handle_reprocess_artifact,
+    "/v1/capture/begin-episode": _handle_capture_begin_episode,
+    "/v1/capture/append-event": _handle_capture_append_event,
+    "/v1/capture/end-episode": _handle_capture_end_episode,
+    "/v1/extraction/queue": _handle_extraction_queue,
+    "/v1/extraction/process": _handle_extraction_process,
+    "/v1/promotion/process": _handle_promotion_process,
     "/v1/sync/vault": _handle_sync_vault,
     "/v1/jobs/run": _handle_jobs_run,
     "/v1/orchestrator/begin-task": _handle_orchestrator_begin_task,
@@ -215,7 +382,8 @@ class _MnemonicOSHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:  # noqa: N802
-        path = self.path.split("?")[0]
+        parsed = urlparse(self.path)
+        path = parsed.path
         if path == "/v1/health":
             from .db import connect_db
             db_ready = False
@@ -227,6 +395,19 @@ class _MnemonicOSHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
             self._respond(200, {"status": "ok", "db_ready": db_ready})
+        elif path == "/v1/extraction/status":
+            query = parse_qs(parsed.query)
+            queue_id_raw = (query.get("queue_id") or [None])[0]
+            queue_id = int(queue_id_raw) if queue_id_raw else None
+            try:
+                self._respond(200, _handle_extraction_status(self.config, queue_id=queue_id))
+            except (FileNotFoundError, ValueError) as exc:
+                self._respond(400, {"error": "bad_request", "detail": str(exc)})
+        elif path == "/v1/promotion/status":
+            try:
+                self._respond(200, _handle_promotion_status(self.config))
+            except Exception as exc:
+                self._respond(500, {"error": "internal_error", "detail": str(exc)})
         else:
             self._respond(404, {"error": "not_found", "path": path})
 
@@ -246,6 +427,8 @@ class _MnemonicOSHandler(BaseHTTPRequestHandler):
             result = handler(self.config, body)
             self._respond(200, result)
         except _BadRequest as exc:
+            self._respond(400, {"error": "bad_request", "detail": str(exc)})
+        except (FileNotFoundError, ValueError) as exc:
             self._respond(400, {"error": "bad_request", "detail": str(exc)})
         except Exception as exc:
             logger.exception("POST %s failed: %s", path, exc)
