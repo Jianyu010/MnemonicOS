@@ -42,6 +42,10 @@ else
   CONFIG="$REPO_ROOT/config/memory.example.toml"
 fi
 
+# Postflight is part of hook/writeback shutdown. It should archive and enqueue,
+# leaving extraction/promotion to direct capture calls or daemon pickup.
+export MNEMOS_AUTO_TRIGGER_PIPELINE="${MNEMOS_AUTO_TRIGGER_PIPELINE:-0}"
+
 if command -v mnemonicos >/dev/null 2>&1; then
   CLI=(mnemonicos --config "$CONFIG")
 else

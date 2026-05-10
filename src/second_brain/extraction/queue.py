@@ -22,6 +22,7 @@ def enqueue_extraction(
     bridge_id: str | None = None,
     session_id: str | None = None,
     task_id: str | None = None,
+    content_hash: str | None = None,
 ) -> ExtractionQueueItem:
     _validate_source(source_kind, archive_id=archive_id, conversation_id=conversation_id, episode_id=episode_id)
     connection = connect_db(config.paths.db_path)
@@ -32,20 +33,28 @@ def enqueue_extraction(
                 """
                 INSERT INTO extraction_queue(
                     source_kind, archive_id, conversation_id, episode_id,
-                    bridge_id, session_id, task_id, status, last_error
+                    bridge_id, session_id, task_id, status, content_hash, last_error
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NULL)
+                VALUES (?, ?, ?, ?, COALESCE(?, 'job:backfill'), ?, ?, 'pending', ?, NULL)
                 ON CONFLICT DO UPDATE SET
-                    bridge_id = COALESCE(excluded.bridge_id, extraction_queue.bridge_id),
-                    session_id = COALESCE(excluded.session_id, extraction_queue.session_id),
-                    task_id = COALESCE(excluded.task_id, extraction_queue.task_id),
+                    bridge_id    = COALESCE(excluded.bridge_id, extraction_queue.bridge_id),
+                    session_id   = COALESCE(excluded.session_id, extraction_queue.session_id),
+                    task_id      = COALESCE(excluded.task_id, extraction_queue.task_id),
+                    content_hash = COALESCE(excluded.content_hash, extraction_queue.content_hash),
                     status = CASE
-                        WHEN extraction_queue.status IN ('processed', 'processing') THEN extraction_queue.status
+                        WHEN extraction_queue.status = 'processing'
+                            THEN extraction_queue.status
+                        WHEN excluded.content_hash IS NOT NULL
+                         AND extraction_queue.content_hash IS NOT NULL
+                         AND excluded.content_hash != extraction_queue.content_hash
+                            THEN 'pending'
+                        WHEN extraction_queue.status = 'processed'
+                            THEN extraction_queue.status
                         ELSE 'pending'
                     END,
                     last_error = NULL
                 """,
-                (source_kind, archive_id, conversation_id, episode_id, bridge_id, session_id, task_id),
+                (source_kind, archive_id, conversation_id, episode_id, bridge_id, session_id, task_id, content_hash),
             )
         row = _select_queue_row(
             connection,
@@ -158,6 +167,7 @@ def mark_finished(
     visual_snippet_count: int,
     candidate_count: int,
     validation_error_count: int,
+    intra_source_relations: list[dict[str, Any]] | None = None,
 ) -> None:
     connection.execute(
         """
@@ -170,6 +180,7 @@ def mark_finished(
             visual_snippet_count = ?,
             candidate_count = ?,
             validation_error_count = ?,
+            intra_source_relations_json = ?,
             finished_at = datetime('now'),
             last_error = NULL
         WHERE id = ?
@@ -183,6 +194,7 @@ def mark_finished(
             visual_snippet_count,
             candidate_count,
             validation_error_count,
+            json.dumps(intra_source_relations or [], sort_keys=True),
             queue_id,
         ),
     )
@@ -270,6 +282,7 @@ def _row_to_item(row: sqlite3.Row) -> ExtractionQueueItem:
         status=str(row["status"]),
         attempt_count=int(row["attempt_count"]),
         last_error=str(row["last_error"]) if row["last_error"] is not None else None,
+        content_hash=str(row["content_hash"]) if row["content_hash"] is not None else None,
     )
 
 

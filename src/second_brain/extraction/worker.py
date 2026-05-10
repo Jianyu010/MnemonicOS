@@ -19,7 +19,7 @@ from .queue import (
     source_ref_id,
 )
 from .store import candidate_counts, replace_candidates, replace_visual_snippets
-from .validation import parse_candidate_bundle, projection_evidence_ids, validate_candidate
+from .validation import parse_candidate_bundle, parse_intra_source_relations, projection_evidence_ids, validate_candidate
 
 
 def process_extraction_queue(config: AppConfig, *, dry_run: bool = False, limit: int | None = None) -> ExtractionProcessResult:
@@ -122,11 +122,13 @@ def _process_item(
             windows=windows,
             visual_snippets=visual_snippets,
         )
+        raw_output = llm.extract_candidates(packet)
         candidates = _extract_and_validate_candidates(
-            raw_output=llm.extract_candidates(packet),
+            raw_output=raw_output,
             active_source_ref=source_ref_id(item),
             evidence_ids=projection_evidence_ids(packet),
         )
+        intra_relations = parse_intra_source_relations(raw_output)
         counts = candidate_counts(candidates)
         with connection:
             replace_visual_snippets(
@@ -154,6 +156,7 @@ def _process_item(
                 visual_snippet_count=len(visual_snippets),
                 candidate_count=counts["candidate_count"],
                 validation_error_count=counts["validation_error_count"],
+                intra_source_relations=intra_relations,
             )
         return {
             "processed": 1,

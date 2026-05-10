@@ -13,6 +13,8 @@ Implements api/openapi.yaml v0.5.0 plus the orchestrator extension:
   POST /v1/extraction/queue
   POST /v1/extraction/process
   GET  /v1/extraction/status
+  POST /v1/promotion/process
+  GET  /v1/promotion/status
   POST /v1/sync/vault
   POST /v1/jobs/run
   POST /v1/orchestrator/begin-task
@@ -248,6 +250,17 @@ def _handle_extraction_status(config: AppConfig, queue_id: int | None = None) ->
     return extraction_status(config, queue_id=queue_id)
 
 
+def _handle_promotion_process(config: AppConfig, body: dict[str, Any]) -> dict[str, Any]:
+    from .promotion import process_promotion_queue
+    result = process_promotion_queue(config, dry_run=bool(body.get("dry_run")))
+    return result.to_stats()
+
+
+def _handle_promotion_status(config: AppConfig) -> dict[str, Any]:
+    from .jobs import promotion_status
+    return promotion_status(config)
+
+
 def _handle_orchestrator_begin_task(config: AppConfig, body: dict[str, Any]) -> dict[str, Any]:
     _require(body, "bridge_id", "task_text")
     import uuid as _uuid
@@ -329,6 +342,7 @@ _POST_ROUTES: dict[str, Any] = {
     "/v1/capture/end-episode": _handle_capture_end_episode,
     "/v1/extraction/queue": _handle_extraction_queue,
     "/v1/extraction/process": _handle_extraction_process,
+    "/v1/promotion/process": _handle_promotion_process,
     "/v1/sync/vault": _handle_sync_vault,
     "/v1/jobs/run": _handle_jobs_run,
     "/v1/orchestrator/begin-task": _handle_orchestrator_begin_task,
@@ -389,6 +403,11 @@ class _MnemonicOSHandler(BaseHTTPRequestHandler):
                 self._respond(200, _handle_extraction_status(self.config, queue_id=queue_id))
             except (FileNotFoundError, ValueError) as exc:
                 self._respond(400, {"error": "bad_request", "detail": str(exc)})
+        elif path == "/v1/promotion/status":
+            try:
+                self._respond(200, _handle_promotion_status(self.config))
+            except Exception as exc:
+                self._respond(500, {"error": "internal_error", "detail": str(exc)})
         else:
             self._respond(404, {"error": "not_found", "path": path})
 

@@ -40,6 +40,7 @@ class ExtractionQueueItem:
     status: str
     attempt_count: int
     last_error: str | None
+    content_hash: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

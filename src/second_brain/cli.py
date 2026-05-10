@@ -142,6 +142,25 @@ def _build_parser() -> argparse.ArgumentParser:
     extraction_status_parser.add_argument("--queue-id", type=int, default=None)
     extraction_status_parser.add_argument("--json", action="store_true", help="Emit JSON output.")
 
+    promote_status_parser = subparsers.add_parser("promote-status", help="Show promotion queue health (pending/promoted/review/rejected counts).")
+    promote_status_parser.add_argument("--json", action="store_true", help="Emit JSON output.")
+
+    review_parser = subparsers.add_parser("review", help="Review routed notes awaiting human approval.")
+    review_subs = review_parser.add_subparsers(dest="review_command", required=False)
+    rl = review_subs.add_parser("list", help="List pending review items.")
+    rl.add_argument("--json", action="store_true", help="Emit JSON output.")
+    rs = review_subs.add_parser("show", help="Display a review item.")
+    rs.add_argument("name", help="Filename (with or without .md) or filename prefix.")
+    ra = review_subs.add_parser("approve", help="Approve and promote a review item to the wiki.")
+    ra.add_argument("name", help="Filename (with or without .md) or filename prefix.")
+    ra.add_argument("--lifecycle-state", dest="lifecycle_state", default=None,
+                    choices=["draft", "verified", "canonical", "contested", "archived"],
+                    help="Override lifecycle state (default: type-specific LIFECYCLE_DEFAULTS).")
+    ra.add_argument("--dry-run", action="store_true", help="Print what would happen without writing.")
+    rr = review_subs.add_parser("reject", help="Reject and delete a review item.")
+    rr.add_argument("name", help="Filename (with or without .md) or filename prefix.")
+    rr.add_argument("--dry-run", action="store_true", help="Print what would happen without deleting.")
+
     retrieve_parser = subparsers.add_parser("retrieve", help="Run hybrid retrieval across exact, BM25, semantic, graph, and archive channels.")
     retrieve_parser.add_argument("query", help="Query text.")
     retrieve_parser.add_argument("--top-k", type=int, default=None)
@@ -206,6 +225,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "weekly_hygiene",
             "sync_vault_incremental",
             "process_extraction_queue",
+            "process_promotion_queue",
+            "expire_stale_episodes",
             "embed_backfill",
             "status_report",
         ),
@@ -781,6 +802,71 @@ def _extraction_status(config_path: str, queue_id: int | None, emit_json: bool) 
     return _print_or_json(payload, emit_json)
 
 
+def _promote_status(config_path: str, emit_json: bool) -> int:
+    from .jobs import promotion_status
+    config = load_config(config_path)
+    payload = promotion_status(config)
+    return _print_or_json(payload, emit_json)
+
+
+def _review(config_path: str, args: argparse.Namespace) -> int:
+    from dataclasses import asdict
+    from .promotion.review_ops import (
+        approve_review_item,
+        get_review_item,
+        list_review_items,
+        reject_review_item,
+    )
+    config = load_config(config_path)
+    sub = getattr(args, "review_command", None)
+
+    if sub is None:
+        from .promotion.review_tui import run_interactive_review
+        run_interactive_review(config)
+        return 0
+
+    if sub == "list":
+        items = list_review_items(config)
+        if not items:
+            print("No review items.")
+            return 0
+        if args.json:
+            import json as _json
+            print(_json.dumps([asdict(i) for i in items], default=str))
+            return 0
+        for idx, item in enumerate(items, 1):
+            print(f"{idx:3d}  {item.reason:<22}  {item.note_type:<10}  {item.title}")
+        return 0
+
+    if sub == "show":
+        item = get_review_item(config, args.name)
+        print(item.path.read_text(encoding="utf-8"))
+        return 0
+
+    if sub == "approve":
+        try:
+            final = approve_review_item(
+                config,
+                args.name,
+                lifecycle_state=args.lifecycle_state,
+                dry_run=args.dry_run,
+            )
+        except FileExistsError as exc:
+            print(f"error: {exc}")
+            return 1
+        if not args.dry_run:
+            print(f"approved={final}")
+        return 0
+
+    if sub == "reject":
+        reject_review_item(config, args.name, dry_run=args.dry_run)
+        if not args.dry_run:
+            print("rejected")
+        return 0
+
+    return 0
+
+
 def _orchestrator_begin_task(
     config_path: str,
     task_text: str,
@@ -1127,6 +1213,10 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.command == "extraction-status":
         return _extraction_status(args.config, args.queue_id, args.json)
+    if args.command == "promote-status":
+        return _promote_status(args.config, args.json)
+    if args.command == "review":
+        return _review(args.config, args)
     if args.command == "retrieve":
         return _retrieve(args.config, args.query, args.top_k, args.query_type_hint, args.json)
     if args.command == "resolve-task-context":

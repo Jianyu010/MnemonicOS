@@ -9,6 +9,7 @@ from .config import AppConfig
 from .db import connect_db, run_migrations
 from .extraction import extraction_status, process_extraction_queue
 from .models import JobRunResult
+from .promotion import process_promotion_queue
 from .ops import (
     load_open_relearn_tasks,
     load_open_review_items,
@@ -101,6 +102,38 @@ def collect_storage_stats(config: AppConfig) -> dict[str, Any]:
     }
 
 
+def promotion_status(config: AppConfig) -> dict[str, Any]:
+    """Return promotion queue health counts from promotion_decisions + extraction_candidates."""
+    connection = connect_db(config.paths.db_path)
+    run_migrations(connection, config.paths.workspace_root / "migrations")
+    try:
+        promotion_ready = int(
+            (connection.execute(
+                "SELECT COUNT(*) FROM extraction_candidates WHERE promotion_state = 'promotion_ready'"
+            ).fetchone() or [0])[0]
+        )
+        state_rows = connection.execute(
+            "SELECT promotion_state, COUNT(*) AS cnt FROM promotion_decisions GROUP BY promotion_state"
+        ).fetchall()
+        state_counts = {str(r["promotion_state"]): int(r["cnt"]) for r in state_rows}
+        last_run_row = connection.execute(
+            """
+            SELECT finished_at FROM job_runs
+            WHERE job_name = 'process_promotion_queue' AND finished_at IS NOT NULL
+            ORDER BY id DESC LIMIT 1
+            """
+        ).fetchone()
+    finally:
+        connection.close()
+    return {
+        "promotion_ready": promotion_ready,
+        "promoted": state_counts.get("promoted", 0),
+        "review_routed": state_counts.get("review_routed", 0),
+        "rejected": state_counts.get("rejected", 0),
+        "last_run_at": str(last_run_row["finished_at"]) if last_run_row else None,
+    }
+
+
 def collect_status_snapshot(config: AppConfig) -> dict[str, Any]:
     connection = connect_db(config.paths.db_path)
     run_migrations(connection, config.paths.workspace_root / "migrations")
@@ -116,6 +149,7 @@ def collect_status_snapshot(config: AppConfig) -> dict[str, Any]:
     connection.close()
     snapshot = {
         "queue": collect_queue_stats(config),
+        "promotion": promotion_status(config),
         "storage": collect_storage_stats(config),
         "recent_job_runs": [
             {
@@ -534,9 +568,89 @@ def _stale_rows_from_freshness(connection) -> list[dict[str, str]]:
     ]
 
 
+def _process_promotion_queue_job(config: AppConfig, *, dry_run: bool = False) -> JobRunResult:
+    connection = connect_db(config.paths.db_path)
+    run_migrations(connection, config.paths.workspace_root / "migrations")
+    stats: dict[str, int] = {}
+    with connection:
+        job_id = _open_job_run(connection, "process_promotion_queue", "dry-run" if dry_run else "live")
+    connection.close()
+    try:
+        result = process_promotion_queue(config, dry_run=dry_run)
+        stats = result.to_stats()
+        connection = connect_db(config.paths.db_path)
+        with connection:
+            _close_job_run(connection, job_id, status="ok", stats=stats)
+        connection.close()
+
+        return JobRunResult(
+            job_name="process_promotion_queue",
+            status="ok",
+            stats=stats,
+            review_items_created=[],
+        )
+    except Exception as exc:
+        connection = connect_db(config.paths.db_path)
+        with connection:
+            _close_job_run(connection, job_id, status="error", stats=stats, error_text=str(exc))
+        connection.close()
+        raise
+
+
+def _expire_stale_episodes_job(config: AppConfig, *, dry_run: bool = False) -> JobRunResult:
+    from .session_capture import end_episode
+    from .models import EndEpisodeRequest
+    threshold = config.daemon.stale_episode_threshold_hours if config.daemon is not None else 2
+    connection = connect_db(config.paths.db_path)
+    run_migrations(connection, config.paths.workspace_root / "migrations")
+    try:
+        rows = connection.execute(
+            """
+            SELECT conversation_id, episode_id, bridge_id
+            FROM raw_episodes
+            WHERE status = 'active'
+              AND updated_at < datetime('now', '-' || ? || ' hours')
+            ORDER BY updated_at ASC
+            """,
+            (threshold,),
+        ).fetchall()
+    finally:
+        connection.close()
+    closed = 0
+    errors = 0
+    for row in rows:
+        if dry_run:
+            closed += 1
+            continue
+        try:
+            end_episode(
+                config,
+                EndEpisodeRequest(
+                    bridge_id=str(row["bridge_id"] or "job:expire"),
+                    conversation_id=str(row["conversation_id"]),
+                    episode_id=str(row["episode_id"]),
+                    status="partial",
+                    metadata={"expired_by": "expire_stale_episodes"},
+                ),
+            )
+            closed += 1
+        except Exception:
+            errors += 1
+    return JobRunResult(
+        job_name="expire_stale_episodes",
+        status="ok",
+        stats={"closed": closed, "errors": errors},
+        review_items_created=[],
+    )
+
+
 def run_job(config: AppConfig, *, job_name: str, dry_run: bool = False) -> JobRunResult:
     if job_name == "process_extraction_queue":
         return _process_extraction_queue_job(config, dry_run=dry_run)
+    if job_name == "process_promotion_queue":
+        return _process_promotion_queue_job(config, dry_run=dry_run)
+    if job_name == "expire_stale_episodes":
+        return _expire_stale_episodes_job(config, dry_run=dry_run)
     if job_name == "embed_backfill":
         return _embed_backfill(config, dry_run=dry_run)
     if job_name == "status_report":

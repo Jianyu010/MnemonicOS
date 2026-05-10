@@ -280,6 +280,23 @@ Conclusion:
 
 - Phase 7 is complete for current CLI/API/daemon operation.
 
+## Phase 8: Intra-Source Relation Extraction
+
+Status: **not started**.
+
+Planned deliverables:
+- `intra_source_relations` top-level field added to `mnemos-extraction-v1` bundle schema.
+- `OllamaLLMProvider` prompt extended with intra-source relation rules.
+- `FixtureLLMProvider` emits deterministic intra_source_relations for multi-candidate
+  bundles.
+- `validate_intra_source_relations(relations, candidate_titles, errors)` in
+  `validation.py` — invalid entries dropped, bundle not rejected.
+- Migration adds `intra_source_relations_json TEXT` to `extraction_queue`.
+- Worker stores validated relations on the queue row.
+- Promotion layer amendment applies stored relations to wiki note frontmatter after
+  bundle candidates are promoted (tracked in
+  `promotion-layer-development-plan-intra-source-relations.md`).
+
 ## Remaining LLM/VLM Layer Work
 
 - Add integration-gated tests for Ollama VLM and LLM providers.
@@ -299,7 +316,10 @@ Conclusion:
 The LLM/VLM layer is good enough to hand off to the next layer. It consumes only
 west-flange projections, stores VLM and LLM outputs only in extraction-layer
 tables, validates candidate structure and provenance, and terminates at
-`promotion_ready`. The next system milestone should be the deterministic
-promotion layer: consume `promotion_ready` candidates, decide create/update/
-confirm/review, render canonical wiki notes, sync indexes, and record promotion
-decisions.
+`promotion_ready`. Phase 8 extends this with intra-source relation extraction:
+the LLM, having consumed the full projection of one source, asserts typed
+relations between the candidates it produces. These relations are stored on the
+extraction queue row and applied to wiki note frontmatter by the promotion layer
+after the bundle's candidates are promoted. Phase 8 is the primary source of graph
+edges between notes that come from the same raw material — the only point in the
+pipeline with visibility across all candidates from one source simultaneously.

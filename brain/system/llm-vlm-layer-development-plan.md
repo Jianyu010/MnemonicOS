@@ -19,6 +19,7 @@ implementation details live in the phase files:
 5. [Phase 5: LLM Candidate Bundle Layer](llm-vlm-layer-development-plan-phase5.md)
 6. [Phase 6: Deterministic Candidate Validation](llm-vlm-layer-development-plan-phase6.md)
 7. [Phase 7: Daemon and Admin Surfaces](llm-vlm-layer-development-plan-phase7.md)
+8. [Phase 8: Intra-Source Relation Extraction](llm-vlm-layer-development-plan-phase8.md)
 
 ## Verified Breakpoint
 
@@ -74,6 +75,33 @@ Out of scope:
 - raw file parsing outside west-flange projection
 - replacing deterministic promotion policy
 - reinforcement learning or fine-tuning pipelines
+
+## Extraction Philosophy
+
+The LLM is not a summarizer. Every source contains a specific information shape —
+document sections, procedure steps, causal chains, experimental results, failure
+modes, decisions with rationale. The LLM must preserve that shape, not collapse it
+into prose.
+
+Concretely:
+
+- `summary` is an index hint. It is not the payload.
+- `body` is a faithful, dense rendering of the source content.
+- `components` are the loss-minimizing units: each is a distinct, source-grounded
+  atom of knowledge with its own type, text, and evidence binding.
+- The number of candidates from one source is bounded only by what the source
+  actually contains, not by an arbitrary limit. A book chapter may yield a dozen
+  candidates; a short session note may yield one.
+- The number of components within a candidate is bounded by the source's
+  structural complexity. A multi-step procedure produces one component per step,
+  not one component for the whole procedure.
+- `intra_source_relations` (Phase 8) are links the LLM asserts between the
+  candidates it produces from the same source. They are structurally grounded in
+  the source's own organization — not invented.
+
+The VLM applies the same principle: its output is a description of what the image
+contains, not a paraphrase. Missing or unrecognizable visual content produces a
+warning, not an invented description.
 
 ## Non-Negotiable Invariants
 

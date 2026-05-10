@@ -237,6 +237,19 @@ def end_episode(config: AppConfig, request: EndEpisodeRequest) -> EndEpisodeResu
     conversation_manifest["last_active_at"] = manifest["ended_at"]
     _write_json_file(conversation_manifest_path, conversation_manifest)
     _upsert_raw_episode_index(config, conversation_id, episode_id)
+    from .extraction.queue import enqueue_extraction as _enqueue_extraction
+    _enqueue_extraction(
+        config,
+        source_kind="episode",
+        conversation_id=conversation_id,
+        episode_id=episode_id,
+        bridge_id=request.bridge_id,
+        session_id=request.episode_id,
+        content_hash=content_hash,
+    )
+    if config.ingest.auto_trigger_pipeline:
+        from .pipeline import trigger_pipeline as _trigger_pipeline
+        _trigger_pipeline(config)
     return EndEpisodeResult(
         conversation_id=conversation_id,
         episode_id=episode_id,

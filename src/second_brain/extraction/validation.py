@@ -11,12 +11,39 @@ from .models import (
     ModelCandidate,
 )
 
+# Relation types the LLM may assert between intra-source candidates.
+# Mirrors graph.py RELATION_WEIGHTS keys.
+SUPPORTED_INTRA_RELATION_TYPES: frozenset[str] = frozenset({
+    "owner", "repo", "active_decision", "linked_decision", "linked_procedure",
+    "linked_project", "linked_note", "entity", "about", "related_to",
+    "part_of", "depends_on", "derived_from", "refines", "supersedes",
+    "before", "after", "caused_by", "resolved_by", "evidence_for",
+    "similar_to", "contrasts_with", "part_of_chain", "attempts_to_solve",
+    "failed_due_to", "supports_solution", "derived_from_attempt",
+})
+
+
+def _strip_code_fence(text: str) -> str:
+    """Strip markdown code fences that LLMs commonly wrap JSON in."""
+    s = text.strip()
+    for prefix in ("```json", "```"):
+        if s.startswith(prefix):
+            s = s[len(prefix):]
+            break
+    if s.endswith("```"):
+        s = s[:-3]
+    return s.strip()
+
 
 def parse_candidate_bundle(raw_output: str) -> tuple[list[dict[str, Any]], list[str]]:
+    cleaned = _strip_code_fence(raw_output)
     try:
-        payload = json.loads(raw_output)
-    except json.JSONDecodeError as exc:
-        return [], [f"invalid_json: {exc.msg}"]
+        payload = json.loads(cleaned)
+    except json.JSONDecodeError:
+        try:
+            payload = json.loads(raw_output)
+        except json.JSONDecodeError as exc:
+            return [], [f"invalid_json: {exc.msg}"]
     if not isinstance(payload, dict):
         return [], ["bundle must be a JSON object"]
     if payload.get("schema_version") != SCHEMA_VERSION:
@@ -25,6 +52,88 @@ def parse_candidate_bundle(raw_output: str) -> tuple[list[dict[str, Any]], list[
     if not isinstance(candidates, list):
         return [], ["candidates must be a list"]
     return [item for item in candidates if isinstance(item, dict)], []
+
+
+def parse_intra_source_relations(raw_output: str) -> list[dict[str, Any]]:
+    """Parse and validate intra_source_relations from a raw LLM bundle string.
+
+    Invalid entries are dropped silently; the bundle is not rejected.
+    Returns a list of clean relation dicts: {source_index, target_index, relation_type[, rationale]}.
+    """
+    cleaned = _strip_code_fence(raw_output)
+    try:
+        payload = json.loads(cleaned)
+    except json.JSONDecodeError:
+        try:
+            payload = json.loads(raw_output)
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(payload, dict):
+        return []
+
+    candidates = payload.get("candidates")
+    candidate_count = len(candidates) if isinstance(candidates, list) else 0
+
+    raw_relations = payload.get("intra_source_relations")
+    if not isinstance(raw_relations, list):
+        return []
+
+    return validate_intra_source_relations(raw_relations, candidate_count)
+
+
+def validate_intra_source_relations(
+    relations: list[Any],
+    candidate_count: int,
+) -> list[dict[str, Any]]:
+    """Validate a list of intra-source relation dicts.
+
+    Relations use 0-based candidate indices (source_index, target_index) that map
+    directly to extraction_candidates.candidate_index for the same queue row.
+
+    Rules (invalid entries dropped, not rejected):
+    - source_index and target_index must be non-negative integers < candidate_count.
+    - source_index != target_index (no self-loops).
+    - relation_type must be in SUPPORTED_INTRA_RELATION_TYPES.
+    - Duplicates on (source_index, target_index, relation_type) are dropped.
+
+    When candidate_count == 0 the index range check is skipped (no candidates known).
+    Returns only the valid entries.
+    """
+    valid: list[dict[str, Any]] = []
+    seen: set[tuple[int, int, str]] = set()
+    for entry in relations:
+        if not isinstance(entry, dict):
+            continue
+        src_raw = entry.get("source_index")
+        tgt_raw = entry.get("target_index")
+        rel = str(entry.get("relation_type") or "").strip()
+        if src_raw is None or tgt_raw is None or not rel:
+            continue
+        if isinstance(src_raw, bool) or isinstance(tgt_raw, bool):
+            continue
+        try:
+            src = int(src_raw)
+            tgt = int(tgt_raw)
+        except (TypeError, ValueError):
+            continue
+        if src < 0 or tgt < 0:
+            continue
+        if src == tgt:
+            continue
+        if candidate_count > 0 and (src >= candidate_count or tgt >= candidate_count):
+            continue
+        if rel not in SUPPORTED_INTRA_RELATION_TYPES:
+            continue
+        key = (src, tgt, rel)
+        if key in seen:
+            continue
+        seen.add(key)
+        clean: dict[str, Any] = {"source_index": src, "target_index": tgt, "relation_type": rel}
+        rationale = str(entry.get("rationale") or "").strip()
+        if rationale:
+            clean["rationale"] = rationale
+        valid.append(clean)
+    return valid
 
 
 def validate_candidate(

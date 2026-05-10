@@ -50,6 +50,9 @@ class DaemonJobsTest(unittest.TestCase):
             [graph]
             enabled = false
 
+            [ingest]
+            auto_trigger_pipeline = false
+
             [daemon]
             socket_path = "{(workspace / 'brain/data/mnemonic.sock').as_posix()}"
             pid_path = "{(workspace / 'brain/data/mnemonic.pid').as_posix()}"

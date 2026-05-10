@@ -14,6 +14,7 @@ implementation details live in the phase files:
 3. [Phase 3: Projection Lease API](west-flange-development-plan-phase3.md)
 4. [Phase 4: Artifact Lane and Visual Context](west-flange-development-plan-phase4.md)
 5. [Phase 5: Extraction Handoff and Verification](west-flange-development-plan-phase5.md)
+6. [Phase 6: Ingestion-to-Extraction Auto-Enqueue](west-flange-development-plan-phase6.md)
 
 ## Glossary
 

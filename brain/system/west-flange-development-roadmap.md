@@ -12,6 +12,13 @@ extraction layer. The remaining Phase 5 gaps are verification breadth and fixtur
 coverage, not a blocker in the `ProjectionLease`, `TextWindow`, or
 `ArtifactView` handoff contract.
 
+Phase 6 (capture-to-promotion push pipeline) is partially implemented. The
+`ingest_artifact()` and `ingest_session()` paths now call `enqueue_extraction()`
+inline, but do not yet trigger immediate processing. The episode capture path
+(`end_episode()`) neither enqueues nor triggers. The daemon's scheduled
+extraction and promotion jobs are now classified as maintenance/cleanup, not the
+primary processing path.
+
 ## Current Implementation State
 
 Implemented surfaces:
@@ -215,6 +222,44 @@ Conclusion:
   promotion-layer work now; expand Phase 5 fixture breadth in parallel as new
   formats matter.
 
+## Phase 6: Capture-to-Promotion Push Pipeline
+
+Status: **complete**.
+
+**Architectural principle:** every intake path immediately triggers the full
+extraction + promotion pipeline. The daemon's scheduled extraction and promotion
+jobs are maintenance/cleanup (retry errors, unstick stale rows) — they are not
+the primary processing path and cannot scan true-raw for unprocessed items.
+
+Implemented pipeline:
+
+```
+capture end / ingest-artifact / ingest-session
+    → raw material in true-raw archive
+    → enqueue_extraction() inline (with content_hash)
+    → trigger_pipeline(): daemon wake signal → fallback inline
+    → LLM/VLM extraction → candidates → promotion → wiki
+    (daemon tick: retry errors only + stale episode expiry)
+```
+
+What is done:
+
+- All three intake paths fully wired:
+  - `ingest_artifact()`: enqueue + `trigger_pipeline()`, `content_hash=raw_hash`
+  - `ingest_session()`: enqueue + `trigger_pipeline()`, `content_hash=sha256(content)`
+  - `end_episode()`: enqueue + `trigger_pipeline()`, `content_hash=_sha256_path(events_path)`
+- `pipeline.py` (new): `trigger_pipeline()` fires daemon wake signal; falls back
+  to inline `process_extraction_queue` + `process_promotion_queue` if unreachable.
+- `IngestConfig.auto_trigger_pipeline = True` guards trigger calls; test configs
+  set `false` to avoid interfering with explicit test control.
+- **Gap 1 + 3 closed**: `expire_stale_episodes` daemon job (hourly, `"0 * * * *"`)
+  auto-closes orphaned `active` episodes older than `stale_episode_threshold_hours`
+  (default: 2h) by calling `end_episode(status='partial')`, triggering full pipeline.
+- **Gap 2 closed**: `extraction_queue.content_hash TEXT` column (migration `017`);
+  ON CONFLICT resets status to `pending` when hash changes, enabling re-processing
+  of updated episodes.
+- `DaemonConfig.stale_episode_threshold_hours` config field added.
+
 ## Remaining West-Flange Work
 
 - Build the planned fixture corpus under `tests/fixtures/west_flange/`.
@@ -230,6 +275,10 @@ Conclusion:
 
 The west flange is conceptually decoupled and practically usable. It owns true
 raw intake and RAM-only projection. It does not call VLMs or LLMs, and it does
-not write wiki. The remaining work is mostly verification depth and source-format
-coverage. It does not impair the current LLM/VLM implementation or the next
-promotion-layer design.
+not write wiki. Phase 6 establishes the push model: every intake path triggers
+its own extraction and promotion immediately, without relying on the scheduled
+daemon tick. The daemon becomes a maintenance layer — retrying errors, clearing
+stale states, running wiki hygiene — not the primary processor. It cannot scan
+true-raw for unprocessed items; the push enqueue at intake is the only injection
+point into the pipeline. The remaining work after Phase 6 is verification depth
+and source-format coverage.

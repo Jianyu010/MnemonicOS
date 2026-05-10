@@ -1050,6 +1050,12 @@ def ingest_artifact(
     manifest["identity_fingerprint_version"] = identity.identity_fingerprint_version
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
+    from .extraction.queue import enqueue_extraction as _enqueue_extraction
+    _enqueue_extraction(config, source_kind="artifact", archive_id=archive_id, content_hash=raw_hash)
+    if config.ingest.auto_trigger_pipeline:
+        from .pipeline import trigger_pipeline as _trigger_pipeline
+        _trigger_pipeline(config)
+
     return IngestArtifactResult(
         archive_id=archive_id,
         raw_path=str(raw_path.resolve()),
@@ -1459,6 +1465,20 @@ def ingest_session(
         skip_vectors=True,
     )
     connection.close()
+
+    _session_hash = sha256((content.rstrip() + "\n").encode()).hexdigest()
+    from .extraction.queue import enqueue_extraction as _enqueue_extraction
+    _enqueue_extraction(
+        config,
+        source_kind="session",
+        archive_id=archive_id,
+        bridge_id=resolved_bridge_id,
+        session_id=resolved_session_id,
+        content_hash=_session_hash,
+    )
+    if config.ingest.auto_trigger_pipeline:
+        from .pipeline import trigger_pipeline as _trigger_pipeline
+        _trigger_pipeline(config)
 
     return IngestSessionResult(
         archive_id=archive_id,

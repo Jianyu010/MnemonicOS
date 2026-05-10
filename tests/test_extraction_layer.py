@@ -50,6 +50,9 @@ def _config(workspace: Path) -> object:
         [graph]
         enabled = false
 
+        [ingest]
+        auto_trigger_pipeline = false
+
         [extraction]
         vlm_provider = "fixture"
         vlm_model = "fixture-vlm"

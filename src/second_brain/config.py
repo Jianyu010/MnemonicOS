@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import os
 from pathlib import Path
 import tomllib
 
@@ -38,6 +39,7 @@ class IngestConfig:
     chunk_overlap_tokens: int = 50
     default_archive_type: str = "session"
     explicit_markers_only: bool = False
+    auto_trigger_pipeline: bool = True
 
 
 @dataclass(slots=True)
@@ -77,6 +79,16 @@ class ExtractionConfig:
 
 
 @dataclass(slots=True)
+class PromotionConfig:
+    enabled: bool = True
+    max_components_per_candidate: int = 50
+    max_candidates_per_run: int = 20
+    min_confidence_for_direct_write: str = "medium"
+    auto_review_on_conflict: bool = True
+    retry_after_hours: int = 24
+
+
+@dataclass(slots=True)
 class BridgeConfig:
     session_prefix: str
     can_promote: bool
@@ -90,6 +102,7 @@ class DaemonConfig:
     schedules: dict[str, str] = field(default_factory=dict)
     max_pending: int = 200
     max_oldest_age_minutes: int = 1440
+    stale_episode_threshold_hours: int = 2
 
 
 @dataclass(slots=True)
@@ -101,6 +114,7 @@ class AppConfig:
     graph: GraphConfig = field(default_factory=GraphConfig)
     trust: TrustConfig = field(default_factory=TrustConfig)
     extraction: ExtractionConfig = field(default_factory=ExtractionConfig)
+    promotion: PromotionConfig = field(default_factory=PromotionConfig)
     daemon: DaemonConfig | None = None
     bridges: dict[str, BridgeConfig] = field(default_factory=dict)
     config_path: Path | None = None
@@ -120,6 +134,18 @@ def _config_in_workspace(root: Path) -> Path | None:
     example = root / "config" / "memory.example.toml"
     if example.exists():
         return example.resolve()
+    return None
+
+
+def _env_bool(name: str) -> bool | None:
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    value = raw.strip().casefold()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
     return None
 
 
@@ -181,11 +207,15 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
     )
 
     ingest_data = data.get("ingest", {})
+    auto_trigger_override = _env_bool("MNEMOS_AUTO_TRIGGER_PIPELINE")
     ingest = IngestConfig(
         chunk_tokens=int(ingest_data.get("chunk_tokens", 400)),
         chunk_overlap_tokens=int(ingest_data.get("chunk_overlap_tokens", 50)),
         default_archive_type=str(ingest_data.get("default_archive_type", "session")),
         explicit_markers_only=bool(ingest_data.get("explicit_markers_only", False)),
+        auto_trigger_pipeline=auto_trigger_override
+        if auto_trigger_override is not None
+        else bool(ingest_data.get("auto_trigger_pipeline", True)),
     )
 
     embeddings_data = data.get("embeddings", {})
@@ -224,6 +254,16 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
         max_queue_batch=int(extraction_data.get("max_queue_batch", 10)),
     )
 
+    promotion_data = data.get("promotion", {})
+    promotion = PromotionConfig(
+        enabled=bool(promotion_data.get("enabled", True)),
+        max_components_per_candidate=int(promotion_data.get("max_components_per_candidate", 50)),
+        max_candidates_per_run=int(promotion_data.get("max_candidates_per_run", 20)),
+        min_confidence_for_direct_write=str(promotion_data.get("min_confidence_for_direct_write", "medium")),
+        auto_review_on_conflict=bool(promotion_data.get("auto_review_on_conflict", True)),
+        retry_after_hours=int(promotion_data.get("retry_after_hours", 24)),
+    )
+
     daemon_data = data.get("daemon", {})
     daemon_schedules = daemon_data.get("schedules", {})
     daemon = DaemonConfig(
@@ -233,6 +273,7 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
         schedules={str(name): str(schedule) for name, schedule in daemon_schedules.items()},
         max_pending=int(daemon_data.get("max_pending", 200)),
         max_oldest_age_minutes=int(daemon_data.get("max_oldest_age_minutes", 1440)),
+        stale_episode_threshold_hours=int(daemon_data.get("stale_episode_threshold_hours", 2)),
     )
 
     bridges: dict[str, BridgeConfig] = {}
@@ -253,6 +294,7 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
         graph=graph,
         trust=trust,
         extraction=extraction,
+        promotion=promotion,
         daemon=daemon,
         bridges=bridges,
         config_path=resolved_config,

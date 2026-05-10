@@ -25,6 +25,10 @@ if [[ "$MNEMO_ENABLED" == "0" || -f "$DISABLE_FLAG" ]]; then
 fi
 # ----------------------------------------
 
+# Stop hooks must finish quickly. They still enqueue capture for daemon pickup,
+# but they do not run extraction/promotion inline inside the hook process.
+export MNEMOS_AUTO_TRIGGER_PIPELINE="${MNEMOS_AUTO_TRIGGER_PIPELINE:-0}"
+
 # Read session_id from Stop hook's stdin JSON (same session as preflight)
 HOOK_JSON=$(cat 2>/dev/null) || HOOK_JSON="{}"
 SESSION_ID=$(echo "$HOOK_JSON" | python3 -c \
