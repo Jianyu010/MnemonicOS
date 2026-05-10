@@ -227,6 +227,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "expire_stale_episodes",
             "embed_backfill",
             "status_report",
+            "wiki_graph_rebuild",
         ),
     )
     jobs_parser.add_argument("--dry-run", action="store_true")

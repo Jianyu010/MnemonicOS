@@ -365,5 +365,24 @@ def run_job(config: AppConfig, *, job_name: str, dry_run: bool = False) -> JobRu
         connection.close()
         return JobRunResult(job_name=job_name, status=status, stats=stats, review_items_created=[])
 
+    if job_name == "wiki_graph_rebuild":
+        from .maintenance import rebuild_wiki_graph
+        job_id = _open_job_run(connection, job_name, "dry-run" if dry_run else "live")
+        try:
+            graph_result = rebuild_wiki_graph(connection, config, dry_run=dry_run)
+            stats["notes_scanned"] = graph_result.notes_scanned
+            stats["notes_rebuilt"] = graph_result.notes_rebuilt
+            stats["stale_edges_pruned"] = graph_result.stale_edges_pruned
+            stats["orphan_nodes_pruned"] = graph_result.orphan_nodes_pruned
+            with connection:
+                _close_job_run(connection, job_id, status="ok", stats=stats)
+        except Exception as exc:
+            with connection:
+                _close_job_run(connection, job_id, status="error", stats=stats, error_text=str(exc))
+            connection.close()
+            raise
+        connection.close()
+        return JobRunResult(job_name=job_name, status="ok", stats=stats, review_items_created=[])
+
     connection.close()
     raise ValueError(f"unsupported job: {job_name}")
