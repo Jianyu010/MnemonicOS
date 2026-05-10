@@ -1,25 +1,73 @@
-# Knowledge Maintenance Phase 7: LLM Pattern Validation and Refinement
+# Knowledge Maintenance Phase 7: Pattern Detection and LLM Validation
 
 ## Purpose
 
-Phase 7 is the second job of **Layer 1 — Cross-Wiki Linking**. It runs daily
-within `daily_consolidation`. It reads the `similar_to` graph edges produced by
-Phase 6, groups them into clusters, asks the LLM to validate each cluster, name
-the abstract pattern shared by the notes, and optionally refine the relation type.
-False positive links are deleted. True semantic duplicates are escalated to merge
-review.
+Phase 7 is the second job of **Layer 1 — Cross-Wiki Linking** and the initial
+implementation of **Layer 2a — Pattern Discovery**. It has two sub-passes that
+will eventually split into independent jobs as the archetype vocabulary matures:
 
-Phase 6 finds neighbors by geometric proximity in embedding space. Phase 7 decides
-what the proximity *means* in MnemonicOS's domain.
+**Sub-pass A (Layer 1):** reads the `similar_to` graph edges produced by Phase 6,
+groups them into clusters, and routes merge candidates to review. False positive
+links are deleted.
+
+**Sub-pass B (Layer 2a):** discovers new archetypes from accumulated notes using
+two LLM-free detection channels (Channel 2 and Channel 3). LLM is used only to
+validate and name archetype candidates — not for primary detection.
+
+Phase 6 finds neighbors by geometric proximity. Phase 7 decides what the proximity
+*means* and whether it reveals an archetype.
 
 ## Frequency
 
-Daily, within `daily_consolidation`, after Phase 6 backfill.
+Fires on the batched trigger: N≥10 new notes promoted OR T≥1hr since last run.
+Same trigger as Layer 2b (both layers fire together).
 
 Requires `config.embeddings.enabled = True` and an LLM provider configured in
 `config.extraction` (Ollama or equivalent).
 
-## Cluster construction
+## Detection channels (Layer 2a sub-pass)
+
+### Channel 2 — Role-vocabulary cosine clustering (LLM-free)
+
+Each note is projected into a 9-dim role vector using the immutable role vocabulary
+(see plan doc Role Vocabulary section). Cosine similarity identifies note pairs
+with matching role signatures. Clustered pairs become archetype candidates.
+
+No LLM call for detection. LLM validates and names the candidate only.
+
+### Channel 3 — Failure/resolution symmetry (LLM-free)
+
+Scans `incident`-type notes for failure-signature tokens. Scans `procedure`-type
+notes for resolution-signature tokens. Pairs with reciprocal signatures are
+archetype candidates for the `same_failure_mode` / `evidence_for` relation family.
+
+No LLM call for detection. LLM validates and names the candidate only.
+
+### Channel 1 — deferred
+
+Deductive via root logics. Requires full inference engine. Out of scope for Phase 7.
+
+## Archetype candidate output
+
+Each channel produces archetype candidates with this structure:
+
+```python
+@dataclass
+class ArchetypeCandidate:
+    source_channel: int              # 2 or 3
+    note_pairs: list[tuple[str, str]]
+    role_signature: dict             # dominant role terms (Channel 2)
+    failure_token: str | None        # matched token (Channel 3)
+    resolution_token: str | None
+    candidate_score: float
+```
+
+LLM validation prompt receives the candidate pairs, their role signatures,
+and titles/summaries. Expected output: `archetype_id`, `label`,
+`layer_a_description`, `layer_b_role_schema`, `relation_type` (from blueprint 6.5),
+`valid: bool`, `reject_reason: str | None`.
+
+## Cluster construction (Layer 1 sub-pass)
 
 A cluster is a connected component of `similar_to` graph edges within a single
 note type. Construction:
@@ -31,7 +79,7 @@ note type. Construction:
    to limit LLM prompt size. Larger components are split by highest-similarity
    edge ordering.
 
-## LLM validation prompt
+## LLM validation prompt (Layer 1 sub-pass — cluster validation)
 
 For each cluster, the prompt includes:
 - All note titles and summaries in the cluster
@@ -101,9 +149,9 @@ Pattern tags take the form `pattern:<slug>` (e.g., `pattern:recovery-after-failu
 They are written to notes' frontmatter `tags` list. They can be queried to find all
 notes in a given cluster pattern without walking graph edges.
 
-## New function in `maintenance.py`
+## New functions in `maintenance.py`
 
-### `run_cluster_validation`
+### `run_cluster_validation` (Layer 1 sub-pass)
 
 ```python
 def run_cluster_validation(
@@ -119,6 +167,24 @@ def run_cluster_validation(
     """
 ```
 
+### `run_pattern_discovery` (Layer 2a sub-pass)
+
+```python
+def run_pattern_discovery(
+    conn,
+    config: AppConfig,
+    llm_provider,
+) -> PatternDiscoveryResult:
+    """
+    Channel 2: project notes into role vectors, cluster by cosine similarity.
+    Channel 3: scan incident/procedure note pairs for failure/resolution symmetry.
+    For each archetype candidate: call LLM to validate and name.
+    Store confirmed archetypes in archetypes table.
+    Propagate archetype_id + score to matching graph_edges rows.
+    Returns: candidates_found, archetypes_confirmed, archetypes_rejected, edges_updated.
+    """
+```
+
 ### `ClusterValidationResult`
 
 ```python
@@ -131,11 +197,38 @@ class ClusterValidationResult:
     patterns_named: int = 0
 ```
 
-## Wire-up in `daily_consolidation` (`jobs.py`)
-
-After Phase 6 backfill, before importance scoring:
+### `PatternDiscoveryResult`
 
 ```python
+@dataclass
+class PatternDiscoveryResult:
+    channel_2_candidates: int = 0
+    channel_3_candidates: int = 0
+    archetypes_confirmed: int = 0
+    archetypes_rejected: int = 0
+    edges_updated: int = 0
+    layer_2b_triggered: bool = False
+    layer_3_eager_triggered: bool = False
+```
+
+## Wire-up in batched trigger job (`jobs.py`)
+
+Phase 7 fires on the batched trigger (N≥10 new notes OR T≥1hr), alongside
+Layer 2b. Order within the trigger: Layer 2a sub-pass first (pattern discovery),
+then Layer 2b (graph rebuild through importance scoring), then Layer 1 sub-pass
+(cluster validation on newly built similar_to links).
+
+```python
+# Layer 2a sub-pass: pattern discovery (Channel 2 + Channel 3)
+if config.maintenance.pattern_discovery_enabled:
+    from second_brain.maintenance import run_pattern_discovery
+    llm = build_llm_provider(config)
+    discovery_result = run_pattern_discovery(conn, config, llm)
+    stats["pattern_discovery"] = asdict(discovery_result)
+
+# ... Layer 2b phases (graph rebuild, lifecycle audit, importance scoring) ...
+
+# Layer 1 sub-pass: cluster validation
 if config.embeddings.enabled and config.maintenance.cluster_validation_enabled:
     from second_brain.maintenance import run_cluster_validation
     llm = build_llm_provider(config)
@@ -198,6 +291,6 @@ not implemented in initial delivery).
    of ≤ 12 before LLM call.
 3. Unit: LLM parse failure test — malformed JSON response → cluster skipped,
    no writes, job continues.
-4. Integration: full `daily_consolidation` dry-run with embeddings enabled →
+4. Integration: full Layer 2b job dry-run with embeddings enabled →
    completes without error, stats include `cluster_validation`.
 5. Full suite: `python -m pytest tests/ -x`.

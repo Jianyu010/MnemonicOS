@@ -28,66 +28,7 @@ complete.
 
 ---
 
-## Layer 2 — Wiki Governance (foundational, daily/weekly)
-
-### Phase 1: Foundation — corroboration_count in DB
-
-Status: **not started**.
-
-Planned deliverables:
-- `migrations/018_corroboration_count.sql` — ALTER TABLE notes ADD COLUMN
-  corroboration_count INT DEFAULT 0
-- `models.py` — `corroboration_count: int` field added to `NoteRecord`
-- `parser.py` — parses `corroboration_count` from frontmatter
-- `sync.py` — includes `corroboration_count` in `_upsert_note` INSERT/ON CONFLICT
-
-### Phase 2: Graph Maintenance — bulk rebuild
-
-Status: **not started**.
-
-Planned deliverables:
-- `src/second_brain/maintenance.py` — new module
-- `rebuild_wiki_graph(connection, config) -> GraphRebuildResult`
-- `detect_orphan_nodes(connection) -> list[str]`
-- `daily_consolidation` job wired to call `rebuild_wiki_graph` before
-  trust/freshness computation
-
-### Phase 3: Lifecycle Auditing — advancement and drift
-
-Status: **not started**.
-
-Planned deliverables:
-- `audit_lifecycle_states(connection, config) -> LifecycleAuditResult` in
-  `maintenance.py`
-- `MaintenanceConfig` dataclass in `config.py` with threshold fields
-- `daily_consolidation` wired to call `audit_lifecycle_states`
-
-### Phase 4: Importance Scoring — unified signal
-
-Status: **not started**.
-
-Planned deliverables:
-- `migrations/019_note_importance.sql` — `note_importance` table
-- `compute_importance_scores(connection) -> dict[str, float]` in `maintenance.py`
-- `daily_consolidation` wired to call after trust/freshness
-- `retrieval.py` updated to load importance_score and include in
-  `retrieval_hit_features`
-
-### Phase 5: Wiki Health Stats
-
-Status: **not started**.
-
-Planned deliverables:
-- `compute_wiki_health_stats(connection) -> WikiHealthStats` in `maintenance.py`
-- `weekly_hygiene` wired to call
-- `write_maintenance_overview` in `ops.py` enhanced with `WikiHealthStats`
-
-Note: semantic dedup is subsumed into Phase 6 (threshold θ=0.92 in
-`run_embedding_neighbor_pass`). Phase 5 focuses on health stats only.
-
----
-
-## Layer 1 — Cross-Wiki Linking (per-promotion + daily)
+## Layer 1 — Cross-Wiki Linking (per-ingestion + scheduled sweep)
 
 ### Prerequisite: embedding model
 
@@ -101,45 +42,190 @@ Before Phases 6–7 can run: `ollama pull nomic-embed-text` and set
 
 Status: **not started**.
 
-Frequency: per-promotion + daily backfill.
+Frequency: per-ingestion (fires after each new note is promoted) + scheduled
+backfill sweep for existing notes not yet scanned.
 
 Planned deliverables:
-- `migrations/018_note_embedding_scans.sql` — tracking table (or next available number)
+- `migrations/019_note_embedding_scans.sql` — tracking table
 - `find_embedding_neighbors(conn, config, note_id, ...)` in `maintenance.py`
 - `assert_similar_to_link(conn, config, src_id, tgt_id, ...)` in `maintenance.py`
 - `run_embedding_neighbor_pass(conn, config, note_id) -> int` in `maintenance.py`
 - `run_embedding_neighbor_backfill(conn, config) -> int` in `maintenance.py`
-- Per-promotion wire-up in `promotion/worker.py` after `_apply_intra_source_relations`
-- Daily wire-up in `daily_consolidation`
+- Per-ingestion wire-up in `promotion/worker.py` after `_apply_intra_source_relations`
+- Scheduled sweep wire-up in Layer 1 maintenance job
 
 ### Phase 7: LLM Pattern Validation and Refinement
 
 Status: **not started**.
 
-Frequency: daily.
+Frequency: every few hours (Layer 1 sweep) + pattern-naming sub-pass feeds Layer 2a.
 
 Planned deliverables:
 - `run_cluster_validation(conn, config, llm_provider) -> ClusterValidationResult`
   in `maintenance.py`
+- `run_structural_isomorphism_pass(conn, config, llm_provider) -> int` — detects
+  cross-domain structural role equivalences; asserts `structurally_isomorphic` links
 - `maintenance_training_pairs` table migration for RL signal accumulation
-- Daily wire-up in `daily_consolidation` after Phase 6 backfill
+- Layer 1 scheduled sweep wire-up after Phase 6 backfill
 
 ---
 
-## Layer 3 — Raw Re-Visitation (weekly)
+## Layer 2a — Pattern Discovery (batched trigger: N≥10 new notes OR T≥1hr)
+
+No dedicated phase yet. Currently designed as a Phase 7 extension. Will be split
+into its own job once the archetype vocabulary is large enough.
+
+**Architecture (decided):** LLM-free primary detection via two channels from
+blueprint section 6.4a:
+- **Channel 2**: 9-dim role-vector cosine clustering using the immutable role
+  vocabulary (blueprint 3.5). No LLM required for detection; LLM names candidates.
+- **Channel 3**: failure/resolution symmetry between `incident`-type notes (failure
+  signature) and `procedure`-type notes (resolution signature). No LLM required
+  for detection.
+
+Channel 1 (deductive via root logics) is **deferred** — requires full inference engine.
+
+**Archetype record schema (decided):**
+
+```python
+@dataclass
+class Archetype:
+    archetype_id: str
+    label: str                        # LLM-named
+    layer_a_description: str          # semantic cluster identity + structural motif
+    layer_b_role_schema: dict         # field → role vocabulary term
+    occurrence_count: int
+    score: float
+    relation_type: str                # from blueprint 6.5 vocabulary
+    source_channel: int               # 2 or 3
+```
+
+**graph_edges additional fields (decided):**
+- `archetype_id TEXT` — which archetype asserted this edge
+- `archetype_score REAL` — archetype's current score at time of assertion
+- `instance_confidence REAL` — per-edge confidence for this specific pair
+
+**Trigger and schedule (decided):**
+- Fires with Layer 2b: N≥10 new notes promoted OR T≥1hr since last run
+- B-only routine also runs every 5 hours (role_schema refinement only)
+- If B-only discovers a new archetype: trigger Layer 2b; if occurrence_count > M=5,
+  also flag Layer 3 eager run
+
+Planned when split:
+- `run_pattern_discovery(conn, config, llm_provider) -> PatternDiscoveryResult`
+  in `maintenance.py` (Channels 2 and 3)
+- `run_b_only_refinement(conn, config) -> BOnlyResult` in `maintenance.py`
+- `archetypes` table migration
+- Scheduled Layer 2a + batched trigger wire-up
+- Scheduled B-only routine (every 5 hours)
+
+---
+
+## Layer 2b — Wiki Governance (daily)
+
+> **Phase 1 moved.** `corroboration_count` in DB was Phase 1 of this layer.
+> It has been reclassified as a promotion-layer amendment and is now tracked in
+> `promotion-layer-development-roadmap.md`. Implementation details preserved in
+> `knowledge-maintenance-development-plan-phase1.md`.
+
+### Phase 2: Graph Maintenance — bulk rebuild
+
+Status: **not started**.
+
+Frequency: daily (Layer 2b job).
+
+Planned deliverables:
+- `src/second_brain/maintenance.py` — new module
+- `rebuild_wiki_graph(connection, config) -> GraphRebuildResult`
+- `detect_orphan_nodes(connection) -> list[str]`
+- Layer 2b job wired to call `rebuild_wiki_graph` before trust/freshness computation
+
+### Phase 3: Lifecycle Auditing — advancement and drift
+
+Status: **not started**.
+
+Frequency: daily (Layer 2b job).
+
+Planned deliverables:
+- `audit_lifecycle_states(connection, config) -> LifecycleAuditResult` in
+  `maintenance.py`
+- `MaintenanceConfig` dataclass in `config.py` with threshold fields
+- Layer 2b job wired to call `audit_lifecycle_states` after graph rebuild
+
+### Phase 4: Importance Scoring — unified signal
+
+Status: **not started**.
+
+Frequency: daily (Layer 2b job, runs after trust/freshness).
+
+Planned deliverables:
+- `migrations/020_note_importance.sql` — `note_importance` table
+- `compute_importance_scores(connection) -> dict[str, float]` in `maintenance.py`
+- Layer 2b job wired to call after trust/freshness
+- `retrieval.py` updated to load importance_score and include in
+  `retrieval_hit_features`
+
+### Phase 5: Wiki Health Stats
+
+Status: **not started**.
+
+Frequency: daily (Layer 2b job, summary pass at end).
+
+Planned deliverables:
+- `compute_wiki_health_stats(connection) -> WikiHealthStats` in `maintenance.py`
+- Layer 2b job wired to call after importance scoring
+- `write_maintenance_overview` in `ops.py` enhanced with `WikiHealthStats`
+
+Note: semantic dedup is subsumed into Phase 6 (threshold θ=0.92 in
+`run_embedding_neighbor_pass`). Phase 5 focuses on health stats only.
+
+---
+
+## Layer 3 — Raw Re-Visitation (daily 2AM + M=5 eager trigger)
 
 ### Phase 8: Raw Re-Visitation and Cross-Wiki Context Injection
 
 Status: **not started**.
 
-Frequency: weekly.
+Frequency: **daily at 2AM** (safety net — ensures all new archetypes are applied
+to raws within 24 hours regardless of M threshold) **plus** an eager trigger when
+any archetype's `occurrence_count` exceeds M=5 (signals enough evidence to warrant
+immediate re-processing). Supports the convergence loop: new archetypes from
+Layer 2a → richer re-extraction → new links → new archetypes.
 
 Planned deliverables:
-- `migrations/020_extraction_versioning.sql` — add `extraction_schema_version`
+- `migrations/021_extraction_versioning.sql` — add `extraction_schema_version`
   and `extraction_model_version` columns to `extraction_queue`
 - Update `mark_finished()` in `queue.py` to write both version columns
 - `run_raw_revisitation(conn, config) -> RevisitationResult` in `maintenance.py`
-- Weekly wire-up in `weekly_hygiene`
+- Layer 3 job wire-up
+
+---
+
+## Final Phase — Layer 3 Scalability Engineering
+
+### Phase 9: Layer 3 Incremental Re-Visitation
+
+Status: **not started**. Deferred — implement only when raw corpus growth makes
+nightly full re-visitation noticeably slow.
+
+**Problem**: Layer 3 runs all raws through re-extraction every day. As the raw
+corpus grows (new PDFs, sessions, artifacts), the nightly job becomes increasingly
+heavy — O(raws) per night regardless of how many archetypes actually changed.
+
+**Planned solutions (TBD at implementation):**
+- **Version-based incremental**: track `last_revisited_at` and
+  `archetype_version_at_revisit` per raw. Only re-visit raws whose oldest
+  applicable archetype has changed since last run.
+- **Pattern-relevance gating**: compute a relevance score for each raw against
+  the changed archetypes. Only re-visit raws above a threshold. Skip raws where
+  no changed archetype is plausibly applicable.
+- **Batched nightly budget**: cap re-visitation at a configurable number of raws
+  per night, prioritized by archetype relevance score.
+
+This phase does not change the Layer 3 semantic contract — only the efficiency
+of its scheduling. The daily 2AM run and M=5 eager trigger remain; this phase
+makes them scale without growing proportionally to corpus size.
 
 ---
 
@@ -147,27 +233,41 @@ Planned deliverables:
 
 `tests/test_knowledge_maintenance.py`: **not yet written**.
 
-Will cover all functions in `maintenance.py` across Phases 1–8.
+Will cover all functions in `maintenance.py` across Phases 2–8.
 
 ---
 
 ## Architectural Conclusion
 
 The promotion layer delivers notes to `brain/wiki/`. The knowledge maintenance
-layer ensures the wiki ages without silent drift. Three sub-layers at different
-frequencies complete the pipeline:
+layer ensures the wiki evolves and deepens without silent drift. Four sub-layers
+at increasing frequency cost complete the pipeline:
 
 ```text
 west flange
     → LLM/VLM extraction (intra-source relations via candidate index)
     → promotion gate → decision engine → renderer → atomic write
-    → sync_vault + embed_backfill
-    → Layer 1, per-promotion: embedding neighbor pass (Phase 6)
-    → Layer 2, daily: graph rebuild + lifecycle audit + trust/freshness
-                      + cluster validation (Phase 7) + importance scoring
-    → Layer 2, weekly: wiki health stats
-    → Layer 3, weekly: raw re-visitation + cross-wiki context injection (Phase 8)
+    → sync_vault (writes corroboration_count + all fields to DB) + embed_backfill
+    → Layer 1, per-ingestion + scheduled sweep:
+          embedding neighbor pass → similar_to seed links (Phase 6)
+    → Layer 2a, batched trigger (N≥10 new notes OR T≥1hr):
+          Channel 2 role-vector clustering + Channel 3 failure-symmetry
+          → scored archetype candidates; LLM validates/names only (Phase 7 sub-pass)
+    → Layer 2b, same batched trigger:
+          graph rebuild + lifecycle audit + importance scoring
+          + wiki-wide link rerun applying current archetypes (Phases 2–5)
+    → B-only routine, every 5 hours:
+          refine layer_b_role_schema → propagate score updates to graph_edges
+          → new archetype found? trigger Layer 2b + eager Layer 3 if M≥5
+    → Layer 3, daily 2AM + eager trigger (occurrence_count > M=5):
+          raw re-visitation + cross-wiki context injection (Phase 8)
+    → [Phase 9] Layer 3 Scalability Engineering:
+          version-based incremental + pattern-relevance gating
 ```
 
-Layer 2 (Phases 1–5) has no embedding model dependency and can ship first.
-Layers 1 and 3 (Phases 6–8) require the embedding model and a mature wiki.
+Design authority: `development/humanoid-MnemonicOS-core-blueprint.md`.
+
+Layer 2b (Phases 2–5) has no embedding model dependency and ships first.
+The self-evolving loop lives in Layers 1 and 2a. Layer 2b is deterministic and
+idempotent on fixed material — it propagates archetype changes but does not
+drive evolution itself.

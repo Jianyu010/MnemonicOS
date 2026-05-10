@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Phase 8 is **Layer 3 — Raw Re-Visitation**. It runs weekly within `weekly_hygiene`.
+Phase 8 is **Layer 3 — Raw Re-Visitation**. It runs every 2–3 days within the Layer 3 job.
 It addresses a fundamental limitation: the first extraction pass over a source
 happens before the wiki has any related notes. Later, as the wiki matures, the
 same source could yield richer candidates — especially if the LLM is given the
@@ -20,7 +20,7 @@ Phase 8 has two mechanisms:
 
 ## Frequency
 
-Weekly, within `weekly_hygiene`. Phase 8 is intentionally the least frequent
+Every 2–3 days, within the Layer 3 job. Phase 8 is intentionally the least frequent
 maintenance job because it re-triggers the full extraction→promotion pipeline for
 selected sources, which is expensive.
 
@@ -138,7 +138,7 @@ class RevisitationResult:
     context_injected_count: int = 0
 ```
 
-## Wire-up in `weekly_hygiene` (`jobs.py`)
+## Wire-up in Layer 3 job (`jobs.py`)
 
 After `detect_semantic_duplicates` (Phase 5) and health stats:
 
@@ -196,33 +196,37 @@ ALTER TABLE extraction_queue ADD COLUMN extraction_model_version TEXT;
    re-queued.
 4. Unit: dry-run test — eligible sources exist → dry_run=True → no new queue
    rows, result counts reflect what would have happened.
-5. Integration: full `weekly_hygiene` dry-run → completes without error,
+5. Integration: full Layer 3 job dry-run → completes without error,
    stats include `raw_revisitation`.
 6. Full suite: `python -m pytest tests/ -x`.
 
-## Revised daemon job flow (all phases complete)
+## Maintenance job flow (all phases complete)
 
 ```
-daily_consolidation (3 AM):
+Layer 1 job (per-ingestion + scheduled sweep):
+  1. run_embedding_neighbor_pass()           ← Phase 6, per new note
+  2. run_embedding_neighbor_backfill()       ← Phase 6, sweep for unscanned notes
+  3. run_cluster_validation()                ← Phase 7, validates similar_to edges
+
+Layer 2a job (every few hours):
+  1. run_pattern_discovery()                 ← Phase 7 extension
+     (names abstract patterns from accumulated clusters)
+
+Layer 2b job (daily):
   1. rebuild_wiki_graph()                    ← Phase 2
   2. detect_orphan_nodes()                   ← Phase 2
   3. audit_lifecycle_states()                ← Phase 3
-  4. compute_note_trust_stats()              ← existing
-  5. compute_note_freshness()                ← existing
-  6. run_embedding_neighbor_backfill()       ← Phase 6 (if embeddings enabled)
-  7. run_cluster_validation()               ← Phase 7 (if embeddings enabled)
-  8. compute_importance_scores()             ← Phase 4
-  9. sync_eval_candidates()                  ← existing
-  10. _verification_debt_rows()              ← existing
-  11. duplicate alias detection              ← existing
-  12. _stale_rows_from_freshness()           ← existing
-  13. create review/relearn items            ← existing
-  14. refresh_active_file()                  ← existing
+  4. compute_note_trust_stats()              ← trust.py
+  5. compute_note_freshness()                ← trust.py
+  6. compute_importance_scores()             ← Phase 4
+  7. compute_wiki_health_stats()             ← Phase 5
+  8. duplicate alias detection + review routing
+  9. verification debt + stale note review routing
+  10. relearn task creation
+  11. refresh_active_file()
+  12. write_maintenance_overview()
 
-weekly_hygiene (Sunday 4 AM):
-  all of daily_consolidation, plus:
-  15. compute_wiki_health_stats()            ← Phase 5
-  16. train_rerank_model()                   ← existing
-  17. run_raw_revisitation()                 ← Phase 8
-  18. write_maintenance_overview()           ← existing (enhanced)
+Layer 3 job (every 2–3 days):
+  1. run_raw_revisitation()                  ← Phase 8
+  2. train_rerank_model()                    ← trust.py
 ```

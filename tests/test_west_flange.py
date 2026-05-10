@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from hashlib import sha256
 from pathlib import Path
 import json
 import sqlite3
@@ -39,6 +40,9 @@ def _config(workspace: Path) -> Path:
         vectors_dir = "{(workspace / 'brain/data/vectors').as_posix()}"
         graph_dir = "{(workspace / 'brain/data/graph').as_posix()}"
         eval_queries = "{(workspace / 'evals/queries.jsonl').as_posix()}"
+
+        [ingest]
+        auto_trigger_pipeline = false
         """,
     )
     return config_path
@@ -187,6 +191,51 @@ class WestFlangeTest(unittest.TestCase):
             finally:
                 db.close()
 
+    def test_source_attachments_with_same_basename_do_not_collide(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            config = load_config(_config(workspace), workspace)
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            connection.close()
+
+            source = workspace / "paper.md"
+            source.write_text("# Paper\n\nSee both figures.\n")
+            first_attachment = workspace / "a" / "figure.png"
+            second_attachment = workspace / "b" / "figure.png"
+            first_attachment.parent.mkdir()
+            second_attachment.parent.mkdir()
+            first_bytes = _png_bytes() + b"first"
+            second_bytes = _png_bytes() + b"second"
+            first_attachment.write_bytes(first_bytes)
+            second_attachment.write_bytes(second_bytes)
+
+            result = ingest_artifact(config, path=source, attachments=[first_attachment, second_attachment])
+            self.assertEqual(result.figure_count, 2)
+
+            db = connect_db(config.paths.db_path)
+            try:
+                rows = db.execute(
+                    """
+                    SELECT attachment_path, sha256
+                    FROM artifact_figures
+                    WHERE archive_id = ? AND storage_policy = 'source_attachment'
+                    ORDER BY source_index
+                    """,
+                    (result.archive_id,),
+                ).fetchall()
+                self.assertEqual(len(rows), 2)
+                paths = [Path(str(row["attachment_path"])) for row in rows]
+                self.assertNotEqual(paths[0], paths[1])
+                self.assertEqual(paths[0].name, "figure.png")
+                self.assertEqual(paths[1].name, "figure__2.png")
+                self.assertEqual(paths[0].read_bytes(), first_bytes)
+                self.assertEqual(paths[1].read_bytes(), second_bytes)
+                self.assertEqual(rows[0]["sha256"], sha256(first_bytes).hexdigest())
+                self.assertEqual(rows[1]["sha256"], sha256(second_bytes).hexdigest())
+            finally:
+                db.close()
+
     def test_reprocess_updates_same_artifact_after_manual_raw_repair(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             workspace = Path(tmp_dir)
@@ -221,6 +270,51 @@ class WestFlangeTest(unittest.TestCase):
                 self.assertEqual(int(row["chunk_count"]), 0)
                 chunks = db.execute("SELECT COUNT(*) AS n FROM archive_chunks WHERE archive_id = ?", (first.archive_id,)).fetchone()
                 self.assertEqual(int(chunks["n"]), 0)
+            finally:
+                db.close()
+
+    def test_reprocess_requeues_artifact_when_raw_bytes_change(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            config = load_config(_config(workspace), workspace)
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            connection.close()
+
+            source = workspace / "repair.txt"
+            source.write_text("Original artifact text.\n")
+            first = ingest_artifact(config, path=source)
+
+            db = connect_db(config.paths.db_path)
+            try:
+                with db:
+                    db.execute(
+                        "UPDATE extraction_queue SET status = 'processed' WHERE archive_id = ?",
+                        (first.archive_id,),
+                    )
+                before = db.execute(
+                    "SELECT status, content_hash FROM extraction_queue WHERE archive_id = ?",
+                    (first.archive_id,),
+                ).fetchone()
+                self.assertEqual(before["status"], "processed")
+                old_hash = str(before["content_hash"])
+            finally:
+                db.close()
+
+            repaired_bytes = b"Manual projection repair made this usable and new.\n"
+            Path(first.raw_path).write_bytes(repaired_bytes)
+            reprocessed = reprocess_artifact(config, archive_id=first.archive_id)
+            self.assertEqual(reprocessed.ingest_status, "accepted")
+
+            db = connect_db(config.paths.db_path)
+            try:
+                after = db.execute(
+                    "SELECT status, content_hash FROM extraction_queue WHERE archive_id = ?",
+                    (first.archive_id,),
+                ).fetchone()
+                self.assertEqual(after["status"], "pending")
+                self.assertEqual(after["content_hash"], sha256(repaired_bytes).hexdigest())
+                self.assertNotEqual(after["content_hash"], old_hash)
             finally:
                 db.close()
 

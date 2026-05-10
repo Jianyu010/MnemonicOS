@@ -4,7 +4,7 @@
 
 Run a full-wiki graph rebuild daily, repairing any drift that has accumulated
 since individual notes were last promoted. Prune stale edges and orphan nodes.
-Wire into `daily_consolidation` before trust/freshness computation.
+Wire into the Layer 2b job before trust/freshness computation.
 
 ## Context
 
@@ -81,10 +81,10 @@ def detect_orphan_nodes(connection) -> list[str]:
     return [str(row["id"]) for row in rows]
 ```
 
-### Wire into `daily_consolidation` in `jobs.py`
+### Wire into Layer 2b job in `jobs.py`
 
-Existing job body (lines 682–811) is refactored to call `rebuild_wiki_graph`
-first, before `compute_note_trust_stats` and `compute_note_freshness`.
+The Layer 2b maintenance job calls `rebuild_wiki_graph` first, before
+`compute_note_trust_stats` and `compute_note_freshness`.
 
 ```python
 graph_result = rebuild_wiki_graph(connection, config, dry_run=dry_run)
@@ -93,7 +93,7 @@ stats["graph_stale_edges_pruned"] = graph_result.stale_edges_pruned
 stats["graph_orphan_nodes_pruned"] = graph_result.orphan_nodes_pruned
 ```
 
-Import `rebuild_wiki_graph` from `maintenance.py` alongside existing job imports.
+Import `rebuild_wiki_graph` from `maintenance.py` in the job implementation.
 
 ## Performance note
 
@@ -108,7 +108,7 @@ content_hash comparison to skip unchanged notes.
 1. `maintenance.py` module exists with `GraphRebuildResult` and
    `rebuild_wiki_graph`.
 2. `detect_orphan_nodes` exists and returns correct IDs.
-3. `daily_consolidation` calls `rebuild_wiki_graph` before trust/freshness.
+3. Layer 2b job calls `rebuild_wiki_graph` before trust/freshness.
 4. Stats dict includes `graph_notes_rebuilt`, `graph_stale_edges_pruned`,
    `graph_orphan_nodes_pruned`.
 5. Dry-run produces no DB writes.
@@ -123,8 +123,7 @@ content_hash comparison to skip unchanged notes.
 - Test: note with no entity_relations has no outbound edges after rebuild;
   `detect_orphan_nodes` returns its ID.
 - Test: dry_run=True → DB unchanged after rebuild.
-- Integration: `daily_consolidation` dry-run completes without error, stats
-  include graph keys.
+- Integration: Layer 2b job dry-run completes without error, stats include graph keys.
 
 ## Out of scope
 

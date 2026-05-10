@@ -13,8 +13,6 @@ _DEFAULT_SCHEDULES = {
     "process_promotion_queue": "*/5 * * * *",
     "expire_stale_episodes": "0 * * * *",
     "embed_backfill": "15 * * * *",
-    "daily_consolidation": "0 3 * * *",
-    "weekly_hygiene": "0 4 * * 0",
     "status_report": "0 * * * *",
 }
 

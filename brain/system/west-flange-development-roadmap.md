@@ -12,12 +12,12 @@ extraction layer. The remaining Phase 5 gaps are verification breadth and fixtur
 coverage, not a blocker in the `ProjectionLease`, `TextWindow`, or
 `ArtifactView` handoff contract.
 
-Phase 6 (capture-to-promotion push pipeline) is partially implemented. The
-`ingest_artifact()` and `ingest_session()` paths now call `enqueue_extraction()`
-inline, but do not yet trigger immediate processing. The episode capture path
-(`end_episode()`) neither enqueues nor triggers. The daemon's scheduled
-extraction and promotion jobs are now classified as maintenance/cleanup, not the
-primary processing path.
+Phase 6 (capture-to-promotion push pipeline) is implemented. The
+`ingest_artifact()`, `reprocess_artifact()`, `ingest_session()`, and
+`end_episode()` paths call `enqueue_extraction()` inline and trigger processing
+when `auto_trigger_pipeline` is enabled. The daemon's scheduled extraction and
+promotion jobs are now classified as maintenance/cleanup, not the primary
+processing path.
 
 ## Current Implementation State
 
@@ -234,7 +234,7 @@ the primary processing path and cannot scan true-raw for unprocessed items.
 Implemented pipeline:
 
 ```
-capture end / ingest-artifact / ingest-session
+capture end / ingest-artifact / ingest-session / reprocess-artifact
     → raw material in true-raw archive
     → enqueue_extraction() inline (with content_hash)
     → trigger_pipeline(): daemon wake signal → fallback inline
@@ -244,8 +244,10 @@ capture end / ingest-artifact / ingest-session
 
 What is done:
 
-- All three intake paths fully wired:
+- All four intake/mutation paths fully wired:
   - `ingest_artifact()`: enqueue + `trigger_pipeline()`, `content_hash=raw_hash`
+  - `reprocess_artifact()`: re-enqueue + `trigger_pipeline()` after repaired
+    archive/manifest rewrite, `content_hash=raw_hash`
   - `ingest_session()`: enqueue + `trigger_pipeline()`, `content_hash=sha256(content)`
   - `end_episode()`: enqueue + `trigger_pipeline()`, `content_hash=_sha256_path(events_path)`
 - `pipeline.py` (new): `trigger_pipeline()` fires daemon wake signal; falls back
@@ -258,6 +260,9 @@ What is done:
 - **Gap 2 closed**: `extraction_queue.content_hash TEXT` column (migration `017`);
   ON CONFLICT resets status to `pending` when hash changes, enabling re-processing
   of updated episodes.
+- **Attachment provenance patch closed**: submitted sidecars are archived under
+  collision-safe filenames so duplicate basenames cannot overwrite earlier
+  attachments or invalidate figure hash/path provenance.
 - `DaemonConfig.stale_episode_threshold_hours` config field added.
 
 ## Remaining West-Flange Work

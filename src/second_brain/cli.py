@@ -221,8 +221,6 @@ def _build_parser() -> argparse.ArgumentParser:
     jobs_parser.add_argument(
         "job_name",
         choices=(
-            "daily_consolidation",
-            "weekly_hygiene",
             "sync_vault_incremental",
             "process_extraction_queue",
             "process_promotion_queue",

@@ -38,7 +38,10 @@ brain/raw/artifacts/{archive_slug}/
 ```
 
 `original.{ext}` is the immutable true raw source. Files under `attachments/`
-are submitted true raw sidecars.
+are submitted true raw sidecars. Attachment archive paths must be unique within
+the artifact directory even when submitted source paths share the same basename,
+so figure rows keep stable path/hash provenance for the exact sidecar bytes they
+describe.
 
 ## Connector Contract
 
@@ -107,7 +110,8 @@ Responsibilities:
 2. Copy the submitted file to `original.{ext}`.
 3. Compute `raw_sha256` and `byte_size`.
 4. Run the connector for the source format.
-5. Copy submitted sidecar attachments into `attachments/`.
+5. Copy submitted sidecar attachments into collision-safe paths under
+   `attachments/`.
 6. Persist the `archive` row with `chunk_count = 0`.
 7. Persist `artifact_figures` rows for source attachments and non-content
    embedded figure metadata.
@@ -241,6 +245,9 @@ Phase 2 modifies reprocess behavior for duplicate rows.
   `needs_manual_projection`.
 - Partial extraction records `accepted_with_warnings`.
 - Submitted sidecars are archived as true raw attachments.
+- Submitted sidecars with duplicate basenames do not overwrite each other, and
+  each `artifact_figures.attachment_path` points to bytes matching that row's
+  hash.
 - Embedded image copies are not persisted by default.
 - Artifact archive rows have `chunk_count = 0`.
 - Normal retrieval does not include artifact usable raw.
