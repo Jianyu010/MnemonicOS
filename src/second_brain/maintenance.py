@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from datetime import date, datetime
 import logging
+import math
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import sqlite3
+from typing import Any
 
 import yaml
 
@@ -199,6 +201,111 @@ def audit_lifecycle_states(
         advanced_to_canonical=advanced_to_canonical,
         drift_flagged=drift_flagged,
     )
+
+
+_LIFECYCLE_WEIGHTS: dict[str, float] = {
+    "canonical": 1.0,
+    "verified": 0.70,
+    "draft": 0.40,
+    "review": 0.30,
+    "contested": 0.20,
+    "archived": 0.05,
+}
+
+
+@dataclass(slots=True)
+class ImportanceSignal:
+    importance_score: float
+    in_degree: int
+    out_degree: int
+    connectivity_score: float
+    trust_score: float
+    freshness_score: float
+    lifecycle_weight: float
+
+
+def compute_importance_scores(connection: sqlite3.Connection) -> dict[str, ImportanceSignal]:
+    from .trust import load_note_trust, load_note_freshness
+
+    degree_rows = connection.execute(
+        """
+        SELECT
+            n.id,
+            COALESCE(n.lifecycle_state, 'draft') AS lifecycle_state,
+            COUNT(DISTINCT out_e.target_id) AS out_degree,
+            COUNT(DISTINCT in_e.source_note_id) AS in_degree
+        FROM notes n
+        LEFT JOIN graph_edges out_e ON out_e.source_note_id = n.id
+        LEFT JOIN graph_edges in_e ON in_e.target_id = n.id
+        WHERE n.status IS NULL OR n.status NOT IN ('retired', 'archived', 'superseded')
+        GROUP BY n.id
+        """
+    ).fetchall()
+
+    note_ids = [str(r["id"]) for r in degree_rows]
+    trust_map = load_note_trust(connection, note_ids)
+    freshness_map = load_note_freshness(connection, note_ids)
+
+    signals: dict[str, ImportanceSignal] = {}
+    with connection:
+        for row in degree_rows:
+            note_id = str(row["id"])
+            in_degree = int(row["in_degree"])
+            out_degree = int(row["out_degree"])
+            lifecycle_state = str(row["lifecycle_state"])
+
+            raw_conn = in_degree + 0.4 * out_degree
+            connectivity_score = 2.0 / (1.0 + math.exp(-raw_conn / 5.0)) - 1.0
+
+            trust = trust_map.get(note_id)
+            trust_score = trust.usefulness_score if trust else 0.5
+
+            freshness = freshness_map.get(note_id)
+            freshness_score = 1.0 - freshness.staleness_score if freshness else 0.5
+
+            lifecycle_weight = _LIFECYCLE_WEIGHTS.get(lifecycle_state, 0.40)
+
+            importance_score = (
+                0.35 * connectivity_score
+                + 0.25 * trust_score
+                + 0.25 * freshness_score
+                + 0.15 * lifecycle_weight
+            )
+
+            connection.execute(
+                """
+                INSERT INTO note_importance(
+                    note_id, importance_score, in_degree, out_degree,
+                    connectivity_score, trust_score, freshness_score,
+                    lifecycle_weight, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                ON CONFLICT(note_id) DO UPDATE SET
+                    importance_score = excluded.importance_score,
+                    in_degree = excluded.in_degree,
+                    out_degree = excluded.out_degree,
+                    connectivity_score = excluded.connectivity_score,
+                    trust_score = excluded.trust_score,
+                    freshness_score = excluded.freshness_score,
+                    lifecycle_weight = excluded.lifecycle_weight,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    note_id, importance_score, in_degree, out_degree,
+                    connectivity_score, trust_score, freshness_score,
+                    lifecycle_weight,
+                ),
+            )
+            signals[note_id] = ImportanceSignal(
+                importance_score=importance_score,
+                in_degree=in_degree,
+                out_degree=out_degree,
+                connectivity_score=connectivity_score,
+                trust_score=trust_score,
+                freshness_score=freshness_score,
+                lifecycle_weight=lifecycle_weight,
+            )
+    return signals
 
 
 def detect_orphan_nodes(connection: sqlite3.Connection) -> list[str]:

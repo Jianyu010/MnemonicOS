@@ -229,6 +229,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "status_report",
             "wiki_graph_rebuild",
             "wiki_lifecycle_audit",
+            "wiki_importance_scoring",
         ),
     )
     jobs_parser.add_argument("--dry-run", action="store_true")

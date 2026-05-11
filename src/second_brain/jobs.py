@@ -365,6 +365,25 @@ def run_job(config: AppConfig, *, job_name: str, dry_run: bool = False) -> JobRu
         connection.close()
         return JobRunResult(job_name=job_name, status=status, stats=stats, review_items_created=[])
 
+    if job_name == "wiki_importance_scoring":
+        from .maintenance import compute_importance_scores
+        job_id = _open_job_run(connection, job_name, "dry-run" if dry_run else "live")
+        try:
+            if not dry_run:
+                signals = compute_importance_scores(connection)
+                stats["importance_notes_scored"] = len(signals)
+            else:
+                stats["importance_notes_scored"] = 0
+            with connection:
+                _close_job_run(connection, job_id, status="ok", stats=stats)
+        except Exception as exc:
+            with connection:
+                _close_job_run(connection, job_id, status="error", stats=stats, error_text=str(exc))
+            connection.close()
+            raise
+        connection.close()
+        return JobRunResult(job_name=job_name, status="ok", stats=stats, review_items_created=[])
+
     if job_name == "wiki_lifecycle_audit":
         from .maintenance import audit_lifecycle_states
         job_id = _open_job_run(connection, job_name, "dry-run" if dry_run else "live")
