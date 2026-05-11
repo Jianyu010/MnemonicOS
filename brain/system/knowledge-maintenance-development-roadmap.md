@@ -130,27 +130,29 @@ Planned when split:
 
 ### Phase 2: Graph Maintenance — bulk rebuild
 
-Status: **not started**.
+Status: **complete**.
 
-Frequency: daily (Layer 2b job).
-
-Planned deliverables:
-- `src/second_brain/maintenance.py` — new module
-- `rebuild_wiki_graph(connection, config) -> GraphRebuildResult`
-- `detect_orphan_nodes(connection) -> list[str]`
-- Layer 2b job wired to call `rebuild_wiki_graph` before trust/freshness computation
+Deliverables shipped:
+- `src/second_brain/maintenance.py` — new module with `GraphRebuildResult`,
+  `rebuild_wiki_graph`, `detect_orphan_nodes`
+- `wiki_graph_rebuild` job wired into `jobs.py` and `cli.py`
+- 5 tests in `tests/test_knowledge_maintenance.py`: drift repair, stale edge pruning,
+  orphan detection, dry-run idempotency, job stats keys
+- 300 tests passing
 
 ### Phase 3: Lifecycle Auditing — advancement and drift
 
-Status: **not started**.
+Status: **complete**.
 
-Frequency: daily (Layer 2b job).
-
-Planned deliverables:
-- `audit_lifecycle_states(connection, config) -> LifecycleAuditResult` in
-  `maintenance.py`
-- `MaintenanceConfig` dataclass in `config.py` with threshold fields
-- Layer 2b job wired to call `audit_lifecycle_states` after graph rebuild
+Deliverables shipped:
+- `MaintenanceConfig` in `config.py` with all threshold fields; wired into
+  `AppConfig` and `load_config`
+- `LifecycleAuditResult` and `audit_lifecycle_states` in `maintenance.py`:
+  advancement pass (draft→verified→canonical) + drift pass (review item creation)
+- `wiki_lifecycle_audit` job in `jobs.py` and CLI
+- 7 tests in `LifecycleAuditTest`: all advancement paths, contested skip,
+  drift review item, dry-run idempotency, job stats keys
+- 307 tests passing
 
 ### Phase 4: Importance Scoring — unified signal
 

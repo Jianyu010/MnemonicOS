@@ -20,9 +20,13 @@ from second_brain.maintenance import (
     GraphRebuildResult,
     ImportanceSignal,
     LifecycleAuditResult,
+    SemanticDuplicatePair,
+    WikiHealthStats,
     audit_lifecycle_states,
     compute_importance_scores,
+    compute_wiki_health_stats,
     detect_orphan_nodes,
+    detect_semantic_duplicates,
     rebuild_wiki_graph,
 )
 from second_brain.retrieval import retrieve
@@ -529,6 +533,263 @@ class ImportanceScoringTest(unittest.TestCase):
             self.assertEqual(result.status, "ok")
             self.assertIn("importance_notes_scored", result.stats)
             self.assertGreater(result.stats["importance_notes_scored"], 0)
+
+
+class WikiHealthTest(unittest.TestCase):
+    def _setup(self, workspace: Path):
+        _system_files(workspace)
+        config_path = _minimal_config(workspace)
+        config = load_config(config_path, workspace)
+        connection = connect_db(config.paths.db_path)
+        run_migrations(connection, ROOT / "migrations")
+        connection.close()
+        return config
+
+    def test_wiki_health_counts_match(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = self._setup(workspace)
+
+            for i in range(3):
+                _note(workspace, f"concepts/active/c{i}.md", f"""
+                    ---
+                    id: concept/c{i}
+                    type: concept
+                    title: Concept {i}
+                    lifecycle_state: draft
+                    updated_at: 2026-01-01
+                    created_at: 2026-01-01
+                    ---
+                    Content {i}.
+                    """)
+            _note(workspace, "decisions/active/d0.md", """
+                ---
+                id: decision/d0
+                type: decision
+                title: Decision 0
+                lifecycle_state: verified
+                updated_at: 2026-01-01
+                created_at: 2026-01-01
+                ---
+                Decision content.
+                """)
+            sync_vault(config, mode="full")
+
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            health = compute_wiki_health_stats(connection)
+            connection.close()
+
+            self.assertEqual(health.total_notes, 4)
+            self.assertEqual(health.notes_by_type.get("concept", 0), 3)
+            self.assertEqual(health.notes_by_type.get("decision", 0), 1)
+            self.assertEqual(health.notes_by_lifecycle.get("draft", 0), 3)
+            self.assertEqual(health.notes_by_lifecycle.get("verified", 0), 1)
+
+    def test_detect_semantic_duplicates_skips_when_embeddings_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = self._setup(workspace)
+            # embeddings disabled in _minimal_config
+            self.assertFalse(config.embeddings.enabled)
+
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            pairs = detect_semantic_duplicates(connection, config)
+            connection.close()
+
+            self.assertEqual(pairs, [])
+
+    def test_detect_semantic_duplicates_finds_near_identical(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            # Enable embeddings with hash provider
+            config_path = workspace / "config.toml"
+            _write(
+                config_path,
+                f"""
+                [paths]
+                vault_root = "{(workspace / 'brain').as_posix()}"
+                db_path = "{(workspace / 'brain/data/archive.db').as_posix()}"
+                vectors_dir = "{(workspace / 'brain/data/vectors').as_posix()}"
+                graph_dir = "{(workspace / 'brain/data/graph').as_posix()}"
+                eval_queries = "{(workspace / 'evals/queries.jsonl').as_posix()}"
+
+                [retrieval]
+                top_k = 5
+                include_archive_fallback = false
+
+                [ingest]
+                chunk_tokens = 80
+                chunk_overlap_tokens = 10
+                default_archive_type = "session"
+                explicit_markers_only = false
+
+                [embeddings]
+                enabled = true
+                provider = "hash"
+                model = "hash-128-v1"
+                dimensions = 128
+                reembed_on_summary_change_only = true
+
+                [maintenance]
+                semantic_dedup_threshold = 0.01
+                """,
+            )
+            _system_files(workspace)
+            config = load_config(config_path, workspace)
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            connection.close()
+
+            # Two notes with identical summary → same hash vector → cosine=1.0
+            for i in ("x", "y"):
+                _note(workspace, f"concepts/active/dup{i}.md", f"""
+                    ---
+                    id: concept/dup{i}
+                    type: concept
+                    title: Dup {i}
+                    summary: identical summary text for dedup testing
+                    updated_at: 2026-01-01
+                    created_at: 2026-01-01
+                    ---
+                    Body {i}.
+                    """)
+            sync_vault(config, mode="full")
+
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            pairs = detect_semantic_duplicates(connection, config, dry_run=True)
+            connection.close()
+
+            self.assertTrue(len(pairs) >= 1)
+            ids = {(p.note_id_a, p.note_id_b) for p in pairs}
+            self.assertIn(("concept/dupx", "concept/dupy"), ids)
+
+    def test_semantic_dedup_slug_idempotency(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config_path = workspace / "config.toml"
+            _write(
+                config_path,
+                f"""
+                [paths]
+                vault_root = "{(workspace / 'brain').as_posix()}"
+                db_path = "{(workspace / 'brain/data/archive.db').as_posix()}"
+                vectors_dir = "{(workspace / 'brain/data/vectors').as_posix()}"
+                graph_dir = "{(workspace / 'brain/data/graph').as_posix()}"
+                eval_queries = "{(workspace / 'evals/queries.jsonl').as_posix()}"
+
+                [retrieval]
+                top_k = 5
+                include_archive_fallback = false
+
+                [ingest]
+                chunk_tokens = 80
+                chunk_overlap_tokens = 10
+                default_archive_type = "session"
+                explicit_markers_only = false
+
+                [embeddings]
+                enabled = true
+                provider = "hash"
+                model = "hash-128-v1"
+                dimensions = 128
+                reembed_on_summary_change_only = true
+
+                [maintenance]
+                semantic_dedup_threshold = 0.01
+                """,
+            )
+            _system_files(workspace)
+            config = load_config(config_path, workspace)
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            connection.close()
+
+            for i in ("p", "q"):
+                _note(workspace, f"concepts/active/idem{i}.md", f"""
+                    ---
+                    id: concept/idem{i}
+                    type: concept
+                    title: Idem {i}
+                    summary: same summary for idempotency test
+                    updated_at: 2026-01-01
+                    created_at: 2026-01-01
+                    ---
+                    Body {i}.
+                    """)
+            sync_vault(config, mode="full")
+
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            detect_semantic_duplicates(connection, config)  # first run creates review item
+            review_dir = config.paths.vault_root / "wiki" / "review"
+            count_after_first = len(list(review_dir.glob("semantic-dedup*.md"))) if review_dir.exists() else 0
+            detect_semantic_duplicates(connection, config)  # second run must not duplicate
+            count_after_second = len(list(review_dir.glob("semantic-dedup*.md"))) if review_dir.exists() else 0
+            connection.close()
+
+            self.assertEqual(count_after_first, count_after_second)
+
+    def test_wiki_health_report_job(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = self._setup(workspace)
+            _note(workspace, "concepts/active/h0.md", """
+                ---
+                id: concept/h0
+                type: concept
+                title: Health0
+                lifecycle_state: draft
+                updated_at: 2026-01-01
+                created_at: 2026-01-01
+                ---
+                Health test.
+                """)
+            sync_vault(config, mode="full")
+
+            result = run_job(config, job_name="wiki_health_report", dry_run=True)
+            self.assertEqual(result.status, "ok")
+            self.assertIn("wiki_total_notes", result.stats)
+            self.assertIn("wiki_orphan_notes", result.stats)
+            self.assertIn("semantic_dedup_candidates", result.stats)
+
+    def test_maintenance_overview_includes_wiki_health(self) -> None:
+        from second_brain.ops import write_maintenance_overview
+        from second_brain.maintenance import WikiHealthStats
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = self._setup(workspace)
+
+            health = WikiHealthStats(
+                total_notes=10,
+                notes_by_type={"concept": 5, "decision": 5},
+                notes_by_lifecycle={"canonical": 3, "verified": 4, "draft": 3},
+                notes_by_freshness={"fresh": 8, "stale": 2},
+                orphan_note_count=1,
+                avg_in_degree=2.5,
+                avg_out_degree=1.8,
+                lifecycle_advanced_this_run=2,
+                semantic_dedup_candidates=0,
+                open_review_count=0,
+                open_relearn_count=0,
+            )
+            path = write_maintenance_overview(
+                config,
+                stats={},
+                review_items=[],
+                contradiction_rows=[],
+                stale_rows=[],
+                relearn_tasks=[],
+                eval_candidates=[],
+                wiki_health=health,
+            )
+            content = path.read_text()
+            self.assertIn("Wiki Health", content)
+            self.assertIn("Total notes | 10", content)
+            self.assertIn("Orphan notes | 1", content)
 
 
 class LifecycleAuditTest(unittest.TestCase):

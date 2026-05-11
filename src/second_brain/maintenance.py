@@ -308,6 +308,186 @@ def compute_importance_scores(connection: sqlite3.Connection) -> dict[str, Impor
     return signals
 
 
+@dataclass(slots=True)
+class SemanticDuplicatePair:
+    note_id_a: str
+    note_id_b: str
+    similarity: float
+    title_a: str
+    title_b: str
+    note_type: str
+
+
+@dataclass(slots=True)
+class WikiHealthStats:
+    total_notes: int
+    notes_by_type: dict[str, int]
+    notes_by_lifecycle: dict[str, int]
+    notes_by_freshness: dict[str, int]
+    orphan_note_count: int
+    avg_in_degree: float
+    avg_out_degree: float
+    lifecycle_advanced_this_run: int
+    semantic_dedup_candidates: int
+    open_review_count: int
+    open_relearn_count: int
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    mag_a = math.sqrt(sum(x * x for x in a))
+    mag_b = math.sqrt(sum(x * x for x in b))
+    if mag_a == 0.0 or mag_b == 0.0:
+        return 0.0
+    return dot / (mag_a * mag_b)
+
+
+def detect_semantic_duplicates(
+    connection: sqlite3.Connection,
+    config: AppConfig,
+    *,
+    dry_run: bool = False,
+) -> list[SemanticDuplicatePair]:
+    if not config.embeddings.enabled or not config.maintenance.semantic_dedup_enabled:
+        return []
+
+    from .semantics import encode_text
+    from .review import create_review_item
+    from .ops import load_open_review_items
+
+    rows = connection.execute(
+        """
+        SELECT id, type, title, summary, lifecycle_state
+        FROM notes
+        WHERE (status IS NULL OR status NOT IN ('retired', 'archived', 'superseded'))
+          AND (lifecycle_state IS NULL OR lifecycle_state NOT IN ('contested', 'archived'))
+        ORDER BY type, id
+        """
+    ).fetchall()
+
+    by_type: dict[str, list[Any]] = {}
+    for row in rows:
+        t = str(row["type"])
+        by_type.setdefault(t, []).append(row)
+
+    review_dir = config.paths.vault_root / "wiki" / "review"
+    existing_merge_slugs: set[str] = set()
+    if review_dir.exists():
+        for p in review_dir.glob("semantic-dedup*.md"):
+            existing_merge_slugs.add(p.stem)
+
+    threshold = config.maintenance.semantic_dedup_threshold
+    pairs: list[SemanticDuplicatePair] = []
+
+    for note_type, group in by_type.items():
+        if len(group) < 2:
+            continue
+        vector_cache: dict[str, list[float]] = {}
+        for row in group:
+            note_id = str(row["id"])
+            summary = str(row["summary"] or row["title"] or "")
+            vector_cache[note_id] = encode_text(summary, dimensions=config.embeddings.dimensions)
+
+        ids = [str(r["id"]) for r in group]
+        for i in range(len(ids)):
+            for j in range(i + 1, len(ids)):
+                id_a, id_b = ids[i], ids[j]
+                sim = _cosine(vector_cache[id_a], vector_cache[id_b])
+                if sim >= threshold:
+                    pair = SemanticDuplicatePair(
+                        note_id_a=id_a,
+                        note_id_b=id_b,
+                        similarity=sim,
+                        title_a=str(group[i]["title"]),
+                        title_b=str(group[j]["title"]),
+                        note_type=note_type,
+                    )
+                    pairs.append(pair)
+                    if not dry_run:
+                        slug_seed = f"semantic-dedup-{id_a}-{id_b}"
+                        from .review import slugify
+                        slug = slugify(slug_seed)
+                        if slug not in existing_merge_slugs:
+                            create_review_item(
+                                config,
+                                review_type="merge_review",
+                                suggested_action="review and merge if duplicate",
+                                reason=f"semantic similarity {sim:.3f} >= threshold {threshold}",
+                                confidence="medium",
+                                source_refs=[id_a, id_b],
+                                slug_seed=slug_seed,
+                            )
+                            existing_merge_slugs.add(slug)
+
+    return pairs
+
+
+def compute_wiki_health_stats(
+    connection: sqlite3.Connection,
+    *,
+    audit_result: "LifecycleAuditResult | None" = None,
+    dedup_pairs: "list[SemanticDuplicatePair] | None" = None,
+    open_review_count: int = 0,
+    open_relearn_count: int = 0,
+) -> "WikiHealthStats":
+    type_rows = connection.execute(
+        """
+        SELECT type, COUNT(*) AS cnt FROM notes
+        WHERE status IS NULL OR status NOT IN ('retired', 'archived')
+        GROUP BY type
+        """
+    ).fetchall()
+    notes_by_type = {str(r["type"]): int(r["cnt"]) for r in type_rows}
+    total_notes = sum(notes_by_type.values())
+
+    lc_rows = connection.execute(
+        """
+        SELECT COALESCE(lifecycle_state, 'draft') AS state, COUNT(*) AS cnt
+        FROM notes WHERE status IS NULL OR status NOT IN ('retired', 'archived')
+        GROUP BY state
+        """
+    ).fetchall()
+    notes_by_lifecycle = {str(r["state"]): int(r["cnt"]) for r in lc_rows}
+
+    fresh_rows = connection.execute(
+        "SELECT COALESCE(freshness_state, 'unknown') AS state, COUNT(*) AS cnt FROM note_freshness GROUP BY state"
+    ).fetchall()
+    notes_by_freshness = {str(r["state"]): int(r["cnt"]) for r in fresh_rows}
+
+    deg_row = connection.execute(
+        """
+        SELECT
+            COALESCE(AVG(out_d.cnt), 0.0) AS avg_out,
+            COALESCE(AVG(in_d.cnt), 0.0) AS avg_in
+        FROM
+            (SELECT source_note_id, COUNT(*) AS cnt FROM graph_edges GROUP BY source_note_id) out_d,
+            (SELECT target_id, COUNT(*) AS cnt FROM graph_edges GROUP BY target_id) in_d
+        """
+    ).fetchone()
+    avg_out = float(deg_row["avg_out"] if deg_row else 0.0)
+    avg_in = float(deg_row["avg_in"] if deg_row else 0.0)
+
+    orphan_ids = detect_orphan_nodes(connection)
+
+    advanced = 0
+    if audit_result is not None:
+        advanced = audit_result.advanced_to_verified + audit_result.advanced_to_canonical
+
+    return WikiHealthStats(
+        total_notes=total_notes,
+        notes_by_type=notes_by_type,
+        notes_by_lifecycle=notes_by_lifecycle,
+        notes_by_freshness=notes_by_freshness,
+        orphan_note_count=len(orphan_ids),
+        avg_in_degree=avg_in,
+        avg_out_degree=avg_out,
+        lifecycle_advanced_this_run=advanced,
+        semantic_dedup_candidates=len(dedup_pairs) if dedup_pairs is not None else 0,
+        open_review_count=open_review_count,
+        open_relearn_count=open_relearn_count,
+    )
+
+
 def detect_orphan_nodes(connection: sqlite3.Connection) -> list[str]:
     rows = connection.execute(
         """

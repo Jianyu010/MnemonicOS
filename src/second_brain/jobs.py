@@ -365,6 +365,33 @@ def run_job(config: AppConfig, *, job_name: str, dry_run: bool = False) -> JobRu
         connection.close()
         return JobRunResult(job_name=job_name, status=status, stats=stats, review_items_created=[])
 
+    if job_name == "wiki_health_report":
+        from .maintenance import compute_wiki_health_stats, detect_semantic_duplicates
+        from .ops import load_open_review_items, load_open_relearn_tasks
+        job_id = _open_job_run(connection, job_name, "dry-run" if dry_run else "live")
+        try:
+            dedup_pairs = detect_semantic_duplicates(connection, config, dry_run=dry_run)
+            open_reviews = load_open_review_items(config)
+            open_relearns = load_open_relearn_tasks(connection)
+            health = compute_wiki_health_stats(
+                connection,
+                dedup_pairs=dedup_pairs,
+                open_review_count=len(open_reviews),
+                open_relearn_count=len(open_relearns),
+            )
+            stats["wiki_total_notes"] = health.total_notes
+            stats["wiki_orphan_notes"] = health.orphan_note_count
+            stats["semantic_dedup_candidates"] = len(dedup_pairs)
+            with connection:
+                _close_job_run(connection, job_id, status="ok", stats=stats)
+        except Exception as exc:
+            with connection:
+                _close_job_run(connection, job_id, status="error", stats=stats, error_text=str(exc))
+            connection.close()
+            raise
+        connection.close()
+        return JobRunResult(job_name=job_name, status="ok", stats=stats, review_items_created=[])
+
     if job_name == "wiki_importance_scoring":
         from .maintenance import compute_importance_scores
         job_id = _open_job_run(connection, job_name, "dry-run" if dry_run else "live")
