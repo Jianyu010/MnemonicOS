@@ -106,6 +106,18 @@ class DaemonConfig:
 
 
 @dataclass(slots=True)
+class MaintenanceConfig:
+    lifecycle_verified_threshold: int = 2
+    lifecycle_canonical_threshold: int = 4
+    lifecycle_drift_days: int = 30
+    graph_rebuild_enabled: bool = True
+    lifecycle_audit_enabled: bool = True
+    importance_scoring_enabled: bool = True
+    semantic_dedup_threshold: float = 0.92
+    semantic_dedup_enabled: bool = True
+
+
+@dataclass(slots=True)
 class AppConfig:
     paths: PathsConfig
     retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
@@ -115,6 +127,7 @@ class AppConfig:
     trust: TrustConfig = field(default_factory=TrustConfig)
     extraction: ExtractionConfig = field(default_factory=ExtractionConfig)
     promotion: PromotionConfig = field(default_factory=PromotionConfig)
+    maintenance: MaintenanceConfig = field(default_factory=MaintenanceConfig)
     daemon: DaemonConfig | None = None
     bridges: dict[str, BridgeConfig] = field(default_factory=dict)
     config_path: Path | None = None
@@ -286,6 +299,18 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
             can_promote=bool(bridge_data.get("can_promote", False)),
         )
 
+    maintenance_data = data.get("maintenance", {})
+    maintenance = MaintenanceConfig(
+        lifecycle_verified_threshold=int(maintenance_data.get("lifecycle_verified_threshold", 2)),
+        lifecycle_canonical_threshold=int(maintenance_data.get("lifecycle_canonical_threshold", 4)),
+        lifecycle_drift_days=int(maintenance_data.get("lifecycle_drift_days", 30)),
+        graph_rebuild_enabled=bool(maintenance_data.get("graph_rebuild_enabled", True)),
+        lifecycle_audit_enabled=bool(maintenance_data.get("lifecycle_audit_enabled", True)),
+        importance_scoring_enabled=bool(maintenance_data.get("importance_scoring_enabled", True)),
+        semantic_dedup_threshold=float(maintenance_data.get("semantic_dedup_threshold", 0.92)),
+        semantic_dedup_enabled=bool(maintenance_data.get("semantic_dedup_enabled", True)),
+    )
+
     return AppConfig(
         paths=paths,
         retrieval=retrieval,
@@ -295,6 +320,7 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
         trust=trust,
         extraction=extraction,
         promotion=promotion,
+        maintenance=maintenance,
         daemon=daemon,
         bridges=bridges,
         config_path=resolved_config,

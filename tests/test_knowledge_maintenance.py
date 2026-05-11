@@ -11,10 +11,18 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+import yaml
+
 from second_brain.config import load_config
 from second_brain.db import connect_db, run_migrations
 from second_brain.jobs import run_job
-from second_brain.maintenance import GraphRebuildResult, detect_orphan_nodes, rebuild_wiki_graph
+from second_brain.maintenance import (
+    GraphRebuildResult,
+    LifecycleAuditResult,
+    audit_lifecycle_states,
+    detect_orphan_nodes,
+    rebuild_wiki_graph,
+)
 from second_brain.sync import sync_vault
 
 
@@ -316,6 +324,197 @@ class GraphRebuildTest(unittest.TestCase):
             self.assertIn("notes_rebuilt", result.stats)
             self.assertIn("stale_edges_pruned", result.stats)
             self.assertIn("orphan_nodes_pruned", result.stats)
+
+
+class LifecycleAuditTest(unittest.TestCase):
+    def _setup(self, workspace: Path):
+        _system_files(workspace)
+        config_path = _minimal_config(workspace)
+        config = load_config(config_path, workspace)
+        connection = connect_db(config.paths.db_path)
+        run_migrations(connection, ROOT / "migrations")
+        connection.close()
+        return config
+
+    def _read_lifecycle(self, path: Path) -> str:
+        import yaml as _yaml
+        text = path.read_text()
+        fm = text.split("---")[1]
+        return str(_yaml.safe_load(fm).get("lifecycle_state", ""))
+
+    def _note_with_corroboration(self, workspace: Path, rel_path: str, note_id: str,
+                                  lifecycle_state: str, corroboration_count: int) -> Path:
+        path = workspace / "brain/wiki" / rel_path
+        _write(
+            path,
+            f"""
+            ---
+            id: {note_id}
+            type: concept
+            title: Test Note {note_id}
+            lifecycle_state: {lifecycle_state}
+            corroboration_count: {corroboration_count}
+            updated_at: 2026-01-01
+            created_at: 2026-01-01
+            ---
+            Body content.
+            """,
+        )
+        return path
+
+    def test_draft_advances_to_verified(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = self._setup(workspace)
+            path = self._note_with_corroboration(
+                workspace, "concepts/active/note-v.md", "concept/note-v", "draft", 2
+            )
+            sync_vault(config, mode="full")
+
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            result = audit_lifecycle_states(connection, config)
+            connection.close()
+
+            self.assertEqual(result.advanced_to_verified, 1)
+            self.assertEqual(result.advanced_to_canonical, 0)
+            self.assertEqual(self._read_lifecycle(path), "verified")
+
+            connection = connect_db(config.paths.db_path)
+            db_state = connection.execute(
+                "SELECT lifecycle_state FROM notes WHERE id = 'concept/note-v'"
+            ).fetchone()
+            connection.close()
+            self.assertEqual(db_state["lifecycle_state"], "verified")
+
+    def test_draft_advances_directly_to_canonical(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = self._setup(workspace)
+            path = self._note_with_corroboration(
+                workspace, "concepts/active/note-c.md", "concept/note-c", "draft", 4
+            )
+            sync_vault(config, mode="full")
+
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            result = audit_lifecycle_states(connection, config)
+            connection.close()
+
+            self.assertEqual(result.advanced_to_canonical, 1)
+            self.assertEqual(result.advanced_to_verified, 0)
+            self.assertEqual(self._read_lifecycle(path), "canonical")
+
+    def test_verified_advances_to_canonical(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = self._setup(workspace)
+            path = self._note_with_corroboration(
+                workspace, "concepts/active/note-vc.md", "concept/note-vc", "verified", 4
+            )
+            sync_vault(config, mode="full")
+
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            result = audit_lifecycle_states(connection, config)
+            connection.close()
+
+            self.assertEqual(result.advanced_to_canonical, 1)
+            self.assertEqual(self._read_lifecycle(path), "canonical")
+
+    def test_contested_note_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = self._setup(workspace)
+            path = self._note_with_corroboration(
+                workspace, "concepts/active/note-x.md", "concept/note-x", "contested", 5
+            )
+            sync_vault(config, mode="full")
+
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            result = audit_lifecycle_states(connection, config)
+            connection.close()
+
+            self.assertEqual(result.advanced_to_verified, 0)
+            self.assertEqual(result.advanced_to_canonical, 0)
+            self.assertEqual(self._read_lifecycle(path), "contested")
+
+    def test_drift_flagged_via_review_item(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = self._setup(workspace)
+            # Old note: created 60 days ago, no corroboration
+            path = workspace / "brain/wiki/concepts/active/stale-draft.md"
+            _write(
+                path,
+                """
+                ---
+                id: concept/stale-draft
+                type: concept
+                title: Stale Draft
+                lifecycle_state: draft
+                corroboration_count: 0
+                updated_at: 2025-01-01
+                created_at: 2025-01-01
+                ---
+                Very old content.
+                """,
+            )
+            sync_vault(config, mode="full")
+
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            result = audit_lifecycle_states(connection, config)
+            connection.close()
+
+            self.assertEqual(result.drift_flagged, 1)
+            review_dir = config.paths.vault_root / "wiki" / "review"
+            review_files = list(review_dir.glob("*.md")) if review_dir.exists() else []
+            self.assertTrue(any("lifecycle" in f.name for f in review_files))
+
+    def test_dry_run_no_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = self._setup(workspace)
+            path = self._note_with_corroboration(
+                workspace, "concepts/active/note-d.md", "concept/note-d", "draft", 4
+            )
+            old_text = path.read_text()
+            sync_vault(config, mode="full")
+
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            result = audit_lifecycle_states(connection, config, dry_run=True)
+            connection.close()
+
+            self.assertEqual(result.advanced_to_canonical, 1)
+            # File unchanged
+            self.assertEqual(path.read_text(), old_text)
+            # DB unchanged
+            connection = connect_db(config.paths.db_path)
+            db_state = connection.execute(
+                "SELECT lifecycle_state FROM notes WHERE id = 'concept/note-d'"
+            ).fetchone()
+            connection.close()
+            self.assertEqual(db_state["lifecycle_state"], "draft")
+
+    def test_wiki_lifecycle_audit_job(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = self._setup(workspace)
+            self._note_with_corroboration(
+                workspace, "concepts/active/note-j.md", "concept/note-j", "draft", 0
+            )
+            sync_vault(config, mode="full")
+
+            result = run_job(config, job_name="wiki_lifecycle_audit", dry_run=True)
+
+            self.assertEqual(result.status, "ok")
+            self.assertIn("notes_scanned", result.stats)
+            self.assertIn("advanced_to_verified", result.stats)
+            self.assertIn("advanced_to_canonical", result.stats)
+            self.assertIn("drift_flagged", result.stats)
 
 
 if __name__ == "__main__":
