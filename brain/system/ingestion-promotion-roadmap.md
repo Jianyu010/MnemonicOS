@@ -1,9 +1,9 @@
-# Promotion Layer Development Roadmap
+# Ingestion: Promotion Roadmap
 
 ## Purpose
 
 This roadmap records implementation progress against
-`promotion-layer-development-plan.md`, what remains, and what the current layer
+`ingestion-promotion-plan.md`, what remains, and what the current layer
 can claim.
 
 ## Verified Breakpoint (pre-implementation)
@@ -111,7 +111,7 @@ failing hook adapter tests).
 
 ## Phase 5 Gap Closure
 
-Status: **complete** — see `promotion-layer-development-plan-phase5-gaps.md`.
+Status: **complete** — see `ingestion-promotion-plan-phase5-gaps.md`.
 
 Two gaps identified after Phase 5 landed:
 
@@ -154,7 +154,7 @@ layer — because the write path already produces the correct value; only the DB
 is missing. With this change, `corroboration_count` is written to the DB within the same
 promotion run, with no deferred reload.
 
-Planned deliverables (see `knowledge-maintenance-development-plan-phase1.md` for full
+Planned deliverables (see `ingestion-maintenance-plan-phase1.md` for full
 scope; that file is preserved as reference but the work is owned here):
 
 - `migrations/018_corroboration_count.sql` — `ALTER TABLE notes ADD COLUMN corroboration_count INT NOT NULL DEFAULT 0`
@@ -175,7 +175,7 @@ is the only case where the maintenance layer touches `corroboration_count`.
 Status: **not started**. Requires LLM/VLM Phase 8 to ship first.
 
 Planned deliverables (see
-`promotion-layer-development-plan-intra-source-relations.md`):
+`ingestion-promotion-plan-intra-source-relations.md`):
 
 - `PromotionRunResult.relations_applied: int` field.
 - `apply_relation_to_note(note_path, *, target_note_id, relation_type) -> bool`
@@ -216,9 +216,9 @@ LLM bundle → intra_source_relations_json (Phase 8)
 ## Architectural Conclusion
 
 The promotion layer is operational. The two Phase 5 gaps (stuck-row recovery, post-
-promotion sync coverage) are planned in `promotion-layer-development-plan-phase5-gaps.md`.
+promotion sync coverage) are planned in `ingestion-promotion-plan-phase5-gaps.md`.
 The intra-source relation amendment (planned in
-`promotion-layer-development-plan-intra-source-relations.md`) adds bundle-aware
+`ingestion-promotion-plan-intra-source-relations.md`) adds bundle-aware
 post-processing to write LLM-asserted relations between same-source notes to their
 frontmatter and rebuild their graph edges. This closes the primary graph edge gap
 for notes produced through the automated pipeline.
@@ -231,5 +231,5 @@ west flange
     → promotion gate → decision engine → note renderer → atomic wiki write
     → bundle-aware second pass → apply_relation_to_note → rebuild_note_graph
     → sync_vault (writes corroboration_count + all note fields to DB) + embed_backfill
-    → knowledge maintenance layer (see knowledge-maintenance-development-plan.md)
+    → knowledge maintenance layer (see ingestion-maintenance-plan.md)
 ```

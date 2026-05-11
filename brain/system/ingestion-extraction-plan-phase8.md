@@ -170,7 +170,7 @@ The promotion worker (`promotion/worker.py`) must be amended to:
 5. Trigger `rebuild_note_graph` for the updated source note.
 
 This amendment is documented separately in
-`promotion-layer-development-plan-intra-source-relations.md`.
+`ingestion-promotion-plan-intra-source-relations.md`.
 
 ## Data flow after Phase 8
 

@@ -70,5 +70,5 @@ CLI display, interactive UI, HTTP surface.
 
 **Complete** (implemented 2026-05-08). 12/12 tests pass.
 
-**Loopholes found 2026-05-09** — see `review-command-development-plan.md §Known Loopholes`.
+**Loopholes found 2026-05-09** — see `ingestion-review-plan.md §Known Loopholes`.
 Fixes tracked in Phase 4.

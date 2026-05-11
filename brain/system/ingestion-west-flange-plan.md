@@ -1,4 +1,4 @@
-# West-Flange Development Plan
+# Ingestion: West-Flange Plan
 
 ## Purpose
 
@@ -9,12 +9,12 @@ for later extraction.
 This governing file defines scope, vocabulary, invariants, and phase order. The
 implementation details live in the phase files:
 
-1. [Phase 1: Intake and Archive](west-flange-development-plan-phase1.md)
-2. [Phase 2: Identity and Redundancy](west-flange-development-plan-phase2.md)
-3. [Phase 3: Projection Lease API](west-flange-development-plan-phase3.md)
-4. [Phase 4: Artifact Lane and Visual Context](west-flange-development-plan-phase4.md)
-5. [Phase 5: Extraction Handoff and Verification](west-flange-development-plan-phase5.md)
-6. [Phase 6: Ingestion-to-Extraction Auto-Enqueue](west-flange-development-plan-phase6.md)
+1. [Phase 1: Intake and Archive](ingestion-west-flange-plan-phase1.md)
+2. [Phase 2: Identity and Redundancy](ingestion-west-flange-plan-phase2.md)
+3. [Phase 3: Projection Lease API](ingestion-west-flange-plan-phase3.md)
+4. [Phase 4: Artifact Lane and Visual Context](ingestion-west-flange-plan-phase4.md)
+5. [Phase 5: Extraction Handoff and Verification](ingestion-west-flange-plan-phase5.md)
+6. [Phase 6: Ingestion-to-Extraction Auto-Enqueue](ingestion-west-flange-plan-phase6.md)
 
 ## Glossary
 

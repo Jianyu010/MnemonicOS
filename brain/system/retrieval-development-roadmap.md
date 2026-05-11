@@ -28,12 +28,14 @@ Critical bugs found:
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| S1-P1 | `ParsedQuery` contract + tokenizer | not started |
-| S1-P2 | Query type classifier | not started |
-| S1-P3 | Temporality inference (4 states) | not started |
-| S1-P4 | Anchor term extraction | not started |
-| S1-P5 | Term expansion | not started |
-| S1-INT | `parse_query()` assembly + integration test | not started |
+| S1-P1 | `ParsedQuery` contract + tokenizer (+ `caller_type`, `persona`, `back_feed_hook`) | not started |
+| S1-P2 | Caller identity detection (`detect_caller()`, `AGENT_BRIDGE_IDS`) | not started |
+| S1-P3 | Persona classifier (`knowledge` · `skill` · `rag`, `BACK_FEED_HOOKS`) | not started |
+| S1-P4 | Semantic type classifier (6 types, `TYPE_PRIORS`, `QUERY_KEYWORD_SIGNATURES`) | not started |
+| S1-P5 | Temporality inference (4 states, `"unknown"` default) | not started |
+| S1-P6 | Anchor term extraction (alias table + note ID prefix) | not started |
+| S1-P7 | Term expansion (`SYNONYM_MAP` + alias title tokens, cap 3) | not started |
+| S1-INT | `parse_query()` assembly + legacy migration + integration test | not started |
 
 ---
 

@@ -26,7 +26,7 @@ Both require `config.embeddings.enabled = True`.
 
 ## Prerequisites
 
-- `nomic-embed-text` installed in Ollama (see `knowledge-maintenance-embedding-model.md`).
+- `nomic-embed-text` installed in Ollama (see `ingestion-maintenance-embedding-model.md`).
 - `config.embeddings.enabled = true` in `config/memory.toml`.
 - `note_embeddings` table populated (by `embed_backfill` job already in pipeline).
 

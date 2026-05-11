@@ -117,11 +117,14 @@ Returns a frozen `ParsedQuery` struct — the single typed input for Stage 2.
 One alias-table read permitted; no writes.
 
 Internal phases:
-[P1 ParsedQuery contract](retrieval-east-flange-plan.md#phase-s1-p1--parsedquery-contract-and-tokenizer) ·
-[P2 Classifier](retrieval-east-flange-plan.md#phase-s1-p2--query-type-classifier) ·
-[P3 Temporality](retrieval-east-flange-plan.md#phase-s1-p3--temporality-inference) ·
-[P4 Anchor extraction](retrieval-east-flange-plan.md#phase-s1-p4--anchor-term-extraction) ·
-[P5 Term expansion](retrieval-east-flange-plan.md#phase-s1-p5--term-expansion)
+[P1 ParsedQuery contract](retrieval-east-flange-plan-phase1.md) ·
+[P2 Caller identity](retrieval-east-flange-plan-phase2.md) ·
+[P3 Persona classifier](retrieval-east-flange-plan-phase3.md) ·
+[P4 Semantic type classifier](retrieval-east-flange-plan-phase4.md) ·
+[P5 Temporality](retrieval-east-flange-plan-phase5.md) ·
+[P6 Anchor extraction](retrieval-east-flange-plan-phase6.md) ·
+[P7 Term expansion](retrieval-east-flange-plan-phase7.md) ·
+[INT Assembly](retrieval-east-flange-plan-int.md)
 
 ---
 

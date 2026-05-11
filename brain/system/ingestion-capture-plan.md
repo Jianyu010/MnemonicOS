@@ -1,4 +1,4 @@
-# Bridge Capture Development Plan
+# Ingestion: Capture Plan
 
 ## Summary
 

@@ -80,6 +80,9 @@ class RetrieveResult:
     classifier_confidence: float | None
     hits: list[RetrieveHit]
     pinned_paths: list[str]
+    temporality: str | None = None
+    persona: str | None = None
+    back_feed_hook: str | None = None
 
 
 @dataclass(slots=True)
@@ -285,6 +288,7 @@ class ResolveTaskContextRequest:
     include_archive_fallback: bool = True
     top_k: int | None = None
     query_type_hint: str | None = None
+    caller_type: str | None = None
 
 
 @dataclass(slots=True)
@@ -303,6 +307,8 @@ class ResolveTaskContextResult:
     query_id: int
     query_type: str | None
     classifier_confidence: float | None
+    persona: str | None = None
+    back_feed_hook: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -321,6 +327,8 @@ class ResolveTaskContextResult:
                 "query_id": self.query_id,
                 "query_type": self.query_type,
                 "classifier_confidence": self.classifier_confidence,
+                "persona": self.persona,
+                "back_feed_hook": self.back_feed_hook,
             },
         }
 

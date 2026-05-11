@@ -1,9 +1,9 @@
-# Knowledge Maintenance Layer Development Plan
+# Ingestion: Maintenance Plan
 
 ## Purpose
 
 This plan directly follows
-`brain/system/promotion-layer-development-roadmap.md`. The promotion layer owns
+`brain/system/ingestion-promotion-roadmap.md`. The promotion layer owns
 the candidate-to-wiki-note path: gate → decision → render → atomic write. It
 terminates at a promoted wiki note on disk and a ledger row in
 `promotion_decisions`.
@@ -27,8 +27,8 @@ Layers are ordered innermost-to-outermost, lightest-to-heaviest:
 
 ### Layer 1 — Cross-Wiki Linking (per-ingestion + scheduled sweep)
 
-6. [Phase 6: Embedding-Based Neighbor Linking](knowledge-maintenance-development-plan-phase6.md)
-7. [Phase 7: LLM Pattern Validation and Refinement](knowledge-maintenance-development-plan-phase7.md)
+6. [Phase 6: Embedding-Based Neighbor Linking](ingestion-maintenance-plan-phase6.md)
+7. [Phase 7: LLM Pattern Validation and Refinement](ingestion-maintenance-plan-phase7.md)
 
 ### Layer 2a — Pattern Discovery (batched trigger: N≥10 new notes OR T≥1hr)
 
@@ -61,23 +61,23 @@ is stable.
 ### Layer 2b — Wiki Governance (batched trigger: N≥10 new notes OR T≥1hr)
 
 > **Note:** Phase 1 (corroboration_count in DB) has been moved to the promotion layer
-> roadmap as an amendment (`promotion-layer-development-roadmap.md`). It belongs there
+> roadmap as an amendment (`ingestion-promotion-roadmap.md`). It belongs there
 > because `renderer.py` already produces the value and `sync_vault` already fires inline
 > post-promotion — only the DB projection was missing. The phase file
-> `knowledge-maintenance-development-plan-phase1.md` is preserved as a reference.
+> `ingestion-maintenance-plan-phase1.md` is preserved as a reference.
 
-2. [Phase 2: Graph Maintenance — bulk rebuild](knowledge-maintenance-development-plan-phase2.md)
-3. [Phase 3: Lifecycle Auditing — advancement and drift](knowledge-maintenance-development-plan-phase3.md)
-4. [Phase 4: Importance Scoring — unified signal](knowledge-maintenance-development-plan-phase4.md)
-5. [Phase 5: Semantic Dedup and Wiki Health](knowledge-maintenance-development-plan-phase5.md)
+2. [Phase 2: Graph Maintenance — bulk rebuild](ingestion-maintenance-plan-phase2.md)
+3. [Phase 3: Lifecycle Auditing — advancement and drift](ingestion-maintenance-plan-phase3.md)
+4. [Phase 4: Importance Scoring — unified signal](ingestion-maintenance-plan-phase4.md)
+5. [Phase 5: Semantic Dedup and Wiki Health](ingestion-maintenance-plan-phase5.md)
 
 ### Layer 3 — Raw Re-Visitation (daily 2AM + M=5 eager trigger)
 
-8. [Phase 8: Raw Re-Visitation and Cross-Wiki Context Injection](knowledge-maintenance-development-plan-phase8.md)
+8. [Phase 8: Raw Re-Visitation and Cross-Wiki Context Injection](ingestion-maintenance-plan-phase8.md)
 
 ### Supporting decision
 
-- [Embedding Model Decision](knowledge-maintenance-embedding-model.md)
+- [Embedding Model Decision](ingestion-maintenance-embedding-model.md)
 
 ## Verified Breakpoint
 
@@ -381,7 +381,7 @@ bundle-aware second pass (LLM/VLM Phase 8), which is now fully implemented.
 Cross-wiki neighbor linking (Phase 6) and LLM cluster validation (Phase 7) both
 require `encode_text()` in `semantics.py` to be operational. This requires an
 embedding model to be available via Ollama. The planned pull target is
-`nomic-embed-text`. See [Embedding Model Decision](knowledge-maintenance-embedding-model.md).
+`nomic-embed-text`. See [Embedding Model Decision](ingestion-maintenance-embedding-model.md).
 
 Layer 2b (Phases 2–5, wiki governance) has no embedding model dependency and can
 ship before the embedding model is installed.
