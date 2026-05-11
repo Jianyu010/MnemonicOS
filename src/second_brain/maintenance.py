@@ -499,3 +499,191 @@ def detect_orphan_nodes(connection: sqlite3.Connection) -> list[str]:
         """
     ).fetchall()
     return [str(row["id"]) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 — Embedding-Based Neighbor Linking
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class NeighborMatch:
+    note_id: str
+    similarity: float
+
+
+def find_embedding_neighbors(
+    connection: sqlite3.Connection,
+    config: AppConfig,
+    note_id: str,
+    *,
+    k: int = 10,
+    threshold: float = 0.78,
+) -> list[NeighborMatch]:
+    from .semantics import encode_text
+
+    note_row = connection.execute(
+        "SELECT summary, type FROM notes WHERE id = ?", (note_id,)
+    ).fetchone()
+    if note_row is None:
+        return []
+
+    note_type = str(note_row["type"] or "")
+    summary = str(note_row["summary"] or "")
+    if not summary:
+        return []
+
+    query_vec = encode_text(summary, dimensions=config.embeddings.dimensions)
+
+    rows = connection.execute(
+        """
+        SELECT nv.note_id, nv.vector_json
+        FROM note_vectors nv
+        JOIN notes n ON n.id = nv.note_id
+        WHERE nv.note_id != ?
+          AND n.type = ?
+          AND (n.status IS NULL OR n.status NOT IN ('retired', 'archived', 'superseded'))
+        """,
+        (note_id, note_type),
+    ).fetchall()
+
+    matches: list[NeighborMatch] = []
+    import json as _json
+    for row in rows:
+        raw = row["vector_json"]
+        if raw is None:
+            continue
+        try:
+            vec = _json.loads(str(raw))
+        except Exception:
+            continue
+        if not vec:
+            continue
+        sim = _cosine(query_vec, vec)
+        if sim >= threshold:
+            matches.append(NeighborMatch(note_id=str(row["note_id"]), similarity=sim))
+
+    matches.sort(key=lambda m: -m.similarity)
+    return matches[:k]
+
+
+def assert_similar_to_link(
+    connection: sqlite3.Connection,
+    config: AppConfig,
+    src_id: str,
+    tgt_id: str,
+    *,
+    similarity_score: float,
+) -> bool:
+    from .promotion.worker import apply_relation_to_note
+
+    src_row = connection.execute("SELECT body_path FROM notes WHERE id = ?", (src_id,)).fetchone()
+    if src_row is None:
+        return False
+
+    src_path = Path(str(src_row["body_path"]))
+    if not src_path.exists():
+        return False
+
+    added = apply_relation_to_note(src_path, target_note_id=tgt_id, relation_type="similar_to")
+    if not added:
+        return False
+
+    try:
+        note = parse_note(src_path.read_text())
+        rebuild_note_graph(connection, note, config=config)
+    except Exception:
+        pass
+
+    return True
+
+
+def run_embedding_neighbor_pass(
+    connection: sqlite3.Connection,
+    config: AppConfig,
+    note_id: str,
+) -> int:
+    if not config.embeddings.enabled or not config.maintenance.embedding_neighbor_enabled:
+        return 0
+
+    threshold = config.maintenance.neighbor_similarity_threshold
+    dedup_threshold = config.maintenance.semantic_dedup_threshold
+    k = config.maintenance.neighbor_k
+
+    try:
+        neighbors = find_embedding_neighbors(connection, config, note_id, k=k, threshold=threshold)
+    except Exception:
+        logger.warning("embedding neighbor pass failed for %s", note_id)
+        return 0
+
+    links_added = 0
+    review_dir = config.paths.vault_root / "wiki" / "review"
+    existing_merge_slugs: set[str] = set()
+    if review_dir.exists():
+        for p in review_dir.glob("semantic-dedup*.md"):
+            existing_merge_slugs.add(p.stem)
+
+    for match in neighbors:
+        if match.similarity >= dedup_threshold:
+            from .review import create_review_item as _create_review_item, slugify
+            slug_seed = f"semantic-dedup-{note_id}-{match.note_id}"
+            slug = slugify(slug_seed)
+            if slug not in existing_merge_slugs:
+                try:
+                    _create_review_item(
+                        config,
+                        review_type="merge_review",
+                        suggested_action="review and merge if duplicate",
+                        reason=f"semantic similarity {match.similarity:.3f} >= threshold {dedup_threshold}",
+                        confidence="medium",
+                        source_refs=[note_id, match.note_id],
+                        slug_seed=slug_seed,
+                    )
+                    existing_merge_slugs.add(slug)
+                except Exception:
+                    logger.warning("failed to create merge review for %s/%s", note_id, match.note_id)
+
+        added = assert_similar_to_link(connection, config, note_id, match.note_id, similarity_score=match.similarity)
+        if added:
+            links_added += 1
+
+    now = datetime.utcnow().isoformat()
+    connection.execute(
+        """
+        INSERT INTO note_embedding_scans (note_id, last_scanned_at, neighbor_count, scan_threshold)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(note_id) DO UPDATE SET
+            last_scanned_at = excluded.last_scanned_at,
+            neighbor_count = excluded.neighbor_count,
+            scan_threshold = excluded.scan_threshold
+        """,
+        (note_id, now, links_added, threshold),
+    )
+    connection.commit()
+    return links_added
+
+
+def run_embedding_neighbor_backfill(
+    connection: sqlite3.Connection,
+    config: AppConfig,
+) -> int:
+    if not config.embeddings.enabled or not config.maintenance.embedding_neighbor_enabled:
+        return 0
+
+    max_age = config.maintenance.neighbor_scan_max_age_days
+    cutoff = (datetime.utcnow().date() - __import__("datetime").timedelta(days=max_age)).isoformat()
+
+    rows = connection.execute(
+        """
+        SELECT n.id FROM notes n
+        LEFT JOIN note_embedding_scans nes ON nes.note_id = n.id
+        WHERE (n.status IS NULL OR n.status NOT IN ('retired', 'archived', 'superseded'))
+          AND (nes.last_scanned_at IS NULL OR nes.last_scanned_at < ?)
+        """,
+        (cutoff,),
+    ).fetchall()
+
+    total = 0
+    for row in rows:
+        total += run_embedding_neighbor_pass(connection, config, str(row["id"]))
+    return total

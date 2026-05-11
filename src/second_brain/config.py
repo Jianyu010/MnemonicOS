@@ -115,6 +115,10 @@ class MaintenanceConfig:
     importance_scoring_enabled: bool = True
     semantic_dedup_threshold: float = 0.92
     semantic_dedup_enabled: bool = True
+    embedding_neighbor_enabled: bool = True
+    neighbor_similarity_threshold: float = 0.78
+    neighbor_k: int = 10
+    neighbor_scan_max_age_days: int = 7
 
 
 @dataclass(slots=True)

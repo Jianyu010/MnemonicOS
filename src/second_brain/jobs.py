@@ -449,5 +449,21 @@ def run_job(config: AppConfig, *, job_name: str, dry_run: bool = False) -> JobRu
         connection.close()
         return JobRunResult(job_name=job_name, status="ok", stats=stats, review_items_created=[])
 
+    if job_name == "wiki_embedding_neighbor_backfill":
+        from .maintenance import run_embedding_neighbor_backfill
+        job_id = _open_job_run(connection, job_name, "dry-run" if dry_run else "live")
+        try:
+            links = run_embedding_neighbor_backfill(connection, config)
+            stats["neighbor_links_asserted"] = links
+            with connection:
+                _close_job_run(connection, job_id, status="ok", stats=stats)
+        except Exception as exc:
+            with connection:
+                _close_job_run(connection, job_id, status="error", stats=stats, error_text=str(exc))
+            connection.close()
+            raise
+        connection.close()
+        return JobRunResult(job_name=job_name, status="ok", stats=stats, review_items_created=[])
+
     connection.close()
     raise ValueError(f"unsupported job: {job_name}")

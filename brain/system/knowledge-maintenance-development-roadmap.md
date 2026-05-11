@@ -156,27 +156,30 @@ Deliverables shipped:
 
 ### Phase 4: Importance Scoring — unified signal
 
-Status: **not started**.
+Status: **complete**.
 
-Frequency: daily (Layer 2b job, runs after trust/freshness).
+Deliverables shipped:
+- `migrations/020_note_importance.sql` — `note_importance` table + `retrieval_hit_features.importance_score` column
+- `ImportanceSignal`, `compute_importance_scores` in `maintenance.py`: connectivity
+  sigmoid + trust/freshness/lifecycle weights → upsert to `note_importance`
+- `wiki_importance_scoring` job in `jobs.py` and CLI
+- `retrieval.py`: importance_map load + stored in `retrieval_hit_features`
+- 5 tests in `ImportanceScoringTest`: hub>spoke ordering, default signals, DB persist, feature column, job stats
+- 307 tests passing
 
-Planned deliverables:
-- `migrations/020_note_importance.sql` — `note_importance` table
-- `compute_importance_scores(connection) -> dict[str, float]` in `maintenance.py`
-- Layer 2b job wired to call after trust/freshness
-- `retrieval.py` updated to load importance_score and include in
-  `retrieval_hit_features`
+### Phase 5: Wiki Health Stats + Semantic Dedup
 
-### Phase 5: Wiki Health Stats
+Status: **complete**.
 
-Status: **not started**.
-
-Frequency: daily (Layer 2b job, summary pass at end).
-
-Planned deliverables:
-- `compute_wiki_health_stats(connection) -> WikiHealthStats` in `maintenance.py`
-- Layer 2b job wired to call after importance scoring
-- `write_maintenance_overview` in `ops.py` enhanced with `WikiHealthStats`
+Deliverables shipped:
+- `SemanticDuplicatePair`, `WikiHealthStats`, `_cosine`, `detect_semantic_duplicates`,
+  `compute_wiki_health_stats` in `maintenance.py`
+- `MaintenanceConfig`: `semantic_dedup_threshold`, `semantic_dedup_enabled` fields
+- `wiki_health_report` job in `jobs.py` and CLI
+- `ops.py`: `write_maintenance_overview` extended with Wiki Health table (bug fix: syntax error on `lines.extend` resolved)
+- Dedup slug idempotency: scans `wiki/review/semantic-dedup*.md` filenames before creating
+- 6 tests in `WikiHealthTest`: counts, dedup disabled guard, near-identical detection, slug idempotency, job stats, overview table
+- 318 tests passing
 
 Note: semantic dedup is subsumed into Phase 6 (threshold θ=0.92 in
 `run_embedding_neighbor_pass`). Phase 5 focuses on health stats only.

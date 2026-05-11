@@ -983,5 +983,223 @@ class LifecycleAuditTest(unittest.TestCase):
             self.assertIn("drift_flagged", result.stats)
 
 
+class EmbeddingNeighborTest(unittest.TestCase):
+    def _setup_with_embeddings(self, workspace: Path):
+        """Config with embeddings enabled (hash provider)."""
+        _system_files(workspace)
+        config_path = workspace / "config.toml"
+        _write(
+            config_path,
+            f"""
+            [paths]
+            vault_root = "{(workspace / 'brain').as_posix()}"
+            db_path = "{(workspace / 'brain/data/archive.db').as_posix()}"
+            vectors_dir = "{(workspace / 'brain/data/vectors').as_posix()}"
+            graph_dir = "{(workspace / 'brain/data/graph').as_posix()}"
+            eval_queries = "{(workspace / 'evals/queries.jsonl').as_posix()}"
+
+            [embeddings]
+            enabled = true
+            provider = "hash"
+            model = "hash-128-v1"
+            dimensions = 128
+
+            [maintenance]
+            embedding_neighbor_enabled = true
+            neighbor_similarity_threshold = 0.0
+            neighbor_k = 10
+            """,
+        )
+        config = load_config(config_path, workspace)
+        connection = connect_db(config.paths.db_path)
+        run_migrations(connection, ROOT / "migrations")
+        connection.close()
+        return config
+
+    def _seed_concept(self, workspace: Path, note_id: str, summary: str) -> None:
+        slug = note_id.split("/", 1)[-1]
+        _write(
+            workspace / "brain/wiki" / f"concepts/active/{slug}.md",
+            f"""
+            ---
+            id: {note_id}
+            type: concept
+            title: {slug.replace("-", " ").title()}
+            summary: {summary}
+            updated_at: 2026-01-01
+            created_at: 2026-01-01
+            ---
+            Body.
+            """,
+        )
+
+    def test_similar_to_link_asserted(self) -> None:
+        """Two concept notes with identical summaries get a similar_to link."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = self._setup_with_embeddings(workspace)
+            self._seed_concept(workspace, "concept/alpha", "shared identical summary text")
+            self._seed_concept(workspace, "concept/beta", "shared identical summary text")
+            sync_vault(config, mode="full")
+
+            from second_brain.maintenance import run_embedding_neighbor_pass
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            # populate embeddings table for both notes
+            from second_brain.semantics import encode_text
+            import json
+            for nid, summary in [("concept/alpha", "shared identical summary text"),
+                                  ("concept/beta", "shared identical summary text")]:
+                vec = encode_text(summary, dimensions=128)
+                connection.execute(
+                    "INSERT OR REPLACE INTO note_vectors (note_id, model, dimensions, vector_json, source_hash, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (nid, "hash-128-v1", 128, json.dumps(vec), "testhash", "2026-01-01"),
+                )
+            connection.commit()
+
+            links = run_embedding_neighbor_pass(connection, config, "concept/alpha")
+            connection.close()
+
+            self.assertGreaterEqual(links, 1)
+
+            # verify similar_to appears in frontmatter
+            import yaml as _yaml
+            note_path = workspace / "brain/wiki/concepts/active/alpha.md"
+            text = note_path.read_text()
+            fm_end = text.index("---", 3)
+            fm = _yaml.safe_load(text[3:fm_end])
+            relations = fm.get("relations", [])
+            self.assertTrue(
+                any(r.get("type") == "similar_to" and r.get("target") == "concept/beta" for r in relations),
+                f"Expected similar_to beta in relations: {relations}",
+            )
+
+    def test_type_boundary_not_crossed(self) -> None:
+        """concept and procedure notes must not be linked even at threshold=0."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = self._setup_with_embeddings(workspace)
+
+            _write(
+                workspace / "brain/wiki/concepts/active/c1.md",
+                """
+                ---
+                id: concept/c1
+                type: concept
+                title: C1
+                summary: identical text boundary test
+                updated_at: 2026-01-01
+                created_at: 2026-01-01
+                ---
+                Body.
+                """,
+            )
+            _write(
+                workspace / "brain/wiki/procedures/p1.md",
+                """
+                ---
+                id: procedure/p1
+                type: procedure
+                title: P1
+                summary: identical text boundary test
+                updated_at: 2026-01-01
+                created_at: 2026-01-01
+                ---
+                Body.
+                """,
+            )
+            sync_vault(config, mode="full")
+
+            from second_brain.maintenance import run_embedding_neighbor_pass
+            from second_brain.semantics import encode_text
+            import json
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            for nid in ("concept/c1", "procedure/p1"):
+                vec = encode_text("identical text boundary test", dimensions=128)
+                connection.execute(
+                    "INSERT OR REPLACE INTO note_vectors (note_id, model, dimensions, vector_json, source_hash, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (nid, "hash-128-v1", 128, json.dumps(vec), "testhash", "2026-01-01"),
+                )
+            connection.commit()
+
+            links = run_embedding_neighbor_pass(connection, config, "concept/c1")
+            connection.close()
+
+            self.assertEqual(links, 0, "concept must not link to procedure note")
+
+    def test_dedup_threshold_creates_merge_review(self) -> None:
+        """Similarity >= dedup_threshold triggers a merge_review item."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = self._setup_with_embeddings(workspace)
+            # override dedup threshold to 0.0 so hash-identical notes always trigger
+            config.maintenance.semantic_dedup_threshold = 0.0
+            self._seed_concept(workspace, "concept/dup-a", "exact duplicate summary")
+            self._seed_concept(workspace, "concept/dup-b", "exact duplicate summary")
+            sync_vault(config, mode="full")
+
+            from second_brain.maintenance import run_embedding_neighbor_pass
+            from second_brain.semantics import encode_text
+            import json
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            vec = encode_text("exact duplicate summary", dimensions=128)
+            for nid in ("concept/dup-a", "concept/dup-b"):
+                connection.execute(
+                    "INSERT OR REPLACE INTO note_vectors (note_id, model, dimensions, vector_json, source_hash, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (nid, "hash-128-v1", 128, json.dumps(vec), "testhash", "2026-01-01"),
+                )
+            connection.commit()
+
+            run_embedding_neighbor_pass(connection, config, "concept/dup-a")
+            connection.close()
+
+            review_dir = config.paths.vault_root / "wiki" / "review"
+            merge_files = list(review_dir.glob("semantic-dedup*.md")) if review_dir.exists() else []
+            self.assertGreaterEqual(len(merge_files), 1, "Expected merge_review item for dedup pair")
+
+    def test_backfill_creates_scan_records(self) -> None:
+        """run_embedding_neighbor_backfill creates note_embedding_scans rows."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = self._setup_with_embeddings(workspace)
+            self._seed_concept(workspace, "concept/back-a", "backfill test summary")
+            self._seed_concept(workspace, "concept/back-b", "different backfill summary")
+            sync_vault(config, mode="full")
+
+            from second_brain.maintenance import run_embedding_neighbor_backfill
+            from second_brain.semantics import encode_text
+            import json
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            for nid, summary in [("concept/back-a", "backfill test summary"),
+                                  ("concept/back-b", "different backfill summary")]:
+                vec = encode_text(summary, dimensions=128)
+                connection.execute(
+                    "INSERT OR REPLACE INTO note_vectors (note_id, model, dimensions, vector_json, source_hash, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (nid, "hash-128-v1", 128, json.dumps(vec), "testhash", "2026-01-01"),
+                )
+            connection.commit()
+
+            run_embedding_neighbor_backfill(connection, config)
+            scan_count = connection.execute("SELECT COUNT(*) AS cnt FROM note_embedding_scans").fetchone()["cnt"]
+            connection.close()
+
+            self.assertGreaterEqual(scan_count, 1)
+
+    def test_neighbor_backfill_job(self) -> None:
+        """wiki_embedding_neighbor_backfill job runs and returns expected stat keys."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = self._setup_with_embeddings(workspace)
+            self._seed_concept(workspace, "concept/job-test", "job backfill test")
+            sync_vault(config, mode="full")
+
+            result = run_job(config, job_name="wiki_embedding_neighbor_backfill", dry_run=False)
+            self.assertEqual(result.status, "ok")
+            self.assertIn("neighbor_links_asserted", result.stats)
+
+
 if __name__ == "__main__":
     unittest.main()
