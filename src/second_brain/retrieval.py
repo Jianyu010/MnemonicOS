@@ -9,10 +9,11 @@ import sqlite3
 
 from .config import AppConfig
 from .db import connect_db, run_migrations
+from .embedding_providers import build_embedding_provider, embedding_model_key
 from .graph import graph_expand
 from .models import RetrieveHit, RetrieveResult
 from .paths import VaultPaths
-from .semantics import cosine_similarity, encode_text, vector_from_json
+from .semantics import cosine_similarity, vector_from_json
 from .trust import (
     freshness_multiplier,
     load_note_freshness,
@@ -196,7 +197,7 @@ def _bm25_hits(connection: sqlite3.Connection, query: str, limit: int) -> list[s
 def _semantic_hits(connection: sqlite3.Connection, config: AppConfig, query: str, limit: int) -> list[sqlite3.Row]:
     if not config.embeddings.enabled:
         return []
-    query_vector = encode_text(query, dimensions=config.embeddings.dimensions)
+    query_vector = build_embedding_provider(config).embed_texts([query])[0]
     rows = connection.execute(
         """
         SELECT
@@ -220,7 +221,7 @@ def _semantic_hits(connection: sqlite3.Connection, config: AppConfig, query: str
           AND (n.status IS NULL OR n.status != 'retired')
           AND (n.valid_to IS NULL OR n.valid_to > date('now'))
         """,
-        (config.embeddings.model,),
+        (embedding_model_key(config),),
     ).fetchall()
 
     scored: list[tuple[float, sqlite3.Row]] = []
@@ -349,7 +350,7 @@ def retrieve(
         )
 
     semantic_rows = _semantic_hits(connection, config, query, requested_top_k * 4)
-    query_vector = encode_text(query, dimensions=config.embeddings.dimensions) if config.embeddings.enabled else []
+    query_vector = build_embedding_provider(config).embed_texts([query])[0] if config.embeddings.enabled else []
     for row in semantic_rows:
         note_id = str(row["id"])
         semantic_score = cosine_similarity(query_vector, vector_from_json(str(row["vector_json"])))

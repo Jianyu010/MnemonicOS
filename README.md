@@ -64,7 +64,7 @@ The next architectural focus is the **east flange**: retrieval, context assembly
 explainability, and read-side serving over the canonical wiki, graph, archive
 fallback, trust/freshness signals, and maintenance outputs.
 
-Latest verification: `python3 -m unittest discover -s tests` passes with 343
+Latest verification: `python3 -m unittest discover -s tests` passes with 347
 tests, plus isolated end-to-end smoke checks for ingestion, promotion,
 maintenance, raw re-visitation, and archetype graph propagation.
 
@@ -182,6 +182,139 @@ Config:
 ```bash
 cp config/memory.example.toml config/memory.toml
 ```
+
+## Inference Backends
+
+MnemonicOS does not require one specific model runtime. The VLM/LLM extraction
+layer and maintenance embeddings use provider adapters selected in
+`config/memory.toml`. Ollama remains supported, but it is only one backend.
+
+The default config is zero-install and deterministic:
+
+```toml
+[embeddings]
+enabled = true
+provider = "hash"
+model = "hash-256-v1"
+dimensions = 256
+
+[models.llm]
+provider = "fixture"
+model = "fixture-llm"
+
+[models.vlm]
+provider = "fixture"
+model = "fixture-vlm"
+```
+
+Use the fixture providers for tests and development. They do not call an
+external model and keep the pipeline stable.
+
+### Ollama Backend
+
+Install or start Ollama, then pull the models you want to use:
+
+```bash
+ollama pull llama3.1:8b
+ollama pull llama3.2-vision:latest
+```
+
+Configure extraction to use Ollama:
+
+```toml
+[models.llm]
+provider = "ollama"
+model = "llama3.1:8b"
+base_url = "http://127.0.0.1:11434"
+timeout_seconds = 180
+
+[models.vlm]
+provider = "ollama"
+model = "llama3.2-vision:latest"
+base_url = "http://127.0.0.1:11434"
+timeout_seconds = 180
+```
+
+If you want Ollama embeddings for semantic retrieval and maintenance, configure
+the embedding provider separately:
+
+```toml
+[embeddings]
+enabled = true
+provider = "ollama_embeddings"
+model = "nomic-embed-text"
+dimensions = 768
+base_url = "http://127.0.0.1:11434"
+timeout_seconds = 60
+```
+
+The built-in `hash` embedding provider is still the safest fallback when no
+embedding server is installed.
+
+### OpenAI-Compatible Backend
+
+Any local or hosted server that exposes OpenAI-style `/v1/chat/completions` and
+`/v1/embeddings` endpoints can be wired in without changing MnemonicOS code.
+This includes many OpenLLM, vLLM, LM Studio, llama.cpp server, and enterprise
+gateway deployments.
+
+```toml
+[models.llm]
+provider = "openai_compatible"
+model = "your-json-capable-model"
+base_url = "http://127.0.0.1:8000/v1"
+api_key_env = "OPENAI_API_KEY"
+timeout_seconds = 180
+
+[models.vlm]
+provider = "openai_compatible"
+model = "your-vision-model"
+base_url = "http://127.0.0.1:8000/v1"
+api_key_env = "OPENAI_API_KEY"
+timeout_seconds = 180
+
+[embeddings]
+enabled = true
+provider = "openai_compatible_embeddings"
+model = "your-embedding-model"
+dimensions = 1536
+base_url = "http://127.0.0.1:8000/v1"
+api_key_env = "OPENAI_API_KEY"
+timeout_seconds = 60
+```
+
+Set `api_key_env` to an environment variable name. Leave it empty for local
+servers that do not require authentication.
+
+### CLI-Command Backend
+
+If a machine only has a model CLI, configure the LLM adapter explicitly:
+
+```toml
+[models.llm]
+provider = "cli_command"
+model = "claude-code"
+command = "claude -p"
+timeout_seconds = 180
+```
+
+The CLI adapter is an escape hatch. It is slower and less predictable than HTTP
+adapters because it has to spawn a process and parse stdout. Use it when a
+server-style backend is not available.
+
+### Degraded Operation
+
+MnemonicOS degrades by capability:
+
+- no VLM: text extraction still runs; visual artifacts remain referenced for a
+  later visual pass
+- no LLM: raw intake and queueing still work; extraction rows stay pending or
+  record provider errors
+- no external embeddings: exact, BM25, graph, and hash-semantic retrieval still
+  work; model-backed semantic maintenance can be skipped
+- no model runtime at all: capture, raw archive, deterministic promotion of
+  already-validated candidates, graph rebuilds, lifecycle audit, and health
+  reports remain operational
 
 ## Main CLI
 

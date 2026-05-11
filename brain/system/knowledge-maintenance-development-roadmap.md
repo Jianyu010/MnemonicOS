@@ -21,8 +21,10 @@ complete.
 - Lifecycle advancement only occurs at promotion time via `renderer.py`.
 - No `note_importance` table exists.
 - No `maintenance.py` module exists.
-- No embedding model installed. `encode_text()` exists in `semantics.py` but
-  requires `nomic-embed-text` via Ollama.
+- No external embedding model installed at the original breakpoint.
+  `encode_text()` existed as the local semantic encoder path, but the maintenance
+  layer still needed a provider-shaped embedding API before it could support
+  arbitrary user runtimes.
 - No cross-wiki neighbor linking exists.
 - No raw re-visitation job exists.
 
@@ -30,13 +32,16 @@ complete.
 
 ## Layer 1 — Cross-Wiki Linking (per-ingestion + scheduled sweep)
 
-### Prerequisite: embedding model
+### Prerequisite: embedding provider
 
-Status: **not started**.
+Status: **implemented mechanically; provider decoupling planned**.
 
-Before Phases 6–7 can run: `ollama pull nomic-embed-text` and set
-`config.embeddings.enabled = true`. See
-`knowledge-maintenance-embedding-model.md` for rationale and RL training path.
+Phases 6-7 require embeddings, but they should not require Ollama specifically.
+The local hash encoder is a zero-install fallback and external embedding models
+should be selected through a provider-shaped API. See
+`knowledge-maintenance-embedding-model.md` for the original nomic/Ollama
+rationale; that decision is now treated as one adapter choice, not a product
+requirement.
 
 ### Phase 6: Embedding-Based Neighbor Linking
 
@@ -194,6 +199,157 @@ Current release gate mark (2026-05-11):
 - R3 (overview publication): **passes** — `wiki_health_report` writes `maintenance.md`.
 - R4 (archetype persistence): **passes** — `ArchetypePersistenceTest` (4 tests).
 - **Release gate: SATISFIED.** No known remaining gaps.
+
+---
+
+## Inference Provider Decoupling Plan
+
+Purpose:
+- Remove Ollama as an implicit dependency for maintenance inference.
+- Make embedding, cluster-validation, and future inference-backed maintenance
+  routines depend on small provider contracts rather than one installed runtime.
+- Keep deterministic maintenance jobs operational when no external model is
+  available.
+
+This plan concerns the maintenance inference engine only. It is not the
+north-flange bridge and does not change Codex/Claude hook capture.
+
+### Phase M1: Embedding Provider Interface
+
+Status: planned.
+
+Work:
+1. Introduce `EmbeddingProvider`:
+
+```python
+class EmbeddingProvider(Protocol):
+    provider_name: str
+    model_name: str
+    dimensions: int
+
+    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        ...
+
+    def healthcheck(self) -> ProviderHealth:
+        ...
+```
+
+2. Move the current hash encoder behind `HashEmbeddingProvider`.
+3. Replace direct `encode_text(...)` calls in retrieval, ingest, sync, jobs, and
+   maintenance with `build_embedding_provider(config).embed_texts(...)`.
+4. Preserve stored vector metadata: provider, model, dimensions, source hash,
+   and provider config fingerprint.
+
+Acceptance:
+- No maintenance job imports `encode_text` directly.
+- `provider = "hash"` remains zero-install and test-friendly.
+- Switching embedding providers does not require changing maintenance code.
+
+### Phase M2: Provider Registry and Config
+
+Status: planned.
+
+Work:
+1. Add an embedding provider registry:
+   - `hash`
+   - `ollama_embeddings`
+   - `openai_compatible_embeddings`
+   - later: `sentence_transformers`, `cli_command_embeddings`
+2. Extend `[embeddings]` without breaking current configs:
+
+```toml
+[embeddings]
+enabled = true
+provider = "openai_compatible_embeddings"
+model = "text-embedding-3-small"
+dimensions = 1536
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+reembed_on_summary_change_only = true
+```
+
+3. Add `mnemonicos doctor inference` output for embedding health:
+   - available
+   - disabled
+   - provider_unavailable
+   - dimensions_mismatch
+   - reembed_required
+
+Acceptance:
+- Existing `provider = "hash"` configs continue to work.
+- External embedding providers can be selected by config only.
+- Dimension mismatch is detected before neighbor jobs run.
+
+### Phase M3: Maintenance Degraded Modes
+
+Status: planned.
+
+Work:
+1. Make embedding-dependent jobs report degraded status rather than fail the
+   daemon:
+   - semantic dedup
+   - embedding neighbor pass
+   - embedding neighbor backfill
+   - cluster validation when seeded by embedding links
+2. Keep deterministic jobs running without embeddings:
+   - graph rebuild
+   - lifecycle audit
+   - importance scoring from non-embedding signals
+   - health report
+   - raw re-visitation ledger checks
+3. Add status counters to job results:
+   - `embeddings_disabled`
+   - `embedding_provider_unavailable`
+   - `semantic_jobs_skipped`
+   - `reembed_required`
+
+Acceptance:
+- A machine with no model runtime still runs maintenance safely.
+- Daemon status distinguishes skipped inference from job failure.
+- Retrieval remains usable through exact/BM25/graph channels.
+
+### Phase M4: LLM-Backed Maintenance Adapter
+
+Status: planned.
+
+Work:
+1. Reuse the extraction-layer `LLMProvider` contract for maintenance routines
+   that need language judgment, such as cluster naming or validation.
+2. Add a maintenance-specific wrapper API:
+
+```python
+validate_cluster(provider, cluster_packet) -> ClusterValidationResult
+name_archetype(provider, archetype_packet) -> Archetype
+```
+
+3. Keep LLM calls optional. If no LLM is available, run LLM-free pattern
+   discovery channels and queue unresolved validation work for later.
+
+Acceptance:
+- Maintenance can use Ollama, OpenAI-compatible, or CLI-command LLM adapters
+  through the same contract.
+- LLM absence does not block deterministic maintenance.
+- LLM-backed maintenance output is validated before mutating graph/archetype
+  records.
+
+### Phase M5: Re-Embedding and Migration Policy
+
+Status: planned.
+
+Work:
+1. Treat provider/model/dimensions/fingerprint changes as vector-version changes.
+2. Add a re-embed planner:
+   - count stale vectors
+   - estimate work
+   - run dry-run
+   - backfill in batches
+3. Keep old vectors until replacement succeeds.
+4. Record provider lineage in job stats and maintenance overview.
+
+Acceptance:
+- Changing embedding provider does not silently mix incompatible vector spaces.
+- Re-embedding is resumable and does not corrupt retrieval.
+- Maintenance overview reports current embedding provider and stale-vector count.
 
 ---
 

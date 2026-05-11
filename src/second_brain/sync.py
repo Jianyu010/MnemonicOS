@@ -7,11 +7,12 @@ import sqlite3
 
 from .config import AppConfig
 from .db import connect_db, run_migrations
+from .embedding_providers import build_embedding_provider, embedding_model_key
 from .graph import demote_or_delete_note_node, rebuild_note_graph
 from .models import NoteRecord, SyncResult
 from .parser import NoteParseError, parse_note
 from .paths import VaultPaths
-from .semantics import encode_text, upsert_note_vector
+from .semantics import upsert_note_vector
 
 
 def _file_hash(path: Path) -> str:
@@ -241,6 +242,7 @@ def sync_vault(config: AppConfig, mode: str = "incremental", selected_paths: lis
             scanned_paths += 1
             _sync_system_file(connection, path)
 
+        embedding_provider = build_embedding_provider(config) if config.embeddings.enabled else None
         for resolved_path, path in note_files.items():
             if selected and resolved_path not in selected:
                 continue
@@ -255,13 +257,13 @@ def sync_vault(config: AppConfig, mode: str = "incremental", selected_paths: lis
             try:
                 note = parse_note(path)
                 aliases, semantic_source = _upsert_note(connection, note)
-                if config.embeddings.enabled:
-                    vector = encode_text(semantic_source, dimensions=config.embeddings.dimensions)
+                if embedding_provider is not None:
+                    vector = embedding_provider.embed_texts([semantic_source])[0]
                     upsert_note_vector(
                         connection,
                         note_id=note.id,
-                        model=config.embeddings.model,
-                        dimensions=config.embeddings.dimensions,
+                        model=embedding_model_key(config),
+                        dimensions=len(vector),
                         vector=vector,
                         source_hash=note.content_hash,
                     )
