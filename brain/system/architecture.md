@@ -88,10 +88,12 @@ details too early.
   the full wiki as a living graph: bulk graph rebuild, lifecycle audit,
   importance scoring, semantic duplicate routing, and health reporting. The
   governing plan exists, but the roadmap marks all phases as not started.
-- **East retrieval remains legacy-shaped.** Retrieval currently depends on
-  software ranking, trust, freshness, graph expansion, and bounded context packet
-  assembly. The future learned retrieval core should remain read-only and should
-  improve fetch/rank quality without gaining mutation authority.
+- **East retrieval pipeline design complete; implementation not started.** The
+  7-stage retrieval pipeline (east flange = Stage 1: Query Parsing, plus Stages
+  2–7) is fully specified in RETRIEVAL-PATH-GOVERNANCE-DESIGN.md. Two critical
+  bugs identified in Phase 0 audit: importance_score dead code (Stage 3/4) and
+  train_rerank_model() unreachable (Stage 4). The future DL north star (bi-encoder
+  + cross-encoder) is designed and deferred until ≥50 eval samples exist.
 - **South boundary is unresolved.** SQLite, markdown, FTS, vectors, and graph
   tables are treated as replaceable substrate today. It is still undecided
   whether to formalize them as a south flange with explicit adapter contracts.
@@ -115,37 +117,45 @@ details too early.
 
 - [Product Boundary](product-boundary.md): product scope, flange vocabulary, and
   current boundary rules.
-- [West-Flange Development Plan](west-flange-development-plan.md): true raw,
+- [West-Flange Development Plan](ingestion-west-flange-plan.md): true raw,
   artifact identity, RAM projection, text windows, artifact views, and extraction
   handoff.
-- [West-Flange Development Roadmap](west-flange-development-roadmap.md): current
+- [West-Flange Development Roadmap](ingestion-west-flange-roadmap.md): current
   west-flange implementation status and remaining verification gaps.
-- [LLM/VLM Layer Development Plan](llm-vlm-layer-development-plan.md): extraction
+- [LLM/VLM Layer Development Plan](ingestion-extraction-plan.md): extraction
   queue, VLM snippets, LLM candidate bundles, deterministic validation, and the
   stop at `promotion_ready`.
-- [LLM/VLM Layer Development Roadmap](llm-vlm-layer-development-roadmap.md):
+- [LLM/VLM Layer Development Roadmap](ingestion-extraction-roadmap.md):
   current extraction-layer implementation status and remaining work.
-- [Bridge Capture Development Plan](bridge-capture-development-plan.md):
+- [Bridge Capture Development Plan](ingestion-capture-plan.md):
   north-flange raw session capture model.
 
 ### Promotion, Review, and Maintenance
 
-- [Promotion Layer Development Plan](promotion-layer-development-plan.md):
+- [Promotion Layer Development Plan](ingestion-promotion-plan.md):
   deterministic gate, decision, renderer, writer, daemon/admin surfaces, and
   promotion ledger.
-- [Promotion Layer Development Roadmap](promotion-layer-development-roadmap.md):
+- [Promotion Layer Development Roadmap](ingestion-promotion-roadmap.md):
   implementation status and remaining integration-test gaps.
-- [Review Command Development Plan](review-command-development-plan.md): human
+- [Review Command Development Plan](ingestion-review-plan.md): human
   approval/rejection path for promotion-routed notes.
-- [Review Command Development Roadmap](review-command-development-roadmap.md):
+- [Review Command Development Roadmap](ingestion-review-roadmap.md):
   current review CLI/TUI status and hardening history.
-- [Knowledge Maintenance Layer Development Plan](knowledge-maintenance-development-plan.md):
+- [Knowledge Maintenance Layer Development Plan](ingestion-maintenance-plan.md):
   planned full-wiki graph maintenance, lifecycle audit, importance scoring,
   semantic duplicate routing, and health reporting.
-- [Knowledge Maintenance Layer Development Roadmap](knowledge-maintenance-development-roadmap.md):
+- [Knowledge Maintenance Layer Development Roadmap](ingestion-maintenance-roadmap.md):
   implementation status for the maintenance layer.
-- [East Flange Plan](east-flange-plan.md): current retrieval state and stub for
-  the future learned retrieval core.
+- [Retrieval Path Governance Design](RETRIEVAL-PATH-GOVERNANCE-DESIGN.md): master
+  governance doc for the 7-stage retrieval pipeline, DL north star architecture,
+  module responsibility matrix, and boundary rules.
+- [Retrieval Development Roadmap](retrieval-development-roadmap.md): phase completion
+  status for all 7 stages and DL north star.
+- [East Flange Plan — Stage 1](retrieval-east-flange-plan.md): detailed per-phase plan
+  for Query Parsing (ParsedQuery contract, classifier, temporality inference,
+  anchor extraction, term expansion). "East flange" = Stage 1 specifically.
+- [East Flange Roadmap — Stage 1](retrieval-east-flange-roadmap.md): phase status
+  for the query parsing stage.
 
 ### Runtime Protocol and Agent Bridges
 
@@ -158,10 +168,12 @@ details too early.
 
 ### Retrieval and Quality
 
-- [Control Signal Quality Roadmap](control-signal-quality-roadmap.md): ACTIVE —
-  gene strings, content quality gate, chain_id machinery.
+- [Control Signal Quality Roadmap](retrieval-control-signal-quality-roadmap.md): ACTIVE —
+  gene strings, content quality gate, chain_id machinery. Spans Stages 3, 5, 6.
 - [Episode-Aware Retrieval](episode-aware-retrieval.md): Phase 1 done (chain
   metadata on notes); Phases 2–6 deferred until evaluation data exists.
+- [East Flange Audit](../../docs/east-flange-audit.md): Phase 0 audit — module-to-stage
+  map, 2 critical bugs (importance dead code, training never triggered), extend verdict.
 
 ### Interface and Positioning
 
