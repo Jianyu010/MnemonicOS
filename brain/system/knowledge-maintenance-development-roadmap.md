@@ -76,7 +76,7 @@ Deliverables shipped:
 
 ### Phase 8: Raw Re-Visitation (Layer 3)
 
-Status: **complete**.
+Status: **implemented; E2E blocker fixed 2026-05-11**.
 
 Deliverables shipped:
 - `migrations/023_extraction_versioning.sql` — adds `extraction_schema_version`,
@@ -84,14 +84,116 @@ Deliverables shipped:
 - `CURRENT_SCHEMA_VERSION = "1.0"` constant in `extraction/queue.py`; `mark_finished`
   updated to write both version columns
 - `RevisitationResult`, `run_raw_revisitation(conn, config, *, dry_run, retrieve_fn)` in
-  `maintenance.py`: queries stale processed rows (schema or model version mismatch),
-  resets status to 'pending'; optional `retrieve_fn` for context injection counting
+  `maintenance.py`: queries stale processed original rows (schema or model
+  version mismatch), inserts fresh lineage-linked revisit queue rows, suppresses
+  duplicate revisits, and preserves the historical ledger
 - `MaintenanceConfig`: requeue_enabled, requeue_min_age_days, requeue_context_enabled,
   requeue_context_top_k, requeue_max_per_run; all parsed by `load_config`
 - `wiki_raw_revisitation` job in `jobs.py` and CLI
-- 6 tests in `RevisitationTest`: stale row reset, current-schema skip, cap enforcement,
-  dry-run immutability, context injection counting, job stats keys
+- Revisitation tests cover fresh-row requeue, current-schema skip, cap
+  enforcement, dry-run immutability, context injection, job stat keys, and
+  promoted-source ledger preservation
 - 337 tests passing
+
+Release blocker found by isolated end-to-end run and fixed 2026-05-11:
+- `wiki_raw_revisitation` previously reset an existing processed queue row to
+  `pending`. When that row already has promoted candidates, the next extraction
+  run deletes `extraction_candidates` for the row and fails on the
+  `promotion_decisions` foreign key. This violates the Phase 8 invariant that old
+  candidates remain historical record.
+
+Repair purpose: **satisfied 2026-05-11**
+- Make raw re-visitation produce a fresh extraction attempt without mutating or
+  deleting the historical extraction/promotion ledger for the original queue row.
+
+Repair plan: **implemented 2026-05-11**
+1. Add queue lineage fields in a new migration:
+   - `extraction_queue.revisit_of_queue_id`
+   - `extraction_queue.revisit_reason`
+   - `extraction_queue.revisit_context_json`
+2. Change `run_raw_revisitation` to insert a new pending queue row for each
+   eligible source instead of resetting the old row. The new row copies the
+   source identity and content hash, records `revisit_of_queue_id`, and starts
+   with null extraction version columns.
+3. Preserve old `extraction_candidates`, `promotion_decisions`, visual snippets,
+   and extraction metadata unchanged.
+4. Pass cross-wiki context through `revisit_context_json` and into the extraction
+   LLM packet when `requeue_context_enabled` is true.
+5. Add an E2E regression: ingest + extraction + promotion, force version drift,
+   run `wiki_raw_revisitation`, run extraction + promotion again, and assert no
+   foreign-key failure, old candidate rows remain, and new queue/candidate rows
+   exist.
+
+Acceptance mark:
+- The isolated E2E path completes through raw re-visitation and second-pass
+  extraction/promotion with zero queue errors.
+
+---
+
+## Release Readiness Repair Plan
+
+Status: **required before calling the maintenance layer finished**.
+
+Purpose:
+- Convert implemented maintenance primitives into an operational layer that is
+  scheduled, observable, and internally consistent with the plans.
+
+R1 — Raw re-visitation ledger safety: **implemented 2026-05-11**
+- Owner phase: Phase 8.
+- Purpose: preserve historical extraction/promotion records while revisiting
+  true raw.
+- Work: implemented migration `024_revisit_extraction_lineage.sql`, fresh-row
+  revisitation insertion, prompt context plumbing, duplicate revisit suppression,
+  and E2E regression coverage.
+
+R2 — Scheduled maintenance orchestration: **implemented 2026-05-11**
+- Owner files: `daemon_jobs.py`, `config/memory.example.toml`, `jobs.py`, `cli.py`.
+- Purpose: make the layer run without manual CLI calls.
+- Work: default and example daemon schedules now include
+  `wiki_embedding_neighbor_backfill`, `wiki_cluster_validation`,
+  `wiki_pattern_discovery`, `wiki_graph_rebuild`, `wiki_lifecycle_audit`,
+  `wiki_importance_scoring`, `wiki_health_report`, and
+  `wiki_raw_revisitation`; individual CLI jobs remain the manual diagnostics
+  surface.
+
+R3 — Maintenance overview publication: **implemented 2026-05-11**
+- Owner phase: Phase 5.
+- Purpose: make `wiki_health_report` produce the user-visible maintenance
+  overview promised by the plan.
+- Work: live `wiki_health_report` calls
+  `write_maintenance_overview(..., wiki_health=health)` with open review/relearn
+  context and semantic dedup stats; dry-run remains read-only.
+
+R4 — Archetype persistence and graph propagation: **implemented 2026-05-11**
+- Owner phase: Phase 7.
+- Purpose: make pattern discovery durable rather than stats-only.
+- Work: `migrations/025_archetype_storage.sql` adds `archetypes` table +
+  `graph_edges` archetype columns (`archetype_id`, `archetype_score`,
+  `instance_confidence`); `Archetype` dataclass; `run_pattern_discovery` persists
+  Channel 3 heuristic archetypes and LLM-validated Channel 2 archetypes; annotates
+  matching graph_edges; `occurrence_count` increments on re-discovery; dry_run safe.
+  4 tests in `ArchetypePersistenceTest`.
+
+R5 — Roadmap truth maintenance: **complete 2026-05-11**
+- Owner files: this roadmap and phase plans.
+- Purpose: prevent stale status blocks from masking release state.
+- Work: single Phase 8 status entry; test summary reflects actual file; release
+  blockers marked explicitly; gate mark updated below.
+
+Release gate:
+- Full unit suite passes.
+- Isolated E2E passes: ingest → extraction → promotion → retrieval → Layer 1
+  sweep → Layer 2a/2b governance → Layer 3 raw re-visitation → second extraction
+  + promotion.
+- Daemon status shows scheduled maintenance jobs.
+
+Current release gate mark (2026-05-11):
+- Full unit suite: **343 tests passing**.
+- R1 E2E (ledger safety): **passes** — `test_revisit_promoted_source_uses_new_queue_row`.
+- R2 (daemon schedule): **passes** — all maintenance jobs in `daemon_jobs.py`.
+- R3 (overview publication): **passes** — `wiki_health_report` writes `maintenance.md`.
+- R4 (archetype persistence): **passes** — `ArchetypePersistenceTest` (4 tests).
+- **Release gate: SATISFIED.** No known remaining gaps.
 
 ---
 
@@ -215,20 +317,12 @@ Note: semantic dedup is subsumed into Phase 6 (threshold θ=0.92 in
 
 ### Phase 8: Raw Re-Visitation and Cross-Wiki Context Injection
 
-Status: **not started**.
+Status: **superseded by implemented Phase 8 section above**.
 
-Frequency: **daily at 2AM** (safety net — ensures all new archetypes are applied
-to raws within 24 hours regardless of M threshold) **plus** an eager trigger when
-any archetype's `occurrence_count` exceeds M=5 (signals enough evidence to warrant
-immediate re-processing). Supports the convergence loop: new archetypes from
-Layer 2a → richer re-extraction → new links → new archetypes.
-
-Planned deliverables:
-- `migrations/021_extraction_versioning.sql` — add `extraction_schema_version`
-  and `extraction_model_version` columns to `extraction_queue`
-- Update `mark_finished()` in `queue.py` to write both version columns
-- `run_raw_revisitation(conn, config) -> RevisitationResult` in `maintenance.py`
-- Layer 3 job wire-up
+The original not-started plan is retired. Phase 8 implementation exists, but
+release readiness is blocked by R1 in the Release Readiness Repair Plan: raw
+re-visitation must create a fresh queue row rather than resetting the historical
+queue row.
 
 ---
 
@@ -261,9 +355,11 @@ makes them scale without growing proportionally to corpus size.
 
 ## Test Summary
 
-`tests/test_knowledge_maintenance.py`: **not yet written**.
+`tests/test_knowledge_maintenance.py`: **written and active**.
 
-Will cover all functions in `maintenance.py` across Phases 2–8.
+Latest verification before readiness repairs: `python3 -m unittest discover -s
+tests` passes with 337 tests. Add a dedicated end-to-end regression for R1 and
+daemon schedule coverage for R2 before marking the layer finished.
 
 ---
 
