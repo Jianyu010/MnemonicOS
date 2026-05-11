@@ -749,11 +749,20 @@ class WikiHealthTest(unittest.TestCase):
                 """)
             sync_vault(config, mode="full")
 
-            result = run_job(config, job_name="wiki_health_report", dry_run=True)
-            self.assertEqual(result.status, "ok")
-            self.assertIn("wiki_total_notes", result.stats)
-            self.assertIn("wiki_orphan_notes", result.stats)
-            self.assertIn("semantic_dedup_candidates", result.stats)
+            overview = config.paths.vault_root / "wiki" / "overviews" / "maintenance.md"
+            dry_run = run_job(config, job_name="wiki_health_report", dry_run=True)
+            self.assertEqual(dry_run.status, "ok")
+            self.assertIn("wiki_total_notes", dry_run.stats)
+            self.assertIn("wiki_orphan_notes", dry_run.stats)
+            self.assertIn("semantic_dedup_candidates", dry_run.stats)
+            self.assertFalse(overview.exists())
+
+            live = run_job(config, job_name="wiki_health_report", dry_run=False)
+            self.assertEqual(live.status, "ok")
+            self.assertTrue(overview.exists())
+            content = overview.read_text()
+            self.assertIn("Wiki Health", content)
+            self.assertIn("Total notes | 1", content)
 
     def test_maintenance_overview_includes_wiki_health(self) -> None:
         from second_brain.ops import write_maintenance_overview
@@ -1603,7 +1612,7 @@ class RevisitationTest(unittest.TestCase):
         connection.commit()
 
     def test_stale_row_requeued(self) -> None:
-        """Row with old schema_version gets reset to pending."""
+        """Row with old schema_version creates a fresh revisit queue row."""
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
             config = self._setup(workspace)
@@ -1611,6 +1620,9 @@ class RevisitationTest(unittest.TestCase):
             connection = connect_db(config.paths.db_path)
             run_migrations(connection, ROOT / "migrations")
             self._insert_stale_queue_row(connection, "archive-001", old_schema="0.0")
+            original = connection.execute(
+                "SELECT id FROM extraction_queue WHERE archive_id = 'archive-001'"
+            ).fetchone()
 
             from second_brain.maintenance import run_raw_revisitation
             result = run_raw_revisitation(connection, config)
@@ -1619,13 +1631,22 @@ class RevisitationTest(unittest.TestCase):
             self.assertEqual(result.sources_requeued, 1)
             self.assertEqual(result.sources_skipped, 0)
 
-            # verify status reset to pending
             connection = connect_db(config.paths.db_path)
-            row = connection.execute(
-                "SELECT status FROM extraction_queue WHERE archive_id = 'archive-001'"
-            ).fetchone()
+            rows = connection.execute(
+                """
+                SELECT id, status, revisit_of_queue_id, revisit_reason
+                FROM extraction_queue
+                WHERE archive_id = 'archive-001'
+                ORDER BY id
+                """
+            ).fetchall()
             connection.close()
-            self.assertEqual(row["status"], "pending")
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[0]["status"], "processed")
+            self.assertIsNone(rows[0]["revisit_of_queue_id"])
+            self.assertEqual(rows[1]["status"], "pending")
+            self.assertEqual(int(rows[1]["revisit_of_queue_id"]), int(original["id"]))
+            self.assertEqual(rows[1]["revisit_reason"], "schema_or_model_version_drift")
 
     def test_current_schema_not_requeued(self) -> None:
         """Row already on current schema_version and same model is skipped."""
@@ -1665,9 +1686,13 @@ class RevisitationTest(unittest.TestCase):
 
             from second_brain.maintenance import run_raw_revisitation
             result = run_raw_revisitation(connection, config)
+            pending = connection.execute(
+                "SELECT COUNT(*) AS n FROM extraction_queue WHERE revisit_of_queue_id IS NOT NULL"
+            ).fetchone()
             connection.close()
 
             self.assertLessEqual(result.sources_requeued, 3)
+            self.assertEqual(int(pending["n"]), 3)
 
     def test_dry_run_no_writes(self) -> None:
         """dry_run=True counts but does not reset status."""
@@ -1687,11 +1712,13 @@ class RevisitationTest(unittest.TestCase):
 
             # status unchanged
             connection = connect_db(config.paths.db_path)
-            row = connection.execute(
-                "SELECT status FROM extraction_queue WHERE archive_id = 'archive-dry'"
-            ).fetchone()
+            rows = connection.execute(
+                "SELECT status, revisit_of_queue_id FROM extraction_queue WHERE archive_id = 'archive-dry'"
+            ).fetchall()
             connection.close()
-            self.assertEqual(row["status"], "processed")
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["status"], "processed")
+            self.assertIsNone(rows[0]["revisit_of_queue_id"])
 
     def test_context_injection_counted(self) -> None:
         """When retrieve_fn returns results, context_injected_count increments."""
@@ -1708,10 +1735,109 @@ class RevisitationTest(unittest.TestCase):
             retrieve_fn = lambda q, config=None, top_k=5: [mock_note]
 
             from second_brain.maintenance import run_raw_revisitation
-            result = run_raw_revisitation(connection, config, retrieve_fn=retrieve_fn, dry_run=True)
+            result = run_raw_revisitation(connection, config, retrieve_fn=retrieve_fn, dry_run=False)
+            context_row = connection.execute(
+                """
+                SELECT revisit_context_json
+                FROM extraction_queue
+                WHERE revisit_of_queue_id IS NOT NULL
+                """
+            ).fetchone()
             connection.close()
 
             self.assertEqual(result.context_injected_count, 1)
+            self.assertIn("concept/x", context_row["revisit_context_json"])
+
+    def test_revisit_promoted_source_uses_new_queue_row(self) -> None:
+        """Re-visitation must not delete promoted candidates from the old row."""
+        from second_brain.ingest import ingest_artifact
+        from second_brain.jobs import run_job
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = self._setup(workspace)
+
+            source = workspace / "source.md"
+            source.write_text("# Revisit Ledger Safety\n\nThe maintenance layer keeps old promotion ledgers intact.\n")
+            ingest = ingest_artifact(config, path=source)
+
+            connection = connect_db(config.paths.db_path)
+            original = connection.execute(
+                "SELECT id FROM extraction_queue WHERE archive_id = ? AND revisit_of_queue_id IS NULL",
+                (ingest.archive_id,),
+            ).fetchone()
+            old_candidate_count = connection.execute(
+                "SELECT COUNT(*) AS n FROM extraction_candidates WHERE queue_id = ?",
+                (int(original["id"]),),
+            ).fetchone()
+            old_decision_count = connection.execute(
+                """
+                SELECT COUNT(*) AS n
+                FROM promotion_decisions pd
+                JOIN extraction_candidates ec ON ec.id = pd.candidate_id
+                WHERE ec.queue_id = ?
+                """,
+                (int(original["id"]),),
+            ).fetchone()
+            with connection:
+                connection.execute(
+                    """
+                    UPDATE extraction_queue
+                    SET extraction_schema_version = 'old-schema',
+                        extraction_model_version = 'old-model',
+                        finished_at = '2000-01-01 00:00:00'
+                    WHERE id = ?
+                    """,
+                    (int(original["id"]),),
+                )
+
+            from second_brain.maintenance import run_raw_revisitation
+            result = run_raw_revisitation(connection, config)
+            connection.close()
+            self.assertEqual(result.sources_requeued, 1)
+
+            extraction = run_job(config, job_name="process_extraction_queue")
+            promotion = run_job(config, job_name="process_promotion_queue")
+            self.assertEqual(extraction.stats["errors"], 0)
+            self.assertGreaterEqual(extraction.stats["processed"], 1)
+
+            connection = connect_db(config.paths.db_path)
+            old_status = connection.execute(
+                "SELECT status FROM extraction_queue WHERE id = ?",
+                (int(original["id"]),),
+            ).fetchone()
+            revisit = connection.execute(
+                """
+                SELECT id, status, revisit_of_queue_id
+                FROM extraction_queue
+                WHERE revisit_of_queue_id = ?
+                """,
+                (int(original["id"]),),
+            ).fetchone()
+            preserved_candidates = connection.execute(
+                "SELECT COUNT(*) AS n FROM extraction_candidates WHERE queue_id = ?",
+                (int(original["id"]),),
+            ).fetchone()
+            preserved_decisions = connection.execute(
+                """
+                SELECT COUNT(*) AS n
+                FROM promotion_decisions pd
+                JOIN extraction_candidates ec ON ec.id = pd.candidate_id
+                WHERE ec.queue_id = ?
+                """,
+                (int(original["id"]),),
+            ).fetchone()
+            new_candidates = connection.execute(
+                "SELECT COUNT(*) AS n FROM extraction_candidates WHERE queue_id = ?",
+                (int(revisit["id"]),),
+            ).fetchone()
+            connection.close()
+
+            self.assertEqual(old_status["status"], "processed")
+            self.assertEqual(revisit["status"], "processed")
+            self.assertEqual(int(preserved_candidates["n"]), int(old_candidate_count["n"]))
+            self.assertEqual(int(preserved_decisions["n"]), int(old_decision_count["n"]))
+            self.assertGreater(int(new_candidates["n"]), 0)
 
     def test_raw_revisitation_job(self) -> None:
         """wiki_raw_revisitation job returns expected stat keys."""
@@ -1724,6 +1850,213 @@ class RevisitationTest(unittest.TestCase):
             self.assertIn("sources_requeued", result.stats)
             self.assertIn("sources_skipped", result.stats)
             self.assertIn("context_injected_count", result.stats)
+
+
+class ArchetypePersistenceTest(unittest.TestCase):
+    def _setup(self, workspace: Path):
+        _system_files(workspace)
+        config_path = workspace / "config.toml"
+        _write(
+            config_path,
+            f"""
+            [paths]
+            vault_root = "{(workspace / 'brain').as_posix()}"
+            db_path = "{(workspace / 'brain/data/archive.db').as_posix()}"
+            vectors_dir = "{(workspace / 'brain/data/vectors').as_posix()}"
+            graph_dir = "{(workspace / 'brain/data/graph').as_posix()}"
+            eval_queries = "{(workspace / 'evals/queries.jsonl').as_posix()}"
+            [embeddings]
+            enabled = false
+            [maintenance]
+            pattern_discovery_enabled = true
+            """,
+        )
+        config = load_config(config_path, workspace)
+        connection = connect_db(config.paths.db_path)
+        run_migrations(connection, ROOT / "migrations")
+        connection.close()
+        return config
+
+    def test_channel_3_persists_archetype_row(self) -> None:
+        """Channel 3 detection writes an archetypes row."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = self._setup(workspace)
+
+            _write(workspace / "brain/wiki/incidents/inc-arch.md", """
+                ---
+                id: incident/inc-arch
+                type: incident
+                title: DB error
+                summary: database error caused system crash
+                updated_at: 2026-01-01
+                created_at: 2026-01-01
+                ---
+                Body.
+                """)
+            _write(workspace / "brain/wiki/procedures/proc-arch.md", """
+                ---
+                id: procedure/proc-arch
+                type: procedure
+                title: DB restore
+                summary: how to fix and recover database
+                updated_at: 2026-01-01
+                created_at: 2026-01-01
+                ---
+                Body.
+                """)
+            sync_vault(config, mode="full")
+
+            from second_brain.maintenance import run_pattern_discovery
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            result = run_pattern_discovery(connection, config)
+            row_count = connection.execute("SELECT COUNT(*) AS n FROM archetypes").fetchone()["n"]
+            connection.close()
+
+            self.assertGreaterEqual(result.archetypes_confirmed, 1)
+            self.assertGreater(row_count, 0)
+
+    def test_channel_3_occurrence_count_increments(self) -> None:
+        """Running discovery twice increments occurrence_count on the same archetype."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = self._setup(workspace)
+
+            _write(workspace / "brain/wiki/incidents/inc-cnt.md", """
+                ---
+                id: incident/inc-cnt
+                type: incident
+                title: Crash event
+                summary: server error crash occurred
+                updated_at: 2026-01-01
+                created_at: 2026-01-01
+                ---
+                Body.
+                """)
+            _write(workspace / "brain/wiki/procedures/proc-cnt.md", """
+                ---
+                id: procedure/proc-cnt
+                type: procedure
+                title: Recovery steps
+                summary: steps to fix and recover server
+                updated_at: 2026-01-01
+                created_at: 2026-01-01
+                ---
+                Body.
+                """)
+            sync_vault(config, mode="full")
+
+            from second_brain.maintenance import run_pattern_discovery
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            run_pattern_discovery(connection, config)
+            run_pattern_discovery(connection, config)  # second run
+            rows = connection.execute("SELECT occurrence_count FROM archetypes").fetchall()
+            connection.close()
+
+            # At least one archetype should have occurrence_count >= 2
+            self.assertTrue(any(r["occurrence_count"] >= 2 for r in rows),
+                            f"Expected occurrence_count >= 2 in {[r['occurrence_count'] for r in rows]}")
+
+    def test_channel_2_llm_persists_archetype_and_annotates_edge(self) -> None:
+        """Channel 2 with mock LLM persists archetype and annotates graph_edge."""
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = self._setup(workspace)
+
+            shared_summary = "source of truth output dependency tradeoff scope"
+            for i in ("a2", "b2"):
+                _note(workspace, f"concepts/active/role-arch{i}.md", f"""
+                    ---
+                    id: concept/role-arch{i}
+                    type: concept
+                    title: Role Arch {i}
+                    summary: {shared_summary}
+                    updated_at: 2026-01-01
+                    created_at: 2026-01-01
+                    ---
+                    Body.
+                    """)
+            sync_vault(config, mode="full")
+
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            # Insert a graph edge between the two notes so archetype can annotate it
+            connection.execute(
+                "INSERT OR IGNORE INTO graph_edges (source_note_id, target_id, target_kind, relation_type, weight) VALUES ('concept/role-archa2', 'concept/role-archb2', 'note', 'similar_to', 0.9)"
+            )
+            connection.commit()
+
+            mock_response = json.dumps({
+                "candidates": [
+                    {
+                        "src": "concept/role-archa2",
+                        "tgt": "concept/role-archb2",
+                        "valid": True,
+                        "archetype_label": "Source Truth Dependency",
+                        "role_schema": {"a": "source_of_truth", "b": "dependency"},
+                    }
+                ]
+            })
+            llm_fn = lambda p: mock_response
+
+            from second_brain.maintenance import run_pattern_discovery
+            result = run_pattern_discovery(connection, config, llm_fn=llm_fn)
+
+            arch_row = connection.execute(
+                "SELECT archetype_id, label FROM archetypes WHERE source_channel = 2"
+            ).fetchone()
+            edge_row = connection.execute(
+                "SELECT archetype_id FROM graph_edges WHERE source_note_id = 'concept/role-archa2'"
+            ).fetchone()
+            connection.close()
+
+            self.assertGreaterEqual(result.archetypes_confirmed, 1)
+            self.assertGreaterEqual(result.edges_updated, 1)
+            self.assertIsNotNone(arch_row, "No archetype row persisted for channel 2")
+            self.assertIsNotNone(edge_row["archetype_id"], "graph_edge not annotated with archetype_id")
+
+    def test_dry_run_no_archetype_writes(self) -> None:
+        """dry_run=True produces counts but no DB writes."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = self._setup(workspace)
+
+            _write(workspace / "brain/wiki/incidents/inc-dry.md", """
+                ---
+                id: incident/inc-dry
+                type: incident
+                title: Dry incident
+                summary: error caused rollback failure
+                updated_at: 2026-01-01
+                created_at: 2026-01-01
+                ---
+                Body.
+                """)
+            _write(workspace / "brain/wiki/procedures/proc-dry.md", """
+                ---
+                id: procedure/proc-dry
+                type: procedure
+                title: Dry proc
+                summary: how to fix and recover
+                updated_at: 2026-01-01
+                created_at: 2026-01-01
+                ---
+                Body.
+                """)
+            sync_vault(config, mode="full")
+
+            from second_brain.maintenance import run_pattern_discovery
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            result = run_pattern_discovery(connection, config, dry_run=True)
+            row_count = connection.execute("SELECT COUNT(*) AS n FROM archetypes").fetchone()["n"]
+            connection.close()
+
+            self.assertGreaterEqual(result.channel_3_candidates, 1)
+            self.assertEqual(row_count, 0, "dry_run must not write archetypes rows")
 
 
 if __name__ == "__main__":

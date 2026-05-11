@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+import json
 import logging
 import math
 import os
@@ -717,6 +718,18 @@ _RESOLUTION_TOKENS = frozenset([
 
 
 @dataclass(slots=True)
+class Archetype:
+    archetype_id: str
+    label: str
+    layer_a_description: str
+    layer_b_role_schema: dict[str, str]
+    occurrence_count: int
+    score: float
+    relation_type: str
+    source_channel: int
+
+
+@dataclass(slots=True)
 class ArchetypeCandidate:
     source_channel: int
     note_pairs: list[tuple[str, str]]
@@ -1050,26 +1063,136 @@ def run_pattern_discovery(
 
     result.channel_3_candidates = len(ch3_candidates)
 
-    # LLM validation of channel 2 candidates (top candidates only to limit LLM cost)
+    now = datetime.utcnow().isoformat()
+    import json as _json
+
+    # --- Persist Channel 3 archetypes (heuristic, no LLM needed) ---
+    for cand in ch3_candidates:
+        for inc_id, proc_id in cand.note_pairs:
+            fail_tok = cand.failure_token or "failure"
+            res_tok = cand.resolution_token or "resolution"
+            archetype_id = f"archetype/ch3-{fail_tok}-{res_tok}"
+            existing = connection.execute(
+                "SELECT occurrence_count, score FROM archetypes WHERE archetype_id = ?",
+                (archetype_id,),
+            ).fetchone()
+            if existing is None:
+                if not dry_run:
+                    connection.execute(
+                        """
+                        INSERT INTO archetypes
+                            (archetype_id, label, layer_a_description, layer_b_role_schema,
+                             occurrence_count, score, relation_type, source_channel, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, 1, 0.7, 'evidence_for', 3, ?, ?)
+                        """,
+                        (
+                            archetype_id,
+                            f"{fail_tok.title()} / {res_tok.title()} Symmetry",
+                            f"Failure-resolution pair: incident has '{fail_tok}', procedure has '{res_tok}'",
+                            _json.dumps({"incident": "failure_mode", "procedure": "sync_mechanism"}),
+                            now, now,
+                        ),
+                    )
+                result.archetypes_confirmed += 1
+            else:
+                if not dry_run:
+                    new_count = int(existing["occurrence_count"]) + 1
+                    connection.execute(
+                        "UPDATE archetypes SET occurrence_count = ?, updated_at = ? WHERE archetype_id = ?",
+                        (new_count, now, archetype_id),
+                    )
+
+            if not dry_run:
+                # Annotate existing edge if any, or create one
+                existing_edge = connection.execute(
+                    "SELECT 1 FROM graph_edges WHERE source_note_id = ? AND target_id = ?",
+                    (inc_id, proc_id),
+                ).fetchone()
+                if existing_edge:
+                    connection.execute(
+                        """
+                        UPDATE graph_edges SET archetype_id = ?, archetype_score = 0.7,
+                        instance_confidence = 0.7, updated_at = ?
+                        WHERE source_note_id = ? AND target_id = ?
+                        """,
+                        (archetype_id, now, inc_id, proc_id),
+                    )
+                    result.edges_updated += 1
+
+    # --- LLM validation of channel 2 candidates ---
     if llm_fn is not None and ch2_pairs:
         top = ch2_pairs[:20]
         prompt = (
             "Review these note pairs for abstract structural role similarity "
             "(same role in different domains). "
             "Return JSON: {\"candidates\": [{\"src\": str, \"tgt\": str, "
-            "\"valid\": bool, \"archetype_label\": str|null}]}\n\n"
+            "\"valid\": bool, \"archetype_label\": str|null, \"role_schema\": object|null}]}\n\n"
         )
         for a, b, sim in top:
             prompt += f"- {a} ↔ {b} (role-sim={sim:.2f})\n"
         resp = _call_llm_json(prompt, llm_fn)
         if resp is not None:
             for cand in (resp.get("candidates") or []):
-                if bool(cand.get("valid", False)):
+                src = str(cand.get("src") or "")
+                tgt = str(cand.get("tgt") or "")
+                valid = bool(cand.get("valid", False))
+                label = str(cand.get("archetype_label") or "").strip()
+                role_schema = cand.get("role_schema") or {}
+
+                if valid and src and tgt:
+                    archetype_id = f"archetype/ch2-{_slugify_id(label or f'{src}-{tgt}')}"
+                    existing = connection.execute(
+                        "SELECT occurrence_count FROM archetypes WHERE archetype_id = ?",
+                        (archetype_id,),
+                    ).fetchone()
+                    if not dry_run:
+                        if existing is None:
+                            connection.execute(
+                                """
+                                INSERT INTO archetypes
+                                    (archetype_id, label, layer_a_description, layer_b_role_schema,
+                                     occurrence_count, score, relation_type, source_channel, created_at, updated_at)
+                                VALUES (?, ?, ?, ?, 1, 0.8, 'similar_to', 2, ?, ?)
+                                """,
+                                (
+                                    archetype_id,
+                                    label or f"Role-similar: {src} / {tgt}",
+                                    "Role-vector cosine cluster (Channel 2)",
+                                    _json.dumps(role_schema) if isinstance(role_schema, dict) else "{}",
+                                    now, now,
+                                ),
+                            )
+                        else:
+                            connection.execute(
+                                "UPDATE archetypes SET occurrence_count = occurrence_count + 1, updated_at = ? WHERE archetype_id = ?",
+                                (now, archetype_id),
+                            )
+                        # annotate graph edge if exists
+                        if connection.execute(
+                            "SELECT 1 FROM graph_edges WHERE source_note_id = ? AND target_id = ?",
+                            (src, tgt),
+                        ).fetchone():
+                            connection.execute(
+                                """
+                                UPDATE graph_edges SET archetype_id = ?, archetype_score = 0.8,
+                                instance_confidence = 0.8, updated_at = ?
+                                WHERE source_note_id = ? AND target_id = ?
+                                """,
+                                (archetype_id, now, src, tgt),
+                            )
+                            result.edges_updated += 1
                     result.archetypes_confirmed += 1
-                else:
+                elif not valid:
                     result.archetypes_rejected += 1
 
+    if not dry_run and (result.archetypes_confirmed > 0 or result.edges_updated > 0):
+        connection.commit()
     return result
+
+
+def _slugify_id(text: str) -> str:
+    import re as _re
+    return _re.sub(r"[^a-z0-9]+", "-", text.casefold()).strip("-")[:60] or "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -1082,6 +1205,54 @@ class RevisitationResult:
     sources_requeued: int = 0
     sources_skipped: int = 0
     context_injected_count: int = 0
+
+
+def _revisit_context_payload(source_ref: str, related: Any) -> dict[str, Any]:
+    items = []
+    for item in related or []:
+        note_id = getattr(item, "note_id", None) or getattr(item, "id", None)
+        title = getattr(item, "title", "")
+        summary = getattr(item, "summary", "")
+        if isinstance(item, dict):
+            note_id = item.get("note_id") or item.get("id") or note_id
+            title = item.get("title", title)
+            summary = item.get("summary", summary)
+        if note_id:
+            items.append({"note_id": str(note_id), "title": str(title or ""), "summary": str(summary or "")})
+    return {"source_ref": source_ref, "related_notes": items}
+
+
+def enqueue_revisit_extraction(
+    connection: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    reason: str,
+    context: dict[str, Any] | None = None,
+) -> int:
+    cursor = connection.execute(
+        """
+        INSERT INTO extraction_queue(
+            source_kind, archive_id, conversation_id, episode_id,
+            bridge_id, session_id, task_id, status, content_hash, last_error,
+            revisit_of_queue_id, revisit_reason, revisit_context_json
+        )
+        VALUES (?, ?, ?, ?, COALESCE(?, 'job:raw-revisitation'), ?, ?, 'pending', ?, NULL, ?, ?, ?)
+        """,
+        (
+            str(row["source_kind"]),
+            row["archive_id"],
+            row["conversation_id"],
+            row["episode_id"],
+            row["bridge_id"],
+            row["session_id"],
+            row["task_id"],
+            row["content_hash"],
+            int(row["id"]),
+            reason,
+            json.dumps(context or {}, sort_keys=True),
+        ),
+    )
+    return int(cursor.lastrowid)
 
 
 def run_raw_revisitation(
@@ -1111,6 +1282,13 @@ def run_raw_revisitation(
         WHERE status = 'processed'
           AND finished_at IS NOT NULL
           AND finished_at < ?
+          AND revisit_of_queue_id IS NULL
+          AND NOT EXISTS (
+              SELECT 1
+              FROM extraction_queue revisit
+              WHERE revisit.revisit_of_queue_id = extraction_queue.id
+                AND revisit.status IN ('pending', 'processing', 'processed')
+          )
           AND (
               extraction_schema_version IS NULL
               OR extraction_schema_version != ?
@@ -1129,7 +1307,7 @@ def run_raw_revisitation(
             continue
 
         # Context injection
-        context_injected = False
+        context_payload: dict[str, Any] | None = None
         if config.maintenance.requeue_context_enabled and retrieve_fn is not None:
             source_kind = str(row["source_kind"])
             source_ref = str(row["archive_id"] or row["conversation_id"] or row["episode_id"] or "")
@@ -1141,25 +1319,18 @@ def run_raw_revisitation(
                         top_k=config.maintenance.requeue_context_top_k,
                     )
                     if related:
-                        context_injected = True
+                        context_payload = _revisit_context_payload(source_ref, related)
                         result.context_injected_count += 1
                 except Exception:
                     pass
 
         if not dry_run:
             try:
-                connection.execute(
-                    """
-                    UPDATE extraction_queue
-                    SET status = 'pending',
-                        extraction_schema_version = NULL,
-                        extraction_model_version = NULL,
-                        attempt_count = 0,
-                        last_error = NULL,
-                        queued_at = datetime('now')
-                    WHERE id = ?
-                    """,
-                    (int(row["id"]),),
+                enqueue_revisit_extraction(
+                    connection,
+                    row,
+                    reason="schema_or_model_version_drift",
+                    context=context_payload,
                 )
                 result.sources_requeued += 1
             except Exception:
