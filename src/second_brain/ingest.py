@@ -21,9 +21,10 @@ from .artifact_identity import (
 from .config import AppConfig
 from .connectors import ConnectorConfig, connector_for_path, figure_from_bytes
 from .db import connect_db, run_migrations
+from .embedding_providers import build_embedding_provider, embedding_model_key
 from .models import IngestArtifactResult, IngestSessionResult
 from .review import slugify
-from .semantics import encode_text, upsert_archive_chunk_vector
+from .semantics import upsert_archive_chunk_vector
 from .summaries import summarize_text
 
 
@@ -707,6 +708,7 @@ def _archive_session(
         raw_hash = sha256(raw_path.read_bytes()).hexdigest()
         _upsert_archive_sync_state(connection, raw_path, archive_id, raw_hash)
 
+        embedding_provider = build_embedding_provider(config) if not skip_vectors and config.embeddings.enabled else None
         for index, chunk in enumerate(chunks):
             summary = summarize_text(chunk, max_sentences=2, max_chars=240)
             content_hash = sha256(chunk.encode("utf-8")).hexdigest()
@@ -718,13 +720,13 @@ def _archive_session(
                 (archive_id, index, chunk, summary, len(WORD_PATTERN.findall(chunk)), content_hash),
             )
             chunk_id = int(cursor.lastrowid)
-            if not skip_vectors and config.embeddings.enabled:
-                vector = encode_text(summary or chunk, dimensions=config.embeddings.dimensions)
+            if embedding_provider is not None:
+                vector = embedding_provider.embed_texts([summary or chunk])[0]
                 upsert_archive_chunk_vector(
                     connection,
                     chunk_id=chunk_id,
-                    model=config.embeddings.model,
-                    dimensions=config.embeddings.dimensions,
+                    model=embedding_model_key(config),
+                    dimensions=len(vector),
                     vector=vector,
                     source_hash=content_hash,
                 )

@@ -48,6 +48,9 @@ class EmbeddingsConfig:
     provider: str = "hash"
     model: str = "hash-256-v1"
     dimensions: int = 256
+    base_url: str = ""
+    api_key_env: str = ""
+    timeout_seconds: int = 60
     reembed_on_summary_change_only: bool = True
 
 
@@ -75,6 +78,13 @@ class ExtractionConfig:
     llm_provider: str = "fixture"
     llm_model: str = "gemma4:e4b"
     ollama_base_url: str = "http://127.0.0.1:11434"
+    llm_base_url: str = ""
+    llm_api_key_env: str = ""
+    llm_command: str = ""
+    llm_timeout_seconds: int = 180
+    vlm_base_url: str = ""
+    vlm_api_key_env: str = ""
+    vlm_timeout_seconds: int = 180
     max_queue_batch: int = 10
 
 
@@ -250,6 +260,9 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
         provider=str(embeddings_data.get("provider", "hash")),
         model=str(embeddings_data.get("model", "hash-256-v1")),
         dimensions=int(embeddings_data.get("dimensions", 256)),
+        base_url=str(embeddings_data.get("base_url", "")),
+        api_key_env=str(embeddings_data.get("api_key_env", "")),
+        timeout_seconds=int(embeddings_data.get("timeout_seconds", 60)),
         reembed_on_summary_change_only=bool(embeddings_data.get("reembed_on_summary_change_only", True)),
     )
 
@@ -271,12 +284,23 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
     )
 
     extraction_data = data.get("extraction", {})
+    models_data = data.get("models", {})
+    llm_data = models_data.get("llm", {}) if isinstance(models_data.get("llm", {}), dict) else {}
+    vlm_data = models_data.get("vlm", {}) if isinstance(models_data.get("vlm", {}), dict) else {}
+    default_ollama_base_url = str(extraction_data.get("ollama_base_url", "http://127.0.0.1:11434"))
     extraction = ExtractionConfig(
-        vlm_provider=str(extraction_data.get("vlm_provider", "fixture")),
-        vlm_model=str(extraction_data.get("vlm_model", "llama3.2-vision:latest")),
-        llm_provider=str(extraction_data.get("llm_provider", "fixture")),
-        llm_model=str(extraction_data.get("llm_model", "gemma4:e4b")),
-        ollama_base_url=str(extraction_data.get("ollama_base_url", "http://127.0.0.1:11434")),
+        vlm_provider=str(vlm_data.get("provider", extraction_data.get("vlm_provider", "fixture"))),
+        vlm_model=str(vlm_data.get("model", extraction_data.get("vlm_model", "llama3.2-vision:latest"))),
+        llm_provider=str(llm_data.get("provider", extraction_data.get("llm_provider", "fixture"))),
+        llm_model=str(llm_data.get("model", extraction_data.get("llm_model", "gemma4:e4b"))),
+        ollama_base_url=default_ollama_base_url,
+        llm_base_url=str(llm_data.get("base_url", extraction_data.get("llm_base_url", default_ollama_base_url))),
+        llm_api_key_env=str(llm_data.get("api_key_env", extraction_data.get("llm_api_key_env", ""))),
+        llm_command=str(llm_data.get("command", extraction_data.get("llm_command", ""))),
+        llm_timeout_seconds=int(llm_data.get("timeout_seconds", extraction_data.get("llm_timeout_seconds", 180))),
+        vlm_base_url=str(vlm_data.get("base_url", extraction_data.get("vlm_base_url", default_ollama_base_url))),
+        vlm_api_key_env=str(vlm_data.get("api_key_env", extraction_data.get("vlm_api_key_env", ""))),
+        vlm_timeout_seconds=int(vlm_data.get("timeout_seconds", extraction_data.get("vlm_timeout_seconds", 180))),
         max_queue_batch=int(extraction_data.get("max_queue_batch", 10)),
     )
 

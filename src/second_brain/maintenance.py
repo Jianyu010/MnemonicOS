@@ -13,6 +13,7 @@ from typing import Any
 import yaml
 
 from .config import AppConfig
+from .embedding_providers import build_embedding_provider
 from .graph import rebuild_note_graph
 from .parser import NoteParseError, parse_note, split_frontmatter
 
@@ -352,7 +353,6 @@ def detect_semantic_duplicates(
     if not config.embeddings.enabled or not config.maintenance.semantic_dedup_enabled:
         return []
 
-    from .semantics import encode_text
     from .review import create_review_item
     from .ops import load_open_review_items
 
@@ -379,15 +379,17 @@ def detect_semantic_duplicates(
 
     threshold = config.maintenance.semantic_dedup_threshold
     pairs: list[SemanticDuplicatePair] = []
+    embedding_provider = build_embedding_provider(config)
 
     for note_type, group in by_type.items():
         if len(group) < 2:
             continue
         vector_cache: dict[str, list[float]] = {}
-        for row in group:
+        summaries = [str(row["summary"] or row["title"] or "") for row in group]
+        vectors = embedding_provider.embed_texts(summaries)
+        for row, vector in zip(group, vectors):
             note_id = str(row["id"])
-            summary = str(row["summary"] or row["title"] or "")
-            vector_cache[note_id] = encode_text(summary, dimensions=config.embeddings.dimensions)
+            vector_cache[note_id] = vector
 
         ids = [str(r["id"]) for r in group]
         for i in range(len(ids)):
@@ -521,8 +523,6 @@ def find_embedding_neighbors(
     k: int = 10,
     threshold: float = 0.78,
 ) -> list[NeighborMatch]:
-    from .semantics import encode_text
-
     note_row = connection.execute(
         "SELECT summary, type FROM notes WHERE id = ?", (note_id,)
     ).fetchone()
@@ -534,7 +534,7 @@ def find_embedding_neighbors(
     if not summary:
         return []
 
-    query_vec = encode_text(summary, dimensions=config.embeddings.dimensions)
+    query_vec = build_embedding_provider(config).embed_texts([summary])[0]
 
     rows = connection.execute(
         """

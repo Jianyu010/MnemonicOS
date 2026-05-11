@@ -299,9 +299,10 @@ Planned deliverables:
 
 ## Remaining LLM/VLM Layer Work
 
-- Add integration-gated tests for Ollama VLM and LLM providers.
+- Add provider-conformance tests for fixture, Ollama, OpenAI-compatible, and
+  CLI-command adapters.
 - Add model availability checks and clearer operational errors for missing
-  Ollama models.
+  provider models, endpoints, credentials, or unsupported capabilities.
 - Expand fixture providers to simulate procedures, decisions, incidents, and
   invalid type-specific fields.
 - Deepen type-specific validation before promotion consumption.
@@ -310,6 +311,119 @@ Planned deliverables:
 - Add richer extraction status reporting for candidate/error inspection.
 - Add metrics useful for future reward/RL design, such as candidate acceptance
   rate, validation error categories, and promotion outcome feedback.
+
+## Provider Decoupling Plan
+
+Purpose:
+- Remove Ollama as an architectural assumption while keeping it as one supported
+  local adapter.
+- Make the VLM/LLM extraction layer easy to adapt to OpenAI-compatible servers,
+  OpenLLM, hosted APIs, CLI-backed engines, or deterministic local fixtures.
+- Keep this scoped to extraction inference. This is not the north-flange bridge
+  and does not change agent hook behavior.
+
+### Phase A: Provider Contract Cleanup
+
+Status: planned.
+
+Work:
+1. Keep the existing `VLMProvider` and `LLMProvider` protocols, but make their
+   contracts capability-oriented:
+   - `provider_name`
+   - `model_name`
+   - `capabilities` (`text_json`, `vision_json`, `streaming`, `batch`, etc.)
+   - `healthcheck() -> ProviderHealth`
+2. Move provider-specific prompt transport into adapter classes. The extraction
+   worker should only call:
+   - `vlm.describe(artifact)`
+   - `llm.extract_candidates(packet)`
+3. Add a shared provider error vocabulary:
+   - `provider_unavailable`
+   - `model_missing`
+   - `auth_missing`
+   - `timeout`
+   - `invalid_provider_response`
+   - `capability_unsupported`
+4. Store provider errors on the extraction queue without deleting source
+   material or mutating wiki.
+
+Acceptance:
+- Extraction worker contains no Ollama-specific branches.
+- Missing provider dependencies produce queue errors with actionable messages.
+- Fixture providers remain the default unit-test path.
+
+### Phase B: Registry and Config Shape
+
+Status: planned.
+
+Work:
+1. Replace hard-coded `if provider == "ollama"` builders with provider
+   registries:
+   - `build_vlm_provider(config)`
+   - `build_llm_provider(config)`
+2. Keep backward-compatible `[extraction]` keys for one release, but introduce a
+   provider-shaped config:
+
+```toml
+[models.llm]
+provider = "openai_compatible"
+model = "qwen3"
+base_url = "http://127.0.0.1:8000/v1"
+api_key_env = "OPENAI_API_KEY"
+
+[models.vlm]
+provider = "ollama"
+model = "llama3.2-vision:latest"
+base_url = "http://127.0.0.1:11434"
+```
+
+3. Let one provider serve both LLM and VLM roles only when its capabilities say
+   it can.
+4. Add `mnemonicos doctor inference` to report configured providers and
+   capability health.
+
+Acceptance:
+- Users can switch providers by config only.
+- Ollama config remains supported but is no longer privileged in code.
+- `doctor inference` reports full, text-only, vision-missing, and unavailable
+  states.
+
+### Phase C: Adapters
+
+Status: planned.
+
+Adapter order:
+1. `fixture`: deterministic tests, no external dependency.
+2. `ollama`: existing local adapter, retained.
+3. `openai_compatible`: HTTP adapter for OpenAI-compatible local or hosted
+   servers, including OpenLLM-style deployments.
+4. `cli_command`: explicit escape hatch for environments where only a CLI engine
+   is available. This adapter runs a configured command, passes a prompt or JSON
+   packet on stdin/argv, captures stdout, applies timeout limits, and validates
+   the returned JSON. It is slower and less deterministic than HTTP adapters.
+
+Acceptance:
+- Each adapter passes the same conformance tests.
+- CLI-command adapter is opt-in and never selected implicitly.
+- Provider metadata in candidate/snippet rows records provider, model, endpoint
+  family, and adapter version.
+
+### Phase D: Degraded Modes
+
+Status: planned.
+
+Work:
+1. If no VLM is available, process text windows normally and persist visual
+   artifact references with `visual_description_pending`.
+2. If no LLM is available, leave extraction rows pending or mark them
+   `provider_unavailable` according to queue retry policy.
+3. If an adapter lacks JSON reliability, run strict parse/repair/validate before
+   candidates reach `promotion_ready`.
+
+Acceptance:
+- VLM absence does not block text-only extraction.
+- Provider failure never creates promoted candidates.
+- All degraded behavior is visible in extraction status and daemon status.
 
 ## Architectural Conclusion
 

@@ -7,11 +7,12 @@ from typing import Any
 
 from .config import AppConfig
 from .db import connect_db, run_migrations
+from .embedding_providers import build_embedding_provider, embedding_model_key
 from .extraction import extraction_status, process_extraction_queue
 from .models import JobRunResult
 from .promotion import process_promotion_queue
 from .sync import sync_vault
-from .semantics import encode_text, upsert_archive_chunk_vector
+from .semantics import upsert_archive_chunk_vector
 
 
 def _open_job_run(connection, job_name: str, mode: str) -> int:
@@ -177,7 +178,7 @@ def _embed_backfill(config: AppConfig, *, dry_run: bool = False) -> JobRunResult
             WHERE acv.chunk_id IS NULL
             ORDER BY ac.id ASC
             """,
-            (config.embeddings.model,),
+            (embedding_model_key(config),),
         ).fetchall()
         if dry_run:
             stats["archive_chunks_pending"] = len(rows)
@@ -185,17 +186,15 @@ def _embed_backfill(config: AppConfig, *, dry_run: bool = False) -> JobRunResult
                 _close_job_run(connection, job_id, status="ok", stats=stats)
             return JobRunResult(job_name="embed_backfill", status="ok", stats=stats, review_items_created=[])
 
+        embedding_provider = build_embedding_provider(config)
         with connection:
             for row in rows:
-                vector = encode_text(
-                    str(row["summary"] or row["body"] or ""),
-                    dimensions=config.embeddings.dimensions,
-                )
+                vector = embedding_provider.embed_texts([str(row["summary"] or row["body"] or "")])[0]
                 upsert_archive_chunk_vector(
                     connection,
                     chunk_id=int(row["id"]),
-                    model=config.embeddings.model,
-                    dimensions=config.embeddings.dimensions,
+                    model=embedding_model_key(config),
+                    dimensions=len(vector),
                     vector=vector,
                     source_hash=str(row["content_hash"]),
                 )

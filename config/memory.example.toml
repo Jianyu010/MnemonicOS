@@ -29,7 +29,27 @@ enabled = true
 provider = "hash"
 model = "hash-256-v1"
 dimensions = 256
+base_url = ""
+api_key_env = ""
+timeout_seconds = 60
 reembed_on_summary_change_only = true
+
+# Optional provider-shaped model config. These keys override the legacy
+# [extraction] provider keys when present. Ollama remains supported, but any
+# OpenAI-compatible endpoint can be used for text extraction.
+#
+# [models.llm]
+# provider = "openai_compatible"
+# model = "qwen3"
+# base_url = "http://127.0.0.1:8000/v1"
+# api_key_env = "OPENAI_API_KEY"
+# timeout_seconds = 180
+#
+# [models.vlm]
+# provider = "ollama"
+# model = "llama3.2-vision:latest"
+# base_url = "http://127.0.0.1:11434"
+# timeout_seconds = 180
 
 [graph]
 enabled = true

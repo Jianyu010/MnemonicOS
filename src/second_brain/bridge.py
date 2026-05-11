@@ -8,10 +8,11 @@ from typing import Any
 import yaml
 
 from .config import AppConfig
+from .embedding_providers import build_embedding_provider, embedding_model_key
 from .models import CandidateMatch, SummaryEnvelope, UpsertDecision
 from .review import slugify
 from .runtime import assess_retrieval, assess_retrieval_payload
-from .semantics import cosine_similarity, encode_text, vector_from_json
+from .semantics import cosine_similarity, vector_from_json
 
 
 SECTION_PATTERN = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
@@ -230,11 +231,11 @@ def _semantic_score(config: AppConfig, connection: sqlite3.Connection, note_id: 
         return 0.0
     row = connection.execute(
         "SELECT vector_json FROM note_vectors WHERE note_id = ? AND model = ?",
-        (note_id, config.embeddings.model),
+        (note_id, embedding_model_key(config)),
     ).fetchone()
     if row is None:
         return 0.0
-    query_vector = encode_text(query_text, dimensions=config.embeddings.dimensions)
+    query_vector = build_embedding_provider(config).embed_texts([query_text])[0]
     return cosine_similarity(query_vector, vector_from_json(str(row["vector_json"])))
 
 
