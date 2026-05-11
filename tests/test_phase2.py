@@ -14,7 +14,6 @@ if str(SRC) not in sys.path:
 from second_brain.config import load_config
 from second_brain.db import connect_db, run_migrations
 from second_brain.ingest import ingest_session
-from second_brain.jobs import run_job
 from second_brain.retrieval import retrieve
 from second_brain.sync import sync_vault
 
@@ -201,13 +200,6 @@ class Phase2Test(unittest.TestCase):
             decision_result = retrieve(config, "What pooler should we use for auth database traffic?", top_k=3)
             self.assertTrue(decision_result.hits)
             self.assertNotEqual(decision_result.hits[0].id, "decision/use-pgbouncer-for-auth-connection-pooling")
-
-            dry_run = run_job(config, job_name="daily_consolidation", dry_run=True)
-            self.assertGreaterEqual(dry_run.stats["duplicate_aliases"], 1)
-
-            live_run = run_job(config, job_name="daily_consolidation", dry_run=False)
-            self.assertTrue(live_run.review_items_created)
-            self.assertTrue(any("duplicate-alias-shared-alias" in item for item in live_run.review_items_created))
 
 
 if __name__ == "__main__":

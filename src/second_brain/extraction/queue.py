@@ -155,6 +155,9 @@ def mark_processing(connection: sqlite3.Connection, queue_id: int) -> None:
     )
 
 
+CURRENT_SCHEMA_VERSION = "1.0"
+
+
 def mark_finished(
     connection: sqlite3.Connection,
     *,
@@ -168,6 +171,8 @@ def mark_finished(
     candidate_count: int,
     validation_error_count: int,
     intra_source_relations: list[dict[str, Any]] | None = None,
+    extraction_schema_version: str | None = None,
+    extraction_model_version: str | None = None,
 ) -> None:
     connection.execute(
         """
@@ -182,6 +187,8 @@ def mark_finished(
             validation_error_count = ?,
             intra_source_relations_json = ?,
             finished_at = datetime('now'),
+            extraction_schema_version = COALESCE(?, extraction_schema_version),
+            extraction_model_version = COALESCE(?, extraction_model_version),
             last_error = NULL
         WHERE id = ?
         """,
@@ -195,6 +202,8 @@ def mark_finished(
             candidate_count,
             validation_error_count,
             json.dumps(intra_source_relations or [], sort_keys=True),
+            extraction_schema_version or CURRENT_SCHEMA_VERSION,
+            extraction_model_version,
             queue_id,
         ),
     )
@@ -256,13 +265,17 @@ def _select_queue_row(
 ) -> sqlite3.Row | None:
     if archive_id is not None:
         return connection.execute(
-            "SELECT * FROM extraction_queue WHERE source_kind = ? AND archive_id = ?",
+            """
+            SELECT * FROM extraction_queue
+            WHERE source_kind = ? AND archive_id = ? AND revisit_of_queue_id IS NULL
+            """,
             (source_kind, archive_id),
         ).fetchone()
     return connection.execute(
         """
         SELECT * FROM extraction_queue
         WHERE source_kind = ? AND conversation_id = ? AND episode_id = ?
+          AND revisit_of_queue_id IS NULL
         """,
         (source_kind, conversation_id, episode_id),
     ).fetchone()
@@ -283,6 +296,9 @@ def _row_to_item(row: sqlite3.Row) -> ExtractionQueueItem:
         attempt_count=int(row["attempt_count"]),
         last_error=str(row["last_error"]) if row["last_error"] is not None else None,
         content_hash=str(row["content_hash"]) if row["content_hash"] is not None else None,
+        revisit_of_queue_id=int(row["revisit_of_queue_id"]) if row["revisit_of_queue_id"] is not None else None,
+        revisit_reason=str(row["revisit_reason"]) if row["revisit_reason"] is not None else None,
+        revisit_context_json=str(row["revisit_context_json"]) if row["revisit_context_json"] is not None else None,
     )
 
 

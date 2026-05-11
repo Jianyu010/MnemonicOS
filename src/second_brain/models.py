@@ -39,6 +39,7 @@ class NoteRecord:
     body: str
     body_path: Path
     content_hash: str
+    corroboration_count: int
 
     def to_dict(self) -> dict[str, object]:
         payload = asdict(self)

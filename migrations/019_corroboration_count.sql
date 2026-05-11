@@ -1,0 +1,1 @@
+ALTER TABLE notes ADD COLUMN corroboration_count INT NOT NULL DEFAULT 0;

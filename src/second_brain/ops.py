@@ -373,6 +373,7 @@ def write_maintenance_overview(
     stale_rows: list[dict[str, str]],
     relearn_tasks: list[RelearnTaskSummary],
     eval_candidates: list[EvalCandidateSummary],
+    wiki_health: "object | None" = None,
 ) -> Path:
     path = _maintenance_overview_path(config)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -395,6 +396,27 @@ def write_maintenance_overview(
         "",
         "# Maintenance Overview",
         "",
+    ]
+    if wiki_health is not None:
+        h = wiki_health
+        lines.extend([
+            "## Wiki Health",
+            "",
+            "| Metric | Value |",
+            "|---|---|",
+            f"| Total notes | {h.total_notes} |",
+            f"| Canonical | {h.notes_by_lifecycle.get('canonical', 0)} |",
+            f"| Verified | {h.notes_by_lifecycle.get('verified', 0)} |",
+            f"| Draft | {h.notes_by_lifecycle.get('draft', 0)} |",
+            f"| Contested | {h.notes_by_lifecycle.get('contested', 0)} |",
+            f"| Orphan notes | {h.orphan_note_count} |",
+            f"| Avg in-degree | {h.avg_in_degree:.1f} |",
+            f"| Avg out-degree | {h.avg_out_degree:.1f} |",
+            f"| Lifecycle advanced this run | {h.lifecycle_advanced_this_run} |",
+            f"| Semantic dedup candidates | {h.semantic_dedup_candidates} |",
+            "",
+        ])
+    lines.extend([
         "## Retrieval Snapshot",
         "",
         f"- Open review items: {len(review_items)}",
@@ -402,7 +424,7 @@ def write_maintenance_overview(
         f"- Stale notes: {len(stale_rows)}",
         f"- Open relearn tasks: {len(relearn_tasks)}",
         f"- Eval backlog: {len(eval_candidates)}",
-    ]
+    ])
     if "rerank_training_samples" in stats:
         lines.append(f"- Rerank training samples: {stats['rerank_training_samples']}")
     if "rerank_fallback" in stats:

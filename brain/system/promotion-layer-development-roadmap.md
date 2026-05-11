@@ -140,6 +140,36 @@ Fix:
   daemon when reachable and falls back inline otherwise. Call after `sync_vault`
   when `promoted > 0`. Closes the archive-chunk-vector gap promptly.
 
+## Amendment: corroboration_count in DB
+
+Status: **not started**.
+
+`renderer.py` already writes `corroboration_count` to markdown frontmatter at promotion
+time. `sync_vault(mode="incremental")` already fires inline after every promotion batch.
+But `NoteRecord`, `parser.py`, and `_upsert_note` in `sync.py` do not carry the field,
+so the DB value is always absent.
+
+This amendment closes the gap. It belongs to the promotion layer — not the maintenance
+layer — because the write path already produces the correct value; only the DB projection
+is missing. With this change, `corroboration_count` is written to the DB within the same
+promotion run, with no deferred reload.
+
+Planned deliverables (see `knowledge-maintenance-development-plan-phase1.md` for full
+scope; that file is preserved as reference but the work is owned here):
+
+- `migrations/018_corroboration_count.sql` — `ALTER TABLE notes ADD COLUMN corroboration_count INT NOT NULL DEFAULT 0`
+- `models.py` — `corroboration_count: int` field added to `NoteRecord`
+- `parser.py` — parses `corroboration_count` from frontmatter; absent → 0
+- `sync.py` — `_upsert_note` includes `corroboration_count` in INSERT and ON CONFLICT UPDATE
+
+No change to `renderer.py` or `writer.py`. The existing `sync_vault(mode="incremental")`
+call in `process_promotion_queue` carries the new field automatically once `_upsert_note`
+is updated.
+
+Maintenance-layer jobs that detect a new corroboration during a maintenance pass write
+back to both the markdown frontmatter and the DB via the same `_upsert_note` path — this
+is the only case where the maintenance layer touches `corroboration_count`.
+
 ## Amendment: Intra-Source Relation Application
 
 Status: **not started**. Requires LLM/VLM Phase 8 to ship first.
@@ -193,14 +223,13 @@ post-processing to write LLM-asserted relations between same-source notes to the
 frontmatter and rebuild their graph edges. This closes the primary graph edge gap
 for notes produced through the automated pipeline.
 
-MnemonicOS full pipeline after both ship:
+MnemonicOS full pipeline after both amendments ship:
 
 ```text
 west flange
     → LLM/VLM extraction (candidates + intra_source_relations)
     → promotion gate → decision engine → note renderer → atomic wiki write
     → bundle-aware second pass → apply_relation_to_note → rebuild_note_graph
-    → sync_vault + embed_backfill
-    → knowledge maintenance layer (daily: graph repair + lifecycle + importance)
-    → knowledge maintenance layer (weekly: semantic dedup + health report)
+    → sync_vault (writes corroboration_count + all note fields to DB) + embed_backfill
+    → knowledge maintenance layer (see knowledge-maintenance-development-plan.md)
 ```

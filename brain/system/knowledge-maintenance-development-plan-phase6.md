@@ -19,7 +19,7 @@ meaning, not surface vocabulary.
   immediately after each note is promoted in `promotion/worker.py`, before the
   next note in the batch.
 - **Daily**: `run_embedding_neighbor_backfill(conn, config)` called in
-  `daily_consolidation` to catch any notes whose last scan is older than
+  Layer 2b job to catch any notes whose last scan is older than
   `config.maintenance.neighbor_scan_max_age_days` (default: 7).
 
 Both require `config.embeddings.enabled = True`.
@@ -165,7 +165,7 @@ if config.embeddings.enabled and config.maintenance.embedding_neighbor_enabled:
         result.relations_applied += run_embedding_neighbor_pass(conn, config, note_id)
 ```
 
-### Daily backfill: `jobs.py` `daily_consolidation`
+### Daily backfill: `jobs.py` Layer 2b job
 
 After Phase 4 (importance scoring):
 

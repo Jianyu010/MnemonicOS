@@ -131,7 +131,7 @@ ON CONFLICT(note_id) DO UPDATE SET ...
 
 Returns `dict[str, ImportanceSignal]`.
 
-### Wire into `daily_consolidation` in `jobs.py`
+### Wire into Layer 2b job in `jobs.py`
 
 Must run after `compute_note_trust_stats` and `compute_note_freshness`:
 
@@ -182,7 +182,7 @@ combining.
 1. `migrations/019_note_importance.sql` exists and applies cleanly.
 2. `ImportanceSignal` dataclass in `maintenance.py`.
 3. `compute_importance_scores` returns correct scores for seeded notes.
-4. `daily_consolidation` calls `compute_importance_scores` after trust/freshness.
+4. Layer 2b job calls `compute_importance_scores` after trust/freshness.
 5. `note_importance` table populated after job run.
 6. `retrieval.py` loads importance scores and includes in `retrieval_hit_features`.
 
@@ -195,7 +195,7 @@ combining.
 - Test: note absent from `note_trust` and `note_freshness` → defaults (0.5) used,
   no error.
 - Test: `retrieval_hit_features` row after retrieval includes `importance_score`.
-- Integration: `daily_consolidation` dry-run completes; `importance_scoring_enabled=False`
+- Integration: Layer 2b job dry-run completes; `importance_scoring_enabled=False`
   skips the function cleanly.
 
 ## Out of scope

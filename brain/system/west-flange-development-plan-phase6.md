@@ -9,7 +9,7 @@ for a scheduled daemon tick to notice it.
 This is a **push model**, not a poll model:
 
 ```
-intake (capture end / ingest-artifact / ingest-session)
+intake (capture end / ingest-artifact / ingest-session / reprocess-artifact)
     → material lands in true-raw archive
     → extraction enqueued AND processing triggered immediately
     → LLM/VLM extraction → candidates
@@ -46,6 +46,7 @@ None of these scan true-raw. None of them are the primary path for new material.
 | Intake path | Function | Auto-enqueue | Immediate trigger |
 |---|---|---|---|
 | `ingest-artifact` | `ingest_artifact()` in `ingest.py` | **done** | **done** |
+| `reprocess-artifact` | `reprocess_artifact()` in `ingest.py` | **done** | **done** |
 | `ingest-session` | `ingest_session()` in `ingest.py` | **done** | **done** |
 | capture begin/append/**end** | `end_episode()` in `session_capture.py` | **done** | **done** |
 
@@ -71,6 +72,23 @@ if config.ingest.auto_trigger_pipeline:
 ```
 
 Exact-duplicate branch intentionally excluded — canonical owns the entry.
+
+**`reprocess_artifact()` — repaired or regenerated artifact path** (after
+manifest/identity updates, before final return):
+
+```python
+from .extraction.queue import enqueue_extraction as _enqueue_extraction
+_enqueue_extraction(
+    config, source_kind="artifact", archive_id=archive_id,
+    content_hash=raw_hash,
+)
+if config.ingest.auto_trigger_pipeline:
+    from .pipeline import trigger_pipeline as _trigger_pipeline
+    _trigger_pipeline(config)
+```
+
+Canonical duplicate shortcut remains excluded because the canonical archive owns
+the extraction queue row.
 
 **`ingest_session()`** (just before final return):
 
@@ -171,6 +189,11 @@ an already-processed item.
 
 2. **Ingest push**: `ingest-artifact` and `ingest-session` both produce a
    `processed` queue entry immediately on return.
+
+2b. **Reprocess push**: repairing raw artifact bytes and running
+    `reprocess-artifact` re-enqueues the artifact with the new `content_hash`.
+    If the old queue row was `processed`, it resets to `pending` or is processed
+    immediately when `auto_trigger_pipeline` is enabled.
 
 3. **Content-hash re-extraction**: ingest session, confirm `content_hash` set.
    Call `enqueue_extraction` with a different hash → status resets to `pending`.

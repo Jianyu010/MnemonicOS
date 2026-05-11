@@ -89,7 +89,7 @@ Algorithm:
    suggested_action="investigate or archive stalled draft", ...)`.
 8. Increment `drift_flagged`.
 
-**Wire into `daily_consolidation`:**
+**Wire into Layer 2b job:**
 
 ```python
 if config.maintenance.lifecycle_audit_enabled:
@@ -137,7 +137,7 @@ function or its YAML serialization logic is extracted to a shared utility (e.g.
 4. Both frontmatter file and DB row are updated atomically.
 5. Notes with `lifecycle_state` in `{'review', 'contested', 'archived'}` are skipped.
 6. Stalled draft notes beyond `lifecycle_drift_days` generate review items.
-7. `daily_consolidation` calls `audit_lifecycle_states`; stats dict includes
+7. Layer 2b job calls `audit_lifecycle_states`; stats dict includes
    lifecycle keys.
 8. Dry-run produces no disk writes, no DB writes, no review items.
 
@@ -153,7 +153,7 @@ function or its YAML serialization logic is extracted to a shared utility (e.g.
 - Test: note with `lifecycle_state: draft`, `corroboration_count: 0`, old
   `created_at` → review item created.
 - Test: `dry_run=True` → no file writes, no DB writes, no review items.
-- Integration: `daily_consolidation` dry-run with lifecycle_audit_enabled=True
+- Integration: Layer 2b job dry-run with lifecycle_audit_enabled=True
   completes without error.
 
 ## Out of scope

@@ -656,7 +656,7 @@ components:
       properties:
         job_name:
           type: string
-          enum: [daily_consolidation, weekly_hygiene, sync_vault_incremental, process_extraction_queue, embed_backfill, status_report]
+          enum: [sync_vault_incremental, process_extraction_queue, process_promotion_queue, expire_stale_episodes, embed_backfill, status_report]
         dry_run:
           type: boolean
           default: false

@@ -203,6 +203,12 @@ def process_promotion_queue(
             sync_vault(config, mode="incremental")
             pre_relation_sync_done = True
             _apply_intra_source_relations(conn, config, promoted_by_queue, result)
+            if config.embeddings.enabled and config.maintenance.embedding_neighbor_enabled:
+                from ..maintenance import run_embedding_neighbor_pass
+                for queue_map in promoted_by_queue.values():
+                    for note_id in queue_map.values():
+                        if note_id:
+                            result.relations_applied += run_embedding_neighbor_pass(conn, config, note_id)
 
     finally:
         conn.close()

@@ -2,7 +2,8 @@
 
 ## Purpose
 
-Phase 8 is **Layer 3 — Raw Re-Visitation**. It runs weekly within `weekly_hygiene`.
+Phase 8 is **Layer 3 — Raw Re-Visitation**. It runs on the Layer 3 schedule
+after the lighter wiki-governance jobs have converged.
 It addresses a fundamental limitation: the first extraction pass over a source
 happens before the wiki has any related notes. Later, as the wiki matures, the
 same source could yield richer candidates — especially if the LLM is given the
@@ -20,7 +21,8 @@ Phase 8 has two mechanisms:
 
 ## Frequency
 
-Weekly, within `weekly_hygiene`. Phase 8 is intentionally the least frequent
+Daily at 2AM as the safety net, plus an eager trigger when an archetype's
+`occurrence_count` exceeds M=5. Phase 8 is intentionally the least frequent
 maintenance job because it re-triggers the full extraction→promotion pipeline for
 selected sources, which is expensive.
 
@@ -30,8 +32,8 @@ selected sources, which is expensive.
 
 A source is eligible for re-queue if ALL of the following hold:
 
-1. `extraction_queue.status = 'finished'` (already extracted at least once).
-2. `extraction_queue.last_extracted_at < NOW() - config.maintenance.requeue_min_age_days` (default: 30).
+1. `extraction_queue.status = 'processed'` (already extracted at least once).
+2. `extraction_queue.finished_at < NOW() - config.maintenance.requeue_min_age_days` (default: 30).
 3. At least one of:
    - `extraction_queue.extraction_schema_version < current SCHEMA_VERSION` (schema changed since extraction)
    - `extraction_queue.extraction_model_version != config.extraction.llm_model` (model changed)
@@ -39,12 +41,21 @@ A source is eligible for re-queue if ALL of the following hold:
 ### Re-queue process
 
 1. Query `extraction_queue` for eligible rows.
-2. For each eligible row: call `trigger_pipeline(source_ref, config)` to submit
-   a new extraction queue row with the current schema version and model.
-3. The new row enters the standard extraction → promotion pipeline.
-4. The promotion gate handles corroboration: if the re-extraction produces the
+2. For each eligible row: insert a **new** pending extraction queue row with the
+   same source identity and `content_hash`.
+3. Record lineage on the new row: `revisit_of_queue_id`, `revisit_reason`, and
+   optional `revisit_context_json`.
+4. Suppress duplicate revisits while a lineage-linked revisit row for the same
+   source is already pending, processing, or processed.
+5. The new row enters the standard extraction → promotion pipeline.
+6. The promotion gate handles corroboration: if the re-extraction produces the
    same note, `corroboration_count` increments. If richer, the note is updated.
-5. The old `extraction_queue` row is NOT deleted — it remains as historical record.
+7. The old `extraction_queue` row, its `extraction_candidates`, and its
+   `promotion_decisions` are NOT deleted — they remain historical record.
+
+Implementation mark (2026-05-11): this is implemented by
+`migrations/024_revisit_extraction_lineage.sql`, `enqueue_revisit_extraction()`,
+and the revisitation query guard in `maintenance.py`.
 
 ### Schema additions
 
@@ -53,6 +64,9 @@ Add columns to `extraction_queue` (migration):
 ```sql
 ALTER TABLE extraction_queue ADD COLUMN extraction_schema_version TEXT;
 ALTER TABLE extraction_queue ADD COLUMN extraction_model_version TEXT;
+ALTER TABLE extraction_queue ADD COLUMN revisit_of_queue_id INTEGER REFERENCES extraction_queue(id);
+ALTER TABLE extraction_queue ADD COLUMN revisit_reason TEXT;
+ALTER TABLE extraction_queue ADD COLUMN revisit_context_json TEXT;
 ```
 
 `mark_finished()` in `queue.py` must be updated to write these columns when
@@ -138,7 +152,7 @@ class RevisitationResult:
     context_injected_count: int = 0
 ```
 
-## Wire-up in `weekly_hygiene` (`jobs.py`)
+## Wire-up in Layer 3 job (`jobs.py`)
 
 After `detect_semantic_duplicates` (Phase 5) and health stats:
 
@@ -148,6 +162,40 @@ if config.maintenance.requeue_enabled:
     revisit_result = run_raw_revisitation(conn, config)
     stats["raw_revisitation"] = asdict(revisit_result)
 ```
+
+## Release Repair: Historical Ledger Safety
+
+Purpose:
+- Prevent raw re-visitation from corrupting the extraction/promotion ledger for
+  already-promoted sources.
+
+Problem found in E2E:
+- Resetting the original processed queue row to `pending` causes the next
+  extraction pass to replace candidates for that row. If those candidates already
+  have `promotion_decisions`, deletion fails on foreign-key constraints.
+
+Concrete implementation plan:
+1. Add the lineage columns listed above in the next migration.
+2. Update `run_raw_revisitation` to insert fresh queue rows, never reset the
+   original row.
+3. Add a helper such as `enqueue_revisit_extraction(conn, row, reason, context)`
+   so revisit insertion is explicit and testable.
+4. Update extraction packet creation to include `revisit_context_json` as
+   `existing_knowledge_context` when present.
+5. After the new row is inserted, trigger extraction/promotion through the normal
+   pipeline or leave it pending for the scheduled queue job, depending on the
+   caller's mode.
+
+Acceptance tests:
+- Seed a processed queue row with promoted candidates and `promotion_decisions`.
+  Run raw re-visitation, then process extraction and promotion. Assert:
+  old queue row remains processed;
+  old candidates and promotion decisions still exist;
+  new revisit queue row is processed;
+  no foreign-key error occurs.
+- Seed context retrieval results and assert the new queue row stores
+  `revisit_context_json` and the LLM packet receives it.
+- Dry-run creates no new queue rows.
 
 ## Config additions to `MaintenanceConfig`
 
@@ -165,8 +213,8 @@ class MaintenanceConfig:
 ## Invariants
 
 1. **Re-visitation never deletes original candidates.** Old `extraction_queue`
-   rows and their `extraction_candidates` remain intact. The re-queue produces
-   new rows.
+   rows, `extraction_candidates`, visual snippets, and `promotion_decisions`
+   remain intact. The re-queue produces new rows.
 2. **Context injection is read-only.** Retrieved wiki summaries are never
    modified by the re-extraction process.
 3. **`requeue_max_per_run` caps throughput.** At most N sources are re-queued
@@ -178,7 +226,8 @@ class MaintenanceConfig:
 
 ## Schema migration
 
-`migrations/020_extraction_versioning.sql` (or next available number):
+`migrations/023_extraction_versioning.sql` exists for version columns. Add the
+lineage fields in the next available migration:
 
 ```sql
 ALTER TABLE extraction_queue ADD COLUMN extraction_schema_version TEXT;
@@ -196,33 +245,39 @@ ALTER TABLE extraction_queue ADD COLUMN extraction_model_version TEXT;
    re-queued.
 4. Unit: dry-run test — eligible sources exist → dry_run=True → no new queue
    rows, result counts reflect what would have happened.
-5. Integration: full `weekly_hygiene` dry-run → completes without error,
+5. Integration: promoted-source revisit E2E → completes without foreign-key
+   failure and produces a new processed revisit queue row.
+6. Integration: full Layer 3 job dry-run → completes without error,
    stats include `raw_revisitation`.
-6. Full suite: `python -m pytest tests/ -x`.
+7. Full suite: `python -m unittest discover -s tests`.
 
-## Revised daemon job flow (all phases complete)
+## Maintenance job flow (all phases complete)
 
 ```
-daily_consolidation (3 AM):
+Layer 1 job (per-ingestion + scheduled sweep):
+  1. run_embedding_neighbor_pass()           ← Phase 6, per new note
+  2. run_embedding_neighbor_backfill()       ← Phase 6, sweep for unscanned notes
+  3. run_cluster_validation()                ← Phase 7, validates similar_to edges
+
+Layer 2a job (every few hours):
+  1. run_pattern_discovery()                 ← Phase 7 extension
+     (names abstract patterns from accumulated clusters)
+
+Layer 2b job (daily):
   1. rebuild_wiki_graph()                    ← Phase 2
   2. detect_orphan_nodes()                   ← Phase 2
   3. audit_lifecycle_states()                ← Phase 3
-  4. compute_note_trust_stats()              ← existing
-  5. compute_note_freshness()                ← existing
-  6. run_embedding_neighbor_backfill()       ← Phase 6 (if embeddings enabled)
-  7. run_cluster_validation()               ← Phase 7 (if embeddings enabled)
-  8. compute_importance_scores()             ← Phase 4
-  9. sync_eval_candidates()                  ← existing
-  10. _verification_debt_rows()              ← existing
-  11. duplicate alias detection              ← existing
-  12. _stale_rows_from_freshness()           ← existing
-  13. create review/relearn items            ← existing
-  14. refresh_active_file()                  ← existing
+  4. compute_note_trust_stats()              ← trust.py
+  5. compute_note_freshness()                ← trust.py
+  6. compute_importance_scores()             ← Phase 4
+  7. compute_wiki_health_stats()             ← Phase 5
+  8. duplicate alias detection + review routing
+  9. verification debt + stale note review routing
+  10. relearn task creation
+  11. refresh_active_file()
+  12. write_maintenance_overview()
 
-weekly_hygiene (Sunday 4 AM):
-  all of daily_consolidation, plus:
-  15. compute_wiki_health_stats()            ← Phase 5
-  16. train_rerank_model()                   ← existing
-  17. run_raw_revisitation()                 ← Phase 8
-  18. write_maintenance_overview()           ← existing (enhanced)
+Layer 3 job (every 2–3 days):
+  1. run_raw_revisitation()                  ← Phase 8
+  2. train_rerank_model()                    ← trust.py
 ```

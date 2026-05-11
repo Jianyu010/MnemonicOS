@@ -408,6 +408,15 @@ def retrieve(
 
     trust_signals = load_note_trust(connection, list(candidates))
     freshness_signals = load_note_freshness(connection, list(candidates))
+    candidate_ids = list(candidates)
+    importance_map: dict[str, float] = {}
+    if candidate_ids:
+        placeholders = ",".join("?" * len(candidate_ids))
+        imp_rows = connection.execute(
+            f"SELECT note_id, importance_score FROM note_importance WHERE note_id IN ({placeholders})",
+            candidate_ids,
+        ).fetchall()
+        importance_map = {str(r["note_id"]): float(r["importance_score"] or 0.0) for r in imp_rows}
     rerank_model = load_rerank_model(connection)
     ranked_hits: list[RetrieveHit] = []
     bm25_max_rank = max(((candidate.bm25_rank or 0) for candidate in candidates.values()), default=0) or 1
@@ -589,9 +598,9 @@ def retrieve(
                     """
                     INSERT INTO retrieval_hit_features(
                         query_id, note_id, exact_hit, bm25_rank, bm25_score, semantic_score,
-                        graph_score, freshness_score, type_prior_score, trust_score
+                        graph_score, freshness_score, type_prior_score, trust_score, importance_score
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(query_id, note_id) DO UPDATE SET
                         exact_hit = excluded.exact_hit,
                         bm25_rank = excluded.bm25_rank,
@@ -600,7 +609,8 @@ def retrieve(
                         graph_score = excluded.graph_score,
                         freshness_score = excluded.freshness_score,
                         type_prior_score = excluded.type_prior_score,
-                        trust_score = excluded.trust_score
+                        trust_score = excluded.trust_score,
+                        importance_score = excluded.importance_score
                     """,
                     (
                         query_id,
@@ -613,6 +623,7 @@ def retrieve(
                         original.freshness_score,
                         original.type_prior_score,
                         original.trust_score,
+                        importance_map.get(hit.id, 0.0),
                     ),
                 )
 

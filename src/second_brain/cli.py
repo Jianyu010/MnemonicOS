@@ -221,14 +221,20 @@ def _build_parser() -> argparse.ArgumentParser:
     jobs_parser.add_argument(
         "job_name",
         choices=(
-            "daily_consolidation",
-            "weekly_hygiene",
             "sync_vault_incremental",
             "process_extraction_queue",
             "process_promotion_queue",
             "expire_stale_episodes",
             "embed_backfill",
             "status_report",
+            "wiki_graph_rebuild",
+            "wiki_lifecycle_audit",
+            "wiki_importance_scoring",
+            "wiki_health_report",
+            "wiki_embedding_neighbor_backfill",
+            "wiki_cluster_validation",
+            "wiki_pattern_discovery",
+            "wiki_raw_revisitation",
         ),
     )
     jobs_parser.add_argument("--dry-run", action="store_true")

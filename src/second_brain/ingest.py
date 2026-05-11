@@ -757,6 +757,20 @@ def _artifact_archive_type(source_format: str) -> str:
     return "web_clip" if source_format == "html" else "doc"
 
 
+def _unique_attachment_target(attachments_dir: Path, original_name: str) -> Path:
+    candidate = attachments_dir / original_name
+    if not candidate.exists():
+        return candidate
+    stem = candidate.stem
+    suffix = candidate.suffix
+    index = 2
+    while True:
+        candidate = attachments_dir / f"{stem}__{index}{suffix}"
+        if not candidate.exists():
+            return candidate
+        index += 1
+
+
 def ingest_artifact(
     config: AppConfig,
     *,
@@ -902,7 +916,7 @@ def ingest_artifact(
             if not attachment_source.exists() or not attachment_source.is_file():
                 warnings.append(f"attachment_missing:{attachment_source}")
                 continue
-            target = attachments_dir / attachment_source.name
+            target = _unique_attachment_target(attachments_dir, attachment_source.name)
             shutil.copy2(attachment_source, target)
             data = target.read_bytes()
             figure = figure_from_bytes(
@@ -1320,6 +1334,12 @@ def reprocess_artifact(
     manifest["canonical_archive_id"] = identity.canonical_archive_id
     manifest["identity_fingerprint_version"] = identity.identity_fingerprint_version
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+
+    from .extraction.queue import enqueue_extraction as _enqueue_extraction
+    _enqueue_extraction(config, source_kind="artifact", archive_id=archive_id, content_hash=raw_hash)
+    if config.ingest.auto_trigger_pipeline:
+        from .pipeline import trigger_pipeline as _trigger_pipeline
+        _trigger_pipeline(config)
 
     return IngestArtifactResult(
         archive_id=archive_id,

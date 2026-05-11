@@ -18,8 +18,10 @@ narrative report but does not include structured health stats: note counts by
 lifecycle state, graph connectivity distribution, orphan counts, or the number
 of lifecycle transitions made in the current run.
 
-Phase 5 closes both gaps. It runs only in `weekly_hygiene` because embedding
-comparison is O(N²) in note count.
+Phase 5 closes both gaps. Semantic dedup can run on the heavier scheduled sweep
+because embedding comparison is O(N²) in note count. Wiki health stats are cheap
+enough to run in the Layer 2b governance job and should publish a maintenance
+overview whenever the job runs live.
 
 ## Scope
 
@@ -122,10 +124,10 @@ CROSS JOIN (
 ) in_d
 ```
 
-### Wire into `weekly_hygiene` in `jobs.py`
+### Wire into governance / health job in `jobs.py`
 
 ```python
-if job_name == "weekly_hygiene":
+if job_name in {"wiki_health_report", "wiki_layer2ab_governance"}:
     dedup_pairs = detect_semantic_duplicates(connection, config, dry_run=dry_run)
     health_stats = compute_wiki_health_stats(
         connection,
@@ -137,7 +139,18 @@ if job_name == "weekly_hygiene":
     stats["semantic_dedup_candidates"] = len(dedup_pairs)
     stats["wiki_total_notes"] = health_stats.total_notes
     stats["wiki_orphan_notes"] = health_stats.orphan_note_count
+    if not dry_run:
+        write_maintenance_overview(config, wiki_health=health_stats, ...)
 ```
+
+The individual `wiki_health_report` job and any composite governance job must
+share the same publication behavior. The job is not complete if it only returns
+stats to stdout/JSON; it must update `brain/wiki/overviews/maintenance.md` for
+operators and the game/daemon surfaces.
+
+Implementation mark (2026-05-11): live `wiki_health_report` now writes the
+maintenance overview with Wiki Health data and open review/relearn context;
+dry-run does not write the file.
 
 ### Enhance `write_maintenance_overview` in `ops.py`
 
@@ -167,9 +180,13 @@ provided, prepend a **Wiki Health** section to the overview markdown:
 2. `detect_semantic_duplicates` returns correct pairs for seeded near-identical notes.
 3. `detect_semantic_duplicates` skips when embeddings disabled.
 4. `compute_wiki_health_stats` returns correct counts from seeded DB state.
-5. `weekly_hygiene` calls both functions and includes stats.
+5. `wiki_health_report` and/or the Layer 2b governance job calls both functions
+   and includes stats.
 6. `write_maintenance_overview` renders Wiki Health section when stats provided.
 7. Dry-run: no review items created, dedup pairs still returned for counting.
+8. Live `wiki_health_report` writes or updates
+   `brain/wiki/overviews/maintenance.md`.
+9. Dry-run `wiki_health_report` does not write the overview.
 
 ## Verification
 
@@ -182,9 +199,12 @@ provided, prepend a **Wiki Health** section to the overview markdown:
 - Test: `compute_wiki_health_stats` with 5 notes across types/lifecycle states →
   counts match.
 - Test: `detect_orphan_nodes` count flows into `WikiHealthStats.orphan_note_count`.
-- Integration: `weekly_hygiene` dry-run completes; stats include `semantic_dedup_candidates`
-  and `wiki_total_notes`.
+- Integration: health/governance job dry-run completes; stats include
+  `semantic_dedup_candidates` and `wiki_total_notes`.
 - Integration: maintenance overview file after weekly run includes Wiki Health table.
+- Integration: isolated E2E run confirms `maintenance.md` exists after
+  `wiki_health_report` and includes total notes, orphan count, open review count,
+  and semantic dedup candidate count.
 
 ## Out of scope
 

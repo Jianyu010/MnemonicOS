@@ -89,9 +89,9 @@ def _upsert_note(connection: sqlite3.Connection, note: NoteRecord) -> tuple[list
             verified_by, last_observed_at, chain_id, chain_confidence,
             chain_question, chain_summary, problem_class, failure_summary,
             attempt_summaries, solution_rationale, overlay_class, lifecycle_state,
-            body_path, summary, content_hash, revision
+            body_path, summary, content_hash, corroboration_count, revision
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
         ON CONFLICT(id) DO UPDATE SET
             type = excluded.type,
             title = excluded.title,
@@ -120,6 +120,7 @@ def _upsert_note(connection: sqlite3.Connection, note: NoteRecord) -> tuple[list
             body_path = excluded.body_path,
             summary = excluded.summary,
             content_hash = excluded.content_hash,
+            corroboration_count = excluded.corroboration_count,
             revision = notes.revision + 1
         """,
         (
@@ -151,6 +152,7 @@ def _upsert_note(connection: sqlite3.Connection, note: NoteRecord) -> tuple[list
             str(note.body_path),
             note.summary,
             note.content_hash,
+            note.corroboration_count,
         ),
     )
 

@@ -41,6 +41,9 @@ class ExtractionQueueItem:
     attempt_count: int
     last_error: str | None
     content_hash: str | None = None
+    revisit_of_queue_id: int | None = None
+    revisit_reason: str | None = None
+    revisit_context_json: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

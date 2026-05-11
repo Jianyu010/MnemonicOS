@@ -106,6 +106,31 @@ class DaemonConfig:
 
 
 @dataclass(slots=True)
+class MaintenanceConfig:
+    lifecycle_verified_threshold: int = 2
+    lifecycle_canonical_threshold: int = 4
+    lifecycle_drift_days: int = 30
+    graph_rebuild_enabled: bool = True
+    lifecycle_audit_enabled: bool = True
+    importance_scoring_enabled: bool = True
+    semantic_dedup_threshold: float = 0.92
+    semantic_dedup_enabled: bool = True
+    embedding_neighbor_enabled: bool = True
+    neighbor_similarity_threshold: float = 0.78
+    neighbor_k: int = 10
+    neighbor_scan_max_age_days: int = 7
+    cluster_validation_enabled: bool = True
+    cluster_validation_max_size: int = 12
+    cluster_validation_min_cluster_size: int = 2
+    pattern_discovery_enabled: bool = True
+    requeue_enabled: bool = True
+    requeue_min_age_days: int = 30
+    requeue_context_enabled: bool = True
+    requeue_context_top_k: int = 5
+    requeue_max_per_run: int = 20
+
+
+@dataclass(slots=True)
 class AppConfig:
     paths: PathsConfig
     retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
@@ -115,6 +140,7 @@ class AppConfig:
     trust: TrustConfig = field(default_factory=TrustConfig)
     extraction: ExtractionConfig = field(default_factory=ExtractionConfig)
     promotion: PromotionConfig = field(default_factory=PromotionConfig)
+    maintenance: MaintenanceConfig = field(default_factory=MaintenanceConfig)
     daemon: DaemonConfig | None = None
     bridges: dict[str, BridgeConfig] = field(default_factory=dict)
     config_path: Path | None = None
@@ -286,6 +312,31 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
             can_promote=bool(bridge_data.get("can_promote", False)),
         )
 
+    maintenance_data = data.get("maintenance", {})
+    maintenance = MaintenanceConfig(
+        lifecycle_verified_threshold=int(maintenance_data.get("lifecycle_verified_threshold", 2)),
+        lifecycle_canonical_threshold=int(maintenance_data.get("lifecycle_canonical_threshold", 4)),
+        lifecycle_drift_days=int(maintenance_data.get("lifecycle_drift_days", 30)),
+        graph_rebuild_enabled=bool(maintenance_data.get("graph_rebuild_enabled", True)),
+        lifecycle_audit_enabled=bool(maintenance_data.get("lifecycle_audit_enabled", True)),
+        importance_scoring_enabled=bool(maintenance_data.get("importance_scoring_enabled", True)),
+        semantic_dedup_threshold=float(maintenance_data.get("semantic_dedup_threshold", 0.92)),
+        semantic_dedup_enabled=bool(maintenance_data.get("semantic_dedup_enabled", True)),
+        embedding_neighbor_enabled=bool(maintenance_data.get("embedding_neighbor_enabled", True)),
+        neighbor_similarity_threshold=float(maintenance_data.get("neighbor_similarity_threshold", 0.78)),
+        neighbor_k=int(maintenance_data.get("neighbor_k", 10)),
+        neighbor_scan_max_age_days=int(maintenance_data.get("neighbor_scan_max_age_days", 7)),
+        cluster_validation_enabled=bool(maintenance_data.get("cluster_validation_enabled", True)),
+        cluster_validation_max_size=int(maintenance_data.get("cluster_validation_max_size", 12)),
+        cluster_validation_min_cluster_size=int(maintenance_data.get("cluster_validation_min_cluster_size", 2)),
+        pattern_discovery_enabled=bool(maintenance_data.get("pattern_discovery_enabled", True)),
+        requeue_enabled=bool(maintenance_data.get("requeue_enabled", True)),
+        requeue_min_age_days=int(maintenance_data.get("requeue_min_age_days", 30)),
+        requeue_context_enabled=bool(maintenance_data.get("requeue_context_enabled", True)),
+        requeue_context_top_k=int(maintenance_data.get("requeue_context_top_k", 5)),
+        requeue_max_per_run=int(maintenance_data.get("requeue_max_per_run", 20)),
+    )
+
     return AppConfig(
         paths=paths,
         retrieval=retrieval,
@@ -295,6 +346,7 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
         trust=trust,
         extraction=extraction,
         promotion=promotion,
+        maintenance=maintenance,
         daemon=daemon,
         bridges=bridges,
         config_path=resolved_config,

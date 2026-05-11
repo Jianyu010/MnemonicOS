@@ -237,6 +237,7 @@ def parse_note(path: Path) -> NoteRecord:
     solution_rationale = _optional_string(metadata, "solution_rationale")
     summary = _extract_summary(metadata, parsed.body)
     content_hash = sha256(text.encode("utf-8")).hexdigest()
+    corroboration_count = int(metadata.get("corroboration_count") or 0)
 
     return NoteRecord(
         id=note_id,
@@ -271,4 +272,5 @@ def parse_note(path: Path) -> NoteRecord:
         body=parsed.body,
         body_path=path.resolve(),
         content_hash=content_hash,
+        corroboration_count=corroboration_count,
     )

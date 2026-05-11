@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import json
 from typing import Any
 
 from second_brain.config import AppConfig
@@ -116,11 +117,13 @@ def _process_item(
         vlm = build_vlm_provider(config)
         llm = build_llm_provider(config)
         visual_snippets = [vlm.describe(artifact) for artifact in artifacts]
+        existing_knowledge_context = _existing_knowledge_context(item.revisit_context_json)
         packet = make_llm_packet(
             active_source_ref=source_ref_id(item),
             projection_metadata=projection_metadata,
             windows=windows,
             visual_snippets=visual_snippets,
+            existing_knowledge_context=existing_knowledge_context,
         )
         raw_output = llm.extract_candidates(packet)
         candidates = _extract_and_validate_candidates(
@@ -169,6 +172,28 @@ def _process_item(
         }
     finally:
         service.close_projection(lease.lease_id)
+
+
+def _existing_knowledge_context(raw_context: str | None) -> str | None:
+    if not raw_context:
+        return None
+    try:
+        payload = json.loads(raw_context)
+    except json.JSONDecodeError:
+        return None
+    related = payload.get("related_notes") if isinstance(payload, dict) else None
+    if not isinstance(related, list):
+        return None
+    lines = []
+    for item in related:
+        if not isinstance(item, dict):
+            continue
+        note_id = str(item.get("note_id") or "").strip()
+        title = str(item.get("title") or "").strip()
+        summary = str(item.get("summary") or "").strip()
+        if note_id:
+            lines.append(f"[{note_id}] {title}\n{summary}".strip())
+    return "\n\n".join(lines) or None
 
 
 def _extract_and_validate_candidates(
