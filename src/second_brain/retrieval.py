@@ -13,63 +13,9 @@ from .embedding_providers import build_embedding_provider, embedding_model_key
 from .graph import graph_expand
 from .models import RetrieveHit, RetrieveResult
 from .paths import VaultPaths
+from .query_parser import QueryHints, TYPE_PRIORS, parse_query, tokenize as _tokenize_query
 from .semantics import cosine_similarity, vector_from_json
-from .trust import (
-    freshness_multiplier,
-    load_note_freshness,
-    load_note_trust,
-    load_rerank_model,
-    query_temporality,
-)
-
-
-TOKEN_PATTERN = re.compile(r"[\w/-]+", re.UNICODE)
-STOPWORDS = {
-    "a",
-    "an",
-    "and",
-    "are",
-    "as",
-    "at",
-    "be",
-    "by",
-    "for",
-    "from",
-    "how",
-    "i",
-    "in",
-    "is",
-    "it",
-    "of",
-    "on",
-    "or",
-    "that",
-    "the",
-    "to",
-    "we",
-    "what",
-    "which",
-    "who",
-}
-
-QUERY_HINTS = {
-    "preference_identity": {"preference", "prefer", "style", "identity", "user"},
-    "how_to": {"how", "steps", "deploy", "run", "procedure", "release"},
-    "decision": {"why", "decision", "decide", "choose", "picked", "rationale", "should"},
-    "who_where_relation": {"who", "owner", "owns", "responsible", "maintainer"},
-    "what_changed": {"changed", "recent", "latest", "new", "update"},
-    "broad_synthesis": {"state", "summary", "overview", "status"},
-}
-
-TYPE_PRIORS = {
-    "preference_identity": {"person": 0.9, "concept": 0.5},
-    "how_to": {"procedure": 0.9, "repo": 0.6, "project": 0.4},
-    "decision": {"decision": 0.9, "incident": 0.6, "project": 0.4},
-    "who_where_relation": {"person": 0.9, "project": 0.7, "repo": 0.5},
-    "what_changed": {"incident": 0.8, "project": 0.7, "decision": 0.6},
-    "broad_synthesis": {"overview": 0.9, "project": 0.7, "concept": 0.5},
-}
-
+from .trust import freshness_multiplier, load_note_freshness, load_note_trust, load_rerank_model
 
 @dataclass(slots=True)
 class _Candidate:
@@ -99,45 +45,16 @@ class _Candidate:
 
 
 def _query_terms(query: str) -> str:
-    terms = [
-        token
-        for token in TOKEN_PATTERN.findall(query)
-        if len(token) > 2 and token.casefold() not in STOPWORDS
-    ]
-    if not terms:
+    terms = _tokenize_query(query)
+    if terms == ["*"]:
         escaped = query.replace('"', ' ')
         return f'"{escaped}"'
-    unique_terms: list[str] = []
-    seen: set[str] = set()
-    for term in terms:
-        lowered = term.casefold()
-        if lowered in seen:
-            continue
-        unique_terms.append(term)
-        seen.add(lowered)
-    return " OR ".join(f'"{term.replace(chr(34), " ")}"' for term in unique_terms)
+    return " OR ".join(f'"{term.replace(chr(34), " ")}"' for term in terms)
 
 
 def _load_pinned_paths(config: AppConfig) -> list[str]:
     vault_paths = VaultPaths(config.paths.workspace_root, config.paths.vault_root)
     return [str(path.resolve()) for path in vault_paths.pinned_files() if path.exists()]
-
-
-def _classify_query(query: str, hint: str | None) -> tuple[str | None, float | None]:
-    if hint:
-        return hint, 1.0
-    tokens = {token.casefold() for token in TOKEN_PATTERN.findall(query)}
-    best_type: str | None = None
-    best_score = 0.0
-    for query_type, keywords in QUERY_HINTS.items():
-        score = len(tokens & keywords)
-        if score > best_score:
-            best_type = query_type
-            best_score = float(score)
-    if best_type is None or best_score == 0.0:
-        return None, 0.0
-    confidence = min(1.0, 0.45 + 0.2 * best_score)
-    return best_type, confidence
 
 
 def _exact_hits(connection: sqlite3.Connection, query: str) -> list[sqlite3.Row]:
@@ -293,13 +210,28 @@ def retrieve(
     query_type_hint: str | None = None,
     include_archive_fallback: bool | None = None,
     temporality_override: str | None = None,
+    bridge_id: str | None = None,
+    caller_type_hint: str | None = None,
 ) -> RetrieveResult:
     connection = connect_db(config.paths.db_path)
     run_migrations(connection, config.paths.workspace_root / "migrations")
 
-    requested_top_k = top_k or config.retrieval.top_k
-    query_type, classifier_confidence = _classify_query(query, query_type_hint)
-    temporality = temporality_override or query_temporality(query)
+    parsed_query = parse_query(
+        query,
+        QueryHints(
+            query_type_hint=query_type_hint,
+            temporality_override=temporality_override,
+            top_k=top_k,
+            caller_type_hint=caller_type_hint,
+        ),
+        config=config,
+        connection=connection,
+        bridge_id=bridge_id,
+    )
+    requested_top_k = parsed_query.top_k
+    query_type = parsed_query.query_type
+    classifier_confidence = parsed_query.classifier_confidence
+    temporality = parsed_query.temporality
     candidates: dict[str, _Candidate] = {}
 
     exact_rows = _exact_hits(connection, query)
@@ -635,6 +567,9 @@ def retrieve(
         classifier_confidence=classifier_confidence,
         hits=ranked_hits,
         pinned_paths=_load_pinned_paths(config),
+        temporality=parsed_query.temporality,
+        persona=parsed_query.persona,
+        back_feed_hook=parsed_query.back_feed_hook,
     )
 
 
@@ -643,6 +578,9 @@ def result_to_json(result: RetrieveResult) -> str:
         "query_id": result.query_id,
         "query_type": result.query_type,
         "classifier_confidence": result.classifier_confidence,
+        "temporality": result.temporality,
+        "persona": result.persona,
+        "back_feed_hook": result.back_feed_hook,
         "pinned_paths": result.pinned_paths,
         "hits": [asdict(hit) for hit in result.hits],
     }

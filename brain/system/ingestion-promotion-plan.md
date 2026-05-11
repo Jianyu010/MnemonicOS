@@ -1,8 +1,8 @@
-# Promotion Layer Development Plan
+# Ingestion: Promotion Plan
 
 ## Purpose
 
-This plan directly follows `brain/system/llm-vlm-layer-development-plan.md`. The
+This plan directly follows `brain/system/ingestion-extraction-plan.md`. The
 LLM/VLM layer owns projection consumption, model inference, and candidate
 validation. It terminates at `promotion_ready` rows in `extraction_candidates`.
 This promotion layer starts at those rows: it decides how each candidate becomes
@@ -11,12 +11,12 @@ a canonical wiki note using deterministic software logic only.
 This governing file defines scope, vocabulary, invariants, and phase order. The
 implementation details live in the phase files:
 
-1. [Phase 1: Promotion Gate](promotion-layer-development-plan-phase1.md)
-2. [Phase 2: Decision Engine](promotion-layer-development-plan-phase2.md)
-3. [Phase 3: Note Renderer](promotion-layer-development-plan-phase3.md)
-4. [Phase 4: Wiki Writer](promotion-layer-development-plan-phase4.md)
-5. [Phase 5: Daemon and Admin Surfaces](promotion-layer-development-plan-phase5.md)
-6. [Amendment: Intra-Source Relation Application](promotion-layer-development-plan-intra-source-relations.md)
+1. [Phase 1: Promotion Gate](ingestion-promotion-plan-phase1.md)
+2. [Phase 2: Decision Engine](ingestion-promotion-plan-phase2.md)
+3. [Phase 3: Note Renderer](ingestion-promotion-plan-phase3.md)
+4. [Phase 4: Wiki Writer](ingestion-promotion-plan-phase4.md)
+5. [Phase 5: Daemon and Admin Surfaces](ingestion-promotion-plan-phase5.md)
+6. [Amendment: Intra-Source Relation Application](ingestion-promotion-plan-intra-source-relations.md)
 
 ## Verified Breakpoint
 

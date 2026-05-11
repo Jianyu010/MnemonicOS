@@ -1,9 +1,9 @@
-# Knowledge Maintenance Layer Development Roadmap
+# Ingestion: Maintenance Roadmap
 
 ## Purpose
 
 This roadmap records implementation progress against
-`knowledge-maintenance-development-plan.md`, where implementation diverges from
+`ingestion-maintenance-plan.md`, where implementation diverges from
 plan, and what remains before the knowledge maintenance layer can be called
 complete.
 
@@ -39,7 +39,7 @@ Status: **implemented mechanically; provider decoupling planned**.
 Phases 6-7 require embeddings, but they should not require Ollama specifically.
 The local hash encoder is a zero-install fallback and external embedding models
 should be selected through a provider-shaped API. See
-`knowledge-maintenance-embedding-model.md` for the original nomic/Ollama
+`ingestion-maintenance-embedding-model.md` for the original nomic/Ollama
 rationale; that decision is now treated as one adapter choice, not a product
 requirement.
 
@@ -408,8 +408,8 @@ Planned when split:
 
 > **Phase 1 moved.** `corroboration_count` in DB was Phase 1 of this layer.
 > It has been reclassified as a promotion-layer amendment and is now tracked in
-> `promotion-layer-development-roadmap.md`. Implementation details preserved in
-> `knowledge-maintenance-development-plan-phase1.md`.
+> `ingestion-promotion-roadmap.md`. Implementation details preserved in
+> `ingestion-maintenance-plan-phase1.md`.
 
 ### Phase 2: Graph Maintenance — bulk rebuild
 

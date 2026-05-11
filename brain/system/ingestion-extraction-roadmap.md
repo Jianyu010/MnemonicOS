@@ -1,9 +1,9 @@
-# LLM/VLM Layer Development Roadmap
+# Ingestion: Extraction Roadmap
 
 ## Purpose
 
 This roadmap records implementation progress against
-`llm-vlm-layer-development-plan.md`, what remains, and what the current layer can
+`ingestion-extraction-plan.md`, what remains, and what the current layer can
 claim.
 
 Current conclusion: the LLM/VLM layer is implemented as an ingestion-side,
@@ -295,7 +295,7 @@ Planned deliverables:
 - Worker stores validated relations on the queue row.
 - Promotion layer amendment applies stored relations to wiki note frontmatter after
   bundle candidates are promoted (tracked in
-  `promotion-layer-development-plan-intra-source-relations.md`).
+  `ingestion-promotion-plan-intra-source-relations.md`).
 
 ## Remaining LLM/VLM Layer Work
 

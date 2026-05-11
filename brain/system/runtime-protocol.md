@@ -19,8 +19,8 @@ center.
 
 > **Note on intake:** Legacy references to `ingest-session` as the fast-path
 > intake describe a pre-west-flange path. Current intake goes through the
-> west-flange artifact and episode capture model (see `west-flange-development-plan.md`
-> and `bridge-capture-development-plan.md`). The protocol semantics below remain
+> west-flange artifact and episode capture model (see `ingestion-west-flange-plan.md`
+> and `ingestion-capture-plan.md`). The protocol semantics below remain
 > correct; only the underlying intake substrate has changed.
 
 ## Design Goals

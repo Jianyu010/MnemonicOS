@@ -1,8 +1,8 @@
-# Review Command Development Roadmap
+# Ingestion: Review Command Roadmap
 
 ## Purpose
 
-Records implementation progress against `review-command-development-plan.md`.
+Records implementation progress against `ingestion-review-plan.md`.
 Promotion layer routes low-confidence / conflicting candidates to `brain/wiki/review/`.
 This roadmap tracks the command that lets humans act on those items.
 
@@ -128,7 +128,7 @@ Fix — add two guards in `_parse_review_file` after frontmatter parse:
 
 ## Remaining Work
 
-**Phase 4 (hardening)** — fix both loopholes above. See `review-command-development-plan.md §Known Loopholes`.
+**Phase 4 (hardening)** — fix both loopholes above. See `ingestion-review-plan.md §Known Loopholes`.
 
 **HTTP surface (out of scope for current plan):**
 

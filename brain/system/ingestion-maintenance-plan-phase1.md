@@ -1,7 +1,7 @@
 # Knowledge Maintenance Phase 1: Foundation — corroboration_count in DB
 
 > **Reclassified.** This work has been moved to the promotion layer and is now
-> tracked as an amendment in `promotion-layer-development-roadmap.md`. The
+> tracked as an amendment in `ingestion-promotion-roadmap.md`. The
 > promotion layer owns the write path (`renderer.py` produces `corroboration_count`,
 > `sync_vault` fires inline post-promotion) — only the DB projection was missing.
 > This file is preserved as a reference for the implementation details.

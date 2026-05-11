@@ -1,8 +1,8 @@
-# LLM/VLM Layer Development Plan
+# Ingestion: Extraction Plan (LLM/VLM Layer)
 
 ## Purpose
 
-This plan directly follows `brain/system/west-flange-development-plan.md`. The
+This plan directly follows `brain/system/ingestion-west-flange-plan.md`. The
 west flange owns true-raw intake and RAM-only projection. This LLM/VLM layer
 starts at the Phase 5 handoff: it consumes `ProjectionLease`, `TextWindow`, and
 `ArtifactView`, then produces validated, promotion-ready structured candidates.
@@ -12,14 +12,14 @@ and software-driven in a later promotion layer.
 This governing file defines scope, vocabulary, invariants, and phase order. The
 implementation details live in the phase files:
 
-1. [Phase 1: Legacy Promotion Removal](llm-vlm-layer-development-plan-phase1.md)
-2. [Phase 2: Extraction Queue and Candidate Store](llm-vlm-layer-development-plan-phase2.md)
-3. [Phase 3: Projection Consumer](llm-vlm-layer-development-plan-phase3.md)
-4. [Phase 4: VLM Visual Snippet Layer](llm-vlm-layer-development-plan-phase4.md)
-5. [Phase 5: LLM Candidate Bundle Layer](llm-vlm-layer-development-plan-phase5.md)
-6. [Phase 6: Deterministic Candidate Validation](llm-vlm-layer-development-plan-phase6.md)
-7. [Phase 7: Daemon and Admin Surfaces](llm-vlm-layer-development-plan-phase7.md)
-8. [Phase 8: Intra-Source Relation Extraction](llm-vlm-layer-development-plan-phase8.md)
+1. [Phase 1: Legacy Promotion Removal](ingestion-extraction-plan-phase1.md)
+2. [Phase 2: Extraction Queue and Candidate Store](ingestion-extraction-plan-phase2.md)
+3. [Phase 3: Projection Consumer](ingestion-extraction-plan-phase3.md)
+4. [Phase 4: VLM Visual Snippet Layer](ingestion-extraction-plan-phase4.md)
+5. [Phase 5: LLM Candidate Bundle Layer](ingestion-extraction-plan-phase5.md)
+6. [Phase 6: Deterministic Candidate Validation](ingestion-extraction-plan-phase6.md)
+7. [Phase 7: Daemon and Admin Surfaces](ingestion-extraction-plan-phase7.md)
+8. [Phase 8: Intra-Source Relation Extraction](ingestion-extraction-plan-phase8.md)
 
 ## Verified Breakpoint
 

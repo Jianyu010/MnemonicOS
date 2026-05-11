@@ -1,4 +1,4 @@
-# Embedding Model Decision for Knowledge Maintenance Layer
+# Ingestion: Maintenance — Embedding Model
 
 ## Decision
 

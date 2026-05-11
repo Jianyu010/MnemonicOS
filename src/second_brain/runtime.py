@@ -36,7 +36,7 @@ def assess_retrieval(
     *,
     temporality_override: str | None = None,
 ) -> RetrievalAssessment:
-    temporality = temporality_override or query_temporality(query)
+    temporality = temporality_override or result.temporality or query_temporality(query)
     return _assess_hits(result.hits, temporality=temporality)
 
 
@@ -46,7 +46,7 @@ def assess_retrieval_payload(
     *,
     temporality_override: str | None = None,
 ) -> RetrievalAssessment:
-    temporality = temporality_override or query_temporality(query)
+    temporality = temporality_override or str(payload.get("temporality") or "") or query_temporality(query)
     hits: list[RetrieveHit] = []
     for raw_hit in payload.get("hits", []):
         hits.append(
@@ -78,6 +78,8 @@ def resolve_task_context(config: AppConfig, request: ResolveTaskContextRequest) 
         query_type_hint=request.query_type_hint,
         include_archive_fallback=request.include_archive_fallback,
         temporality_override=request.temporality,
+        bridge_id=request.bridge_id,
+        caller_type_hint=request.caller_type,
     )
     assessment = assess_retrieval(
         retrieval_result,
@@ -127,6 +129,8 @@ def resolve_task_context(config: AppConfig, request: ResolveTaskContextRequest) 
         query_id=retrieval_result.query_id,
         query_type=retrieval_result.query_type,
         classifier_confidence=retrieval_result.classifier_confidence,
+        persona=retrieval_result.persona,
+        back_feed_hook=retrieval_result.back_feed_hook,
     )
 
 

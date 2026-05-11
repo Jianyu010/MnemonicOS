@@ -5,7 +5,7 @@
 This document describes the promotion layer changes required to apply intra-source
 relations produced by LLM/VLM Phase 8 to wiki note frontmatter.
 
-It is an amendment to `promotion-layer-development-plan.md`. It does not replace
+It is an amendment to `ingestion-promotion-plan.md`. It does not replace
 any existing phase; it extends the promotion worker and renderer with bundle-aware
 post-processing.
 

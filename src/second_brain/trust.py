@@ -70,6 +70,7 @@ class RerankModel:
 
 
 def query_temporality(query: str) -> str:
+    """Deprecated compatibility helper; Stage 1 query_parser.infer_temporality() is canonical."""
     lowered = query.casefold()
     if any(hint in lowered for hint in HISTORICAL_QUERY_HINTS):
         return "historical"
