@@ -155,6 +155,9 @@ def mark_processing(connection: sqlite3.Connection, queue_id: int) -> None:
     )
 
 
+CURRENT_SCHEMA_VERSION = "1.0"
+
+
 def mark_finished(
     connection: sqlite3.Connection,
     *,
@@ -168,6 +171,8 @@ def mark_finished(
     candidate_count: int,
     validation_error_count: int,
     intra_source_relations: list[dict[str, Any]] | None = None,
+    extraction_schema_version: str | None = None,
+    extraction_model_version: str | None = None,
 ) -> None:
     connection.execute(
         """
@@ -182,6 +187,8 @@ def mark_finished(
             validation_error_count = ?,
             intra_source_relations_json = ?,
             finished_at = datetime('now'),
+            extraction_schema_version = COALESCE(?, extraction_schema_version),
+            extraction_model_version = COALESCE(?, extraction_model_version),
             last_error = NULL
         WHERE id = ?
         """,
@@ -195,6 +202,8 @@ def mark_finished(
             candidate_count,
             validation_error_count,
             json.dumps(intra_source_relations or [], sort_keys=True),
+            extraction_schema_version or CURRENT_SCHEMA_VERSION,
+            extraction_model_version,
             queue_id,
         ),
     )

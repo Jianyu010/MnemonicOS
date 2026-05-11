@@ -234,6 +234,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "wiki_embedding_neighbor_backfill",
             "wiki_cluster_validation",
             "wiki_pattern_discovery",
+            "wiki_raw_revisitation",
         ),
     )
     jobs_parser.add_argument("--dry-run", action="store_true")

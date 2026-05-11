@@ -449,6 +449,24 @@ def run_job(config: AppConfig, *, job_name: str, dry_run: bool = False) -> JobRu
         connection.close()
         return JobRunResult(job_name=job_name, status="ok", stats=stats, review_items_created=[])
 
+    if job_name == "wiki_raw_revisitation":
+        from .maintenance import run_raw_revisitation
+        job_id = _open_job_run(connection, job_name, "dry-run" if dry_run else "live")
+        try:
+            rv_result = run_raw_revisitation(connection, config, dry_run=dry_run)
+            stats["sources_requeued"] = rv_result.sources_requeued
+            stats["sources_skipped"] = rv_result.sources_skipped
+            stats["context_injected_count"] = rv_result.context_injected_count
+            with connection:
+                _close_job_run(connection, job_id, status="ok", stats=stats)
+        except Exception as exc:
+            with connection:
+                _close_job_run(connection, job_id, status="error", stats=stats, error_text=str(exc))
+            connection.close()
+            raise
+        connection.close()
+        return JobRunResult(job_name=job_name, status="ok", stats=stats, review_items_created=[])
+
     if job_name == "wiki_cluster_validation":
         from .maintenance import run_cluster_validation
         job_id = _open_job_run(connection, job_name, "dry-run" if dry_run else "live")

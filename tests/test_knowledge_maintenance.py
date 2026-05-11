@@ -1560,5 +1560,171 @@ class PatternDiscoveryTest(unittest.TestCase):
             self.assertIn("archetypes_confirmed", result.stats)
 
 
+class RevisitationTest(unittest.TestCase):
+    def _setup(self, workspace: Path, *, requeue_max: int = 20):
+        _system_files(workspace)
+        config_path = workspace / "config.toml"
+        _write(
+            config_path,
+            f"""
+            [paths]
+            vault_root = "{(workspace / 'brain').as_posix()}"
+            db_path = "{(workspace / 'brain/data/archive.db').as_posix()}"
+            vectors_dir = "{(workspace / 'brain/data/vectors').as_posix()}"
+            graph_dir = "{(workspace / 'brain/data/graph').as_posix()}"
+            eval_queries = "{(workspace / 'evals/queries.jsonl').as_posix()}"
+
+            [embeddings]
+            enabled = false
+
+            [maintenance]
+            requeue_enabled = true
+            requeue_min_age_days = 0
+            requeue_max_per_run = {requeue_max}
+            requeue_context_enabled = false
+            """,
+        )
+        config = load_config(config_path, workspace)
+        connection = connect_db(config.paths.db_path)
+        run_migrations(connection, ROOT / "migrations")
+        connection.close()
+        return config
+
+    def _insert_stale_queue_row(self, connection, archive_id: str, old_schema: str = "0.0") -> None:
+        """Insert a processed extraction_queue row with old schema version."""
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO extraction_queue
+                (source_kind, archive_id, status, finished_at, extraction_schema_version, extraction_model_version)
+            VALUES ('artifact', ?, 'processed', datetime('now', '-60 days'), ?, 'old-model')
+            """,
+            (archive_id, old_schema),
+        )
+        connection.commit()
+
+    def test_stale_row_requeued(self) -> None:
+        """Row with old schema_version gets reset to pending."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = self._setup(workspace)
+
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            self._insert_stale_queue_row(connection, "archive-001", old_schema="0.0")
+
+            from second_brain.maintenance import run_raw_revisitation
+            result = run_raw_revisitation(connection, config)
+            connection.close()
+
+            self.assertEqual(result.sources_requeued, 1)
+            self.assertEqual(result.sources_skipped, 0)
+
+            # verify status reset to pending
+            connection = connect_db(config.paths.db_path)
+            row = connection.execute(
+                "SELECT status FROM extraction_queue WHERE archive_id = 'archive-001'"
+            ).fetchone()
+            connection.close()
+            self.assertEqual(row["status"], "pending")
+
+    def test_current_schema_not_requeued(self) -> None:
+        """Row already on current schema_version and same model is skipped."""
+        from second_brain.extraction.queue import CURRENT_SCHEMA_VERSION
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = self._setup(workspace)
+
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO extraction_queue
+                    (source_kind, archive_id, status, finished_at, extraction_schema_version, extraction_model_version)
+                VALUES ('artifact', 'archive-cur', 'processed', datetime('now', '-60 days'), ?, ?)
+                """,
+                (CURRENT_SCHEMA_VERSION, config.extraction.llm_model),
+            )
+            connection.commit()
+
+            from second_brain.maintenance import run_raw_revisitation
+            result = run_raw_revisitation(connection, config)
+            connection.close()
+
+            self.assertEqual(result.sources_requeued, 0)
+
+    def test_requeue_max_per_run_cap(self) -> None:
+        """At most requeue_max_per_run sources are requeued."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = self._setup(workspace, requeue_max=3)
+
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            for i in range(5):
+                self._insert_stale_queue_row(connection, f"archive-cap{i:02d}", "0.0")
+
+            from second_brain.maintenance import run_raw_revisitation
+            result = run_raw_revisitation(connection, config)
+            connection.close()
+
+            self.assertLessEqual(result.sources_requeued, 3)
+
+    def test_dry_run_no_writes(self) -> None:
+        """dry_run=True counts but does not reset status."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = self._setup(workspace)
+
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            self._insert_stale_queue_row(connection, "archive-dry", "0.0")
+
+            from second_brain.maintenance import run_raw_revisitation
+            result = run_raw_revisitation(connection, config, dry_run=True)
+            connection.close()
+
+            self.assertEqual(result.sources_requeued, 1)
+
+            # status unchanged
+            connection = connect_db(config.paths.db_path)
+            row = connection.execute(
+                "SELECT status FROM extraction_queue WHERE archive_id = 'archive-dry'"
+            ).fetchone()
+            connection.close()
+            self.assertEqual(row["status"], "processed")
+
+    def test_context_injection_counted(self) -> None:
+        """When retrieve_fn returns results, context_injected_count increments."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = self._setup(workspace)
+            config.maintenance.requeue_context_enabled = True
+
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            self._insert_stale_queue_row(connection, "archive-ctx", "0.0")
+
+            mock_note = type("N", (), {"note_id": "concept/x", "title": "X", "summary": "y"})()
+            retrieve_fn = lambda q, config=None, top_k=5: [mock_note]
+
+            from second_brain.maintenance import run_raw_revisitation
+            result = run_raw_revisitation(connection, config, retrieve_fn=retrieve_fn, dry_run=True)
+            connection.close()
+
+            self.assertEqual(result.context_injected_count, 1)
+
+    def test_raw_revisitation_job(self) -> None:
+        """wiki_raw_revisitation job returns expected stat keys."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = self._setup(workspace)
+
+            result = run_job(config, job_name="wiki_raw_revisitation", dry_run=True)
+            self.assertEqual(result.status, "ok")
+            self.assertIn("sources_requeued", result.stats)
+            self.assertIn("sources_skipped", result.stats)
+            self.assertIn("context_injected_count", result.stats)
+
+
 if __name__ == "__main__":
     unittest.main()

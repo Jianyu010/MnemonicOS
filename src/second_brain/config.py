@@ -123,6 +123,11 @@ class MaintenanceConfig:
     cluster_validation_max_size: int = 12
     cluster_validation_min_cluster_size: int = 2
     pattern_discovery_enabled: bool = True
+    requeue_enabled: bool = True
+    requeue_min_age_days: int = 30
+    requeue_context_enabled: bool = True
+    requeue_context_top_k: int = 5
+    requeue_max_per_run: int = 20
 
 
 @dataclass(slots=True)
@@ -325,6 +330,11 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
         cluster_validation_max_size=int(maintenance_data.get("cluster_validation_max_size", 12)),
         cluster_validation_min_cluster_size=int(maintenance_data.get("cluster_validation_min_cluster_size", 2)),
         pattern_discovery_enabled=bool(maintenance_data.get("pattern_discovery_enabled", True)),
+        requeue_enabled=bool(maintenance_data.get("requeue_enabled", True)),
+        requeue_min_age_days=int(maintenance_data.get("requeue_min_age_days", 30)),
+        requeue_context_enabled=bool(maintenance_data.get("requeue_context_enabled", True)),
+        requeue_context_top_k=int(maintenance_data.get("requeue_context_top_k", 5)),
+        requeue_max_per_run=int(maintenance_data.get("requeue_max_per_run", 20)),
     )
 
     return AppConfig(

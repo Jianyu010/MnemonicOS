@@ -56,19 +56,42 @@ Deliverables shipped:
   backfill scan records, job stats
 - 323 tests passing
 
-### Phase 7: LLM Pattern Validation and Refinement
+### Phase 7: LLM Cluster Validation + LLM-free Pattern Discovery
 
-Status: **not started**.
+Status: **complete**.
 
-Frequency: every few hours (Layer 1 sweep) + pattern-naming sub-pass feeds Layer 2a.
+Deliverables shipped:
+- `ArchetypeCandidate`, `ClusterValidationResult`, `PatternDiscoveryResult` in `maintenance.py`
+- `run_cluster_validation(conn, config, llm_fn=None)`: union-find clusters over `similar_to`
+  edges; LLM validation with pattern_tag write-back; training pair recording;
+  invalid edge deletion; merge_review routing — union-find path compression bug fixed
+- `run_pattern_discovery(conn, config, llm_fn=None)`: Channel 2 (9-dim role-vector cosine,
+  threshold 0.85) + Channel 3 (failure/resolution symmetry between incident/procedure notes)
+- `MaintenanceConfig`: cluster_validation_* and pattern_discovery_enabled; `load_config`
+  now parses ALL Phase 6/7 maintenance fields from `[maintenance]` TOML section
+- `migrations/022`: maintenance_training_pairs table
+- `wiki_cluster_validation` + `wiki_pattern_discovery` jobs
+- 5 ClusterValidationTest + 3 PatternDiscoveryTest
+- 331 tests passing
 
-Planned deliverables:
-- `run_cluster_validation(conn, config, llm_provider) -> ClusterValidationResult`
-  in `maintenance.py`
-- `run_structural_isomorphism_pass(conn, config, llm_provider) -> int` — detects
-  cross-domain structural role equivalences; asserts `structurally_isomorphic` links
-- `maintenance_training_pairs` table migration for RL signal accumulation
-- Layer 1 scheduled sweep wire-up after Phase 6 backfill
+### Phase 8: Raw Re-Visitation (Layer 3)
+
+Status: **complete**.
+
+Deliverables shipped:
+- `migrations/023_extraction_versioning.sql` — adds `extraction_schema_version`,
+  `extraction_model_version` columns to `extraction_queue`
+- `CURRENT_SCHEMA_VERSION = "1.0"` constant in `extraction/queue.py`; `mark_finished`
+  updated to write both version columns
+- `RevisitationResult`, `run_raw_revisitation(conn, config, *, dry_run, retrieve_fn)` in
+  `maintenance.py`: queries stale processed rows (schema or model version mismatch),
+  resets status to 'pending'; optional `retrieve_fn` for context injection counting
+- `MaintenanceConfig`: requeue_enabled, requeue_min_age_days, requeue_context_enabled,
+  requeue_context_top_k, requeue_max_per_run; all parsed by `load_config`
+- `wiki_raw_revisitation` job in `jobs.py` and CLI
+- 6 tests in `RevisitationTest`: stale row reset, current-schema skip, cap enforcement,
+  dry-run immutability, context injection counting, job stats keys
+- 337 tests passing
 
 ---
 

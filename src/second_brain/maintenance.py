@@ -1070,3 +1070,103 @@ def run_pattern_discovery(
                     result.archetypes_rejected += 1
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 — Raw Re-Visitation
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class RevisitationResult:
+    sources_requeued: int = 0
+    sources_skipped: int = 0
+    context_injected_count: int = 0
+
+
+def run_raw_revisitation(
+    connection: sqlite3.Connection,
+    config: AppConfig,
+    *,
+    dry_run: bool = False,
+    retrieve_fn: "Any | None" = None,
+) -> RevisitationResult:
+    result = RevisitationResult()
+    if not config.maintenance.requeue_enabled:
+        return result
+
+    from .extraction.queue import CURRENT_SCHEMA_VERSION
+
+    min_age = config.maintenance.requeue_min_age_days
+    cutoff = (datetime.utcnow().date() - __import__("datetime").timedelta(days=min_age)).isoformat()
+    current_model = config.extraction.llm_model
+
+    rows = connection.execute(
+        """
+        SELECT id, source_kind, archive_id, conversation_id, episode_id,
+               bridge_id, session_id, task_id, content_hash,
+               extraction_schema_version, extraction_model_version,
+               finished_at
+        FROM extraction_queue
+        WHERE status = 'processed'
+          AND finished_at IS NOT NULL
+          AND finished_at < ?
+          AND (
+              extraction_schema_version IS NULL
+              OR extraction_schema_version != ?
+              OR extraction_model_version IS NULL
+              OR extraction_model_version != ?
+          )
+        ORDER BY finished_at ASC
+        LIMIT ?
+        """,
+        (cutoff, CURRENT_SCHEMA_VERSION, current_model, config.maintenance.requeue_max_per_run),
+    ).fetchall()
+
+    for row in rows:
+        if result.sources_requeued >= config.maintenance.requeue_max_per_run:
+            result.sources_skipped += 1
+            continue
+
+        # Context injection
+        context_injected = False
+        if config.maintenance.requeue_context_enabled and retrieve_fn is not None:
+            source_kind = str(row["source_kind"])
+            source_ref = str(row["archive_id"] or row["conversation_id"] or row["episode_id"] or "")
+            if source_ref:
+                try:
+                    related = retrieve_fn(
+                        source_ref,
+                        config=config,
+                        top_k=config.maintenance.requeue_context_top_k,
+                    )
+                    if related:
+                        context_injected = True
+                        result.context_injected_count += 1
+                except Exception:
+                    pass
+
+        if not dry_run:
+            try:
+                connection.execute(
+                    """
+                    UPDATE extraction_queue
+                    SET status = 'pending',
+                        extraction_schema_version = NULL,
+                        extraction_model_version = NULL,
+                        attempt_count = 0,
+                        last_error = NULL,
+                        queued_at = datetime('now')
+                    WHERE id = ?
+                    """,
+                    (int(row["id"]),),
+                )
+                result.sources_requeued += 1
+            except Exception:
+                result.sources_skipped += 1
+        else:
+            result.sources_requeued += 1
+
+    if not dry_run and result.sources_requeued > 0:
+        connection.commit()
+    return result
