@@ -40,19 +40,21 @@ Before Phases 6–7 can run: `ollama pull nomic-embed-text` and set
 
 ### Phase 6: Embedding-Based Neighbor Linking
 
-Status: **not started**.
+Status: **complete**.
 
-Frequency: per-ingestion (fires after each new note is promoted) + scheduled
-backfill sweep for existing notes not yet scanned.
-
-Planned deliverables:
-- `migrations/019_note_embedding_scans.sql` — tracking table
-- `find_embedding_neighbors(conn, config, note_id, ...)` in `maintenance.py`
-- `assert_similar_to_link(conn, config, src_id, tgt_id, ...)` in `maintenance.py`
-- `run_embedding_neighbor_pass(conn, config, note_id) -> int` in `maintenance.py`
-- `run_embedding_neighbor_backfill(conn, config) -> int` in `maintenance.py`
-- Per-ingestion wire-up in `promotion/worker.py` after `_apply_intra_source_relations`
-- Scheduled sweep wire-up in Layer 1 maintenance job
+Deliverables shipped:
+- `migrations/021_note_embedding_scans.sql` — `note_embedding_scans` tracking table
+- `NeighborMatch`, `find_embedding_neighbors`, `assert_similar_to_link`,
+  `run_embedding_neighbor_pass`, `run_embedding_neighbor_backfill` in `maintenance.py`
+  — reads from `note_vectors` (existing table); same-type-only links;
+  similarity ≥ neighbor_threshold → `similar_to`; ≥ dedup_threshold → `merge_review`
+- `MaintenanceConfig`: `embedding_neighbor_enabled`, `neighbor_similarity_threshold`,
+  `neighbor_k`, `neighbor_scan_max_age_days`
+- Per-promotion wire-up in `promotion/worker.py` after `_apply_intra_source_relations`
+- `wiki_embedding_neighbor_backfill` job in `jobs.py` and CLI
+- 5 tests in `EmbeddingNeighborTest`: similar_to link, type boundary, dedup review,
+  backfill scan records, job stats
+- 323 tests passing
 
 ### Phase 7: LLM Pattern Validation and Refinement
 

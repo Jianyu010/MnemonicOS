@@ -449,6 +449,46 @@ def run_job(config: AppConfig, *, job_name: str, dry_run: bool = False) -> JobRu
         connection.close()
         return JobRunResult(job_name=job_name, status="ok", stats=stats, review_items_created=[])
 
+    if job_name == "wiki_cluster_validation":
+        from .maintenance import run_cluster_validation
+        job_id = _open_job_run(connection, job_name, "dry-run" if dry_run else "live")
+        try:
+            cv_result = run_cluster_validation(connection, config, llm_fn=None, dry_run=dry_run)
+            stats["clusters_processed"] = cv_result.clusters_processed
+            stats["links_confirmed"] = cv_result.links_confirmed
+            stats["links_removed"] = cv_result.links_removed
+            stats["merge_reviews_created"] = cv_result.merge_reviews_created
+            stats["patterns_named"] = cv_result.patterns_named
+            with connection:
+                _close_job_run(connection, job_id, status="ok", stats=stats)
+        except Exception as exc:
+            with connection:
+                _close_job_run(connection, job_id, status="error", stats=stats, error_text=str(exc))
+            connection.close()
+            raise
+        connection.close()
+        return JobRunResult(job_name=job_name, status="ok", stats=stats, review_items_created=[])
+
+    if job_name == "wiki_pattern_discovery":
+        from .maintenance import run_pattern_discovery
+        job_id = _open_job_run(connection, job_name, "dry-run" if dry_run else "live")
+        try:
+            pd_result = run_pattern_discovery(connection, config, llm_fn=None, dry_run=dry_run)
+            stats["channel_2_candidates"] = pd_result.channel_2_candidates
+            stats["channel_3_candidates"] = pd_result.channel_3_candidates
+            stats["archetypes_confirmed"] = pd_result.archetypes_confirmed
+            stats["archetypes_rejected"] = pd_result.archetypes_rejected
+            stats["edges_updated"] = pd_result.edges_updated
+            with connection:
+                _close_job_run(connection, job_id, status="ok", stats=stats)
+        except Exception as exc:
+            with connection:
+                _close_job_run(connection, job_id, status="error", stats=stats, error_text=str(exc))
+            connection.close()
+            raise
+        connection.close()
+        return JobRunResult(job_name=job_name, status="ok", stats=stats, review_items_created=[])
+
     if job_name == "wiki_embedding_neighbor_backfill":
         from .maintenance import run_embedding_neighbor_backfill
         job_id = _open_job_run(connection, job_name, "dry-run" if dry_run else "live")

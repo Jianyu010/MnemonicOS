@@ -687,3 +687,386 @@ def run_embedding_neighbor_backfill(
     for row in rows:
         total += run_embedding_neighbor_pass(connection, config, str(row["id"]))
     return total
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 — LLM Cluster Validation + LLM-free Pattern Discovery
+# ---------------------------------------------------------------------------
+
+_ROLE_VOCABULARY = [
+    "source_of_truth",
+    "derived_artifact",
+    "sync_mechanism",
+    "failure_mode",
+    "dependency",
+    "output",
+    "tradeoff",
+    "scope_marker",
+    "negation_marker",
+]
+
+_FAILURE_TOKENS = frozenset([
+    "fail", "error", "broke", "crash", "rollback", "incident", "outage", "bug",
+    "exception", "wrong", "corrupt", "timeout", "deadlock", "regression",
+])
+
+_RESOLUTION_TOKENS = frozenset([
+    "fix", "resolve", "repair", "restore", "recover", "undo", "revert", "patch",
+    "workaround", "mitigation", "solution", "corrected", "prevented",
+])
+
+
+@dataclass(slots=True)
+class ArchetypeCandidate:
+    source_channel: int
+    note_pairs: list[tuple[str, str]]
+    role_signature: dict[str, float]
+    failure_token: str | None
+    resolution_token: str | None
+    candidate_score: float
+
+
+@dataclass(slots=True)
+class ClusterValidationResult:
+    clusters_processed: int = 0
+    links_confirmed: int = 0
+    links_removed: int = 0
+    merge_reviews_created: int = 0
+    patterns_named: int = 0
+
+
+@dataclass(slots=True)
+class PatternDiscoveryResult:
+    channel_2_candidates: int = 0
+    channel_3_candidates: int = 0
+    archetypes_confirmed: int = 0
+    archetypes_rejected: int = 0
+    edges_updated: int = 0
+    layer_2b_triggered: bool = False
+    layer_3_eager_triggered: bool = False
+
+
+def _union_find_clusters(pairs: list[tuple[str, str]]) -> list[list[str]]:
+    parent: dict[str, str] = {}
+
+    def find(x: str) -> str:
+        root = x
+        while root in parent:
+            root = parent[root]
+        # path compression
+        while x in parent:
+            parent[x], x = root, parent[x]
+        return root
+
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    all_nodes: set[str] = set()
+    for a, b in pairs:
+        all_nodes.add(a)
+        all_nodes.add(b)
+        union(a, b)
+
+    groups: dict[str, list[str]] = {}
+    for node in all_nodes:
+        root = find(node)
+        groups.setdefault(root, []).append(node)
+    return list(groups.values())
+
+
+def _role_vector(text: str) -> list[float]:
+    lower = text.casefold()
+    return [float(lower.count(term.replace("_", " "))) for term in _ROLE_VOCABULARY]
+
+
+def _call_llm_json(prompt: str, llm_fn: "Any") -> "dict | None":
+    import json as _json
+    try:
+        raw = llm_fn(prompt)
+        if not isinstance(raw, str):
+            return None
+        # strip markdown code fences if present
+        stripped = raw.strip()
+        if stripped.startswith("```"):
+            lines = stripped.splitlines()
+            stripped = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+        return _json.loads(stripped)
+    except Exception:
+        return None
+
+
+def _add_pattern_tag(config: AppConfig, note_id: str, tag: str) -> bool:
+    row = None
+    try:
+        from .db import connect_db
+        conn = connect_db(config.paths.db_path)
+        row = conn.execute("SELECT body_path FROM notes WHERE id = ?", (note_id,)).fetchone()
+        conn.close()
+    except Exception:
+        pass
+    if row is None:
+        return False
+    note_path = Path(str(row["body_path"]))
+    if not note_path.exists():
+        return False
+    try:
+        text = note_path.read_text(encoding="utf-8")
+        parsed = split_frontmatter(text)
+        metadata = dict(parsed.metadata)
+        tags = list(metadata.get("tags") or [])
+        if tag not in tags:
+            tags.append(tag)
+            metadata["tags"] = tags
+            new_fm = yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False, default_flow_style=False)
+            new_text = f"---\n{new_fm}---\n\n{parsed.body}\n"
+            tmp = note_path.with_suffix(".tmp")
+            tmp.write_text(new_text, encoding="utf-8")
+            os.rename(tmp, note_path)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def run_cluster_validation(
+    connection: sqlite3.Connection,
+    config: AppConfig,
+    llm_fn: "Any | None" = None,
+    *,
+    dry_run: bool = False,
+) -> ClusterValidationResult:
+    result = ClusterValidationResult()
+    if not config.maintenance.cluster_validation_enabled:
+        return result
+
+    rows = connection.execute(
+        """
+        SELECT source_note_id, target_id
+        FROM graph_edges
+        WHERE relation_type = 'similar_to'
+          AND target_kind = 'note'
+        """
+    ).fetchall()
+    if not rows:
+        return result
+
+    pairs = [(str(r["source_note_id"]), str(r["target_id"])) for r in rows]
+    clusters = _union_find_clusters(pairs)
+    min_size = config.maintenance.cluster_validation_min_cluster_size
+    max_size = config.maintenance.cluster_validation_max_size
+    clusters = [c for c in clusters if len(c) >= min_size]
+
+    # Cap large clusters by splitting into chunks
+    capped: list[list[str]] = []
+    for cluster in clusters:
+        while len(cluster) > max_size:
+            capped.append(cluster[:max_size])
+            cluster = cluster[max_size:]
+        if cluster:
+            capped.append(cluster)
+    clusters = capped
+
+    now = datetime.utcnow().isoformat()
+
+    for cluster in clusters:
+        result.clusters_processed += 1
+
+        if llm_fn is None:
+            # No LLM: confirm all existing edges as-is
+            result.links_confirmed += len(cluster)
+            continue
+
+        # Gather note info for LLM prompt
+        id_list = ",".join("?" * len(cluster))
+        note_rows = connection.execute(
+            f"SELECT id, title, summary FROM notes WHERE id IN ({id_list})",
+            cluster,
+        ).fetchall()
+        note_info = {str(r["id"]): {"title": str(r["title"] or ""), "summary": str(r["summary"] or "")} for r in note_rows}
+
+        # Build edge similarity map for this cluster
+        edge_pairs_in_cluster = [(a, b) for (a, b) in pairs if a in note_info and b in note_info]
+
+        prompt = (
+            "You are a knowledge graph curator. Review the following group of notes linked by semantic similarity.\n"
+            "For each pair, decide: valid=true (keep link), valid=false (remove link), "
+            "merge_candidate=true (near-duplicate).\n"
+            "Return JSON: {\"cluster_valid\": bool, \"abstract_pattern\": str, \"pattern_tag\": str, "
+            "\"relations\": [{\"src\": str, \"tgt\": str, \"valid\": bool, \"merge_candidate\": bool, "
+            "\"refined_relation_type\": str, \"merge_rationale\": str|null}], "
+            "\"invalid_pairs\": [{\"src\": str, \"tgt\": str, \"reason\": str}]}\n\n"
+        )
+        for nid, info in note_info.items():
+            prompt += f"- {nid}: {info['title']} — {info['summary'][:120]}\n"
+
+        response = _call_llm_json(prompt, llm_fn)
+        if response is None:
+            logger.warning("cluster validation LLM call failed for cluster %s", cluster[:2])
+            continue
+
+        pattern_tag = str(response.get("pattern_tag") or "").strip()
+
+        for rel in (response.get("relations") or []):
+            src = str(rel.get("src") or rel.get("src_note_id") or "")
+            tgt = str(rel.get("tgt") or rel.get("tgt_note_id") or "")
+            valid = bool(rel.get("valid", True))
+            merge = bool(rel.get("merge_candidate", False))
+            refined = str(rel.get("refined_relation_type") or "similar_to").strip()
+
+            if not src or not tgt:
+                continue
+
+            if valid:
+                result.links_confirmed += 1
+                if not dry_run:
+                    if pattern_tag:
+                        _add_pattern_tag(config, src, pattern_tag)
+                        _add_pattern_tag(config, tgt, pattern_tag)
+                    if refined != "similar_to":
+                        connection.execute(
+                            """
+                            UPDATE graph_edges SET relation_type = ?, updated_at = ?
+                            WHERE source_note_id = ? AND target_id = ? AND relation_type = 'similar_to'
+                            """,
+                            (refined, now, src, tgt),
+                        )
+                    # record positive training pair
+                    connection.execute(
+                        "INSERT INTO maintenance_training_pairs (note_a_id, note_b_id, label, source, created_at) VALUES (?, ?, 1, 'cluster_validation', ?)",
+                        (src, tgt, now),
+                    )
+                if merge:
+                    result.merge_reviews_created += 1
+                    if not dry_run:
+                        from .review import create_review_item as _cri, slugify as _slugify
+                        _slug = _slugify(f"cluster-merge-{src}-{tgt}")
+                        review_dir = config.paths.vault_root / "wiki" / "review"
+                        if not (review_dir / f"{_slug}.md").exists():
+                            _cri(
+                                config,
+                                review_type="merge_review",
+                                suggested_action="review and merge if duplicate",
+                                reason=str(rel.get("merge_rationale") or "cluster validation: near-duplicate"),
+                                confidence="medium",
+                                source_refs=[src, tgt],
+                                slug_seed=f"cluster-merge-{src}-{tgt}",
+                            )
+            else:
+                result.links_removed += 1
+                if not dry_run:
+                    connection.execute(
+                        "DELETE FROM graph_edges WHERE source_note_id = ? AND target_id = ? AND relation_type = 'similar_to'",
+                        (src, tgt),
+                    )
+                    connection.execute(
+                        "INSERT INTO maintenance_training_pairs (note_a_id, note_b_id, label, source, created_at) VALUES (?, ?, 0, 'cluster_validation', ?)",
+                        (src, tgt, now),
+                    )
+
+        if pattern_tag:
+            result.patterns_named += 1
+
+    if not dry_run:
+        connection.commit()
+    return result
+
+
+def run_pattern_discovery(
+    connection: sqlite3.Connection,
+    config: AppConfig,
+    llm_fn: "Any | None" = None,
+    *,
+    dry_run: bool = False,
+) -> PatternDiscoveryResult:
+    result = PatternDiscoveryResult()
+    if not config.maintenance.pattern_discovery_enabled:
+        return result
+
+    # --- Channel 2: role-vector cosine clustering ---
+    rows = connection.execute(
+        """
+        SELECT id, type, summary, title
+        FROM notes
+        WHERE status IS NULL OR status NOT IN ('retired', 'archived', 'superseded')
+        """
+    ).fetchall()
+
+    vecs: dict[str, list[float]] = {}
+    types: dict[str, str] = {}
+    for row in rows:
+        nid = str(row["id"])
+        text = str(row["summary"] or row["title"] or "")
+        vecs[nid] = _role_vector(text)
+        types[nid] = str(row["type"])
+
+    ch2_pairs: list[tuple[str, str, float]] = []
+    ids = list(vecs.keys())
+    for i in range(len(ids)):
+        for j in range(i + 1, len(ids)):
+            a, b = ids[i], ids[j]
+            if types[a] != types[b]:
+                continue
+            sim = _cosine(vecs[a], vecs[b])
+            if sim >= 0.85:
+                ch2_pairs.append((a, b, sim))
+
+    if ch2_pairs:
+        result.channel_2_candidates = len(ch2_pairs)
+
+    # --- Channel 3: failure/resolution symmetry ---
+    incident_rows = connection.execute(
+        "SELECT id, summary, title FROM notes WHERE type = 'incident' AND (status IS NULL OR status NOT IN ('retired','archived','superseded'))"
+    ).fetchall()
+    procedure_rows = connection.execute(
+        "SELECT id, summary, title FROM notes WHERE type = 'procedure' AND (status IS NULL OR status NOT IN ('retired','archived','superseded'))"
+    ).fetchall()
+
+    def _token_match(text: str, token_set: "frozenset[str]") -> "str | None":
+        lower = text.casefold()
+        for tok in token_set:
+            if tok in lower:
+                return tok
+        return None
+
+    ch3_candidates: list[ArchetypeCandidate] = []
+    for inc in incident_rows:
+        fail_tok = _token_match(str(inc["summary"] or inc["title"] or ""), _FAILURE_TOKENS)
+        if fail_tok is None:
+            continue
+        for proc in procedure_rows:
+            res_tok = _token_match(str(proc["summary"] or proc["title"] or ""), _RESOLUTION_TOKENS)
+            if res_tok is None:
+                continue
+            ch3_candidates.append(ArchetypeCandidate(
+                source_channel=3,
+                note_pairs=[(str(inc["id"]), str(proc["id"]))],
+                role_signature={},
+                failure_token=fail_tok,
+                resolution_token=res_tok,
+                candidate_score=0.7,
+            ))
+
+    result.channel_3_candidates = len(ch3_candidates)
+
+    # LLM validation of channel 2 candidates (top candidates only to limit LLM cost)
+    if llm_fn is not None and ch2_pairs:
+        top = ch2_pairs[:20]
+        prompt = (
+            "Review these note pairs for abstract structural role similarity "
+            "(same role in different domains). "
+            "Return JSON: {\"candidates\": [{\"src\": str, \"tgt\": str, "
+            "\"valid\": bool, \"archetype_label\": str|null}]}\n\n"
+        )
+        for a, b, sim in top:
+            prompt += f"- {a} ↔ {b} (role-sim={sim:.2f})\n"
+        resp = _call_llm_json(prompt, llm_fn)
+        if resp is not None:
+            for cand in (resp.get("candidates") or []):
+                if bool(cand.get("valid", False)):
+                    result.archetypes_confirmed += 1
+                else:
+                    result.archetypes_rejected += 1
+
+    return result

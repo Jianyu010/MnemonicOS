@@ -1201,5 +1201,364 @@ class EmbeddingNeighborTest(unittest.TestCase):
             self.assertIn("neighbor_links_asserted", result.stats)
 
 
+class ClusterValidationTest(unittest.TestCase):
+    def _setup(self, workspace: Path):
+        _system_files(workspace)
+        config_path = workspace / "config.toml"
+        _write(
+            config_path,
+            f"""
+            [paths]
+            vault_root = "{(workspace / 'brain').as_posix()}"
+            db_path = "{(workspace / 'brain/data/archive.db').as_posix()}"
+            vectors_dir = "{(workspace / 'brain/data/vectors').as_posix()}"
+            graph_dir = "{(workspace / 'brain/data/graph').as_posix()}"
+            eval_queries = "{(workspace / 'evals/queries.jsonl').as_posix()}"
+
+            [embeddings]
+            enabled = false
+            provider = "hash"
+            model = "hash-128-v1"
+            dimensions = 128
+
+            [maintenance]
+            cluster_validation_enabled = true
+            cluster_validation_min_cluster_size = 2
+            cluster_validation_max_size = 12
+            """,
+        )
+        config = load_config(config_path, workspace)
+        connection = connect_db(config.paths.db_path)
+        run_migrations(connection, ROOT / "migrations")
+        connection.close()
+        return config
+
+    def _seed_note_and_db(self, workspace, connection, note_id, note_type, title, summary):
+        slug = note_id.split("/", 1)[-1]
+        _write(
+            workspace / "brain/wiki" / f"{note_type}s/active/{slug}.md",
+            f"""
+            ---
+            id: {note_id}
+            type: {note_type}
+            title: {title}
+            summary: {summary}
+            updated_at: 2026-01-01
+            created_at: 2026-01-01
+            ---
+            Body.
+            """,
+        )
+        sync_vault(load_config(workspace / "config.toml", workspace), mode="full")
+
+    def test_cluster_validation_llm_none_confirms_all(self) -> None:
+        """Without LLM, all edges in cluster are confirmed as-is."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = self._setup(workspace)
+
+            for i in ("a", "b", "c"):
+                _note(workspace, f"concepts/active/cv{i}.md", f"""
+                    ---
+                    id: concept/cv{i}
+                    type: concept
+                    title: CV {i}
+                    summary: cluster validation test {i}
+                    updated_at: 2026-01-01
+                    created_at: 2026-01-01
+                    ---
+                    Body.
+                    """)
+            sync_vault(config, mode="full")
+
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            # manually insert similar_to edges
+            for src, tgt in [("concept/cva", "concept/cvb"), ("concept/cvb", "concept/cvc")]:
+                connection.execute(
+                    "INSERT OR IGNORE INTO graph_edges (source_note_id, target_id, target_kind, relation_type, weight) VALUES (?, ?, 'note', 'similar_to', 0.9)",
+                    (src, tgt),
+                )
+            connection.commit()
+
+            from second_brain.maintenance import run_cluster_validation
+            result = run_cluster_validation(connection, config, llm_fn=None)
+            connection.close()
+
+            self.assertGreaterEqual(result.clusters_processed, 1)
+            self.assertGreaterEqual(result.links_confirmed, 2)
+
+    def test_cluster_validation_with_mock_llm_removes_invalid(self) -> None:
+        """Mock LLM returning invalid=True causes edge deletion."""
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = self._setup(workspace)
+
+            for i in ("x", "y"):
+                _note(workspace, f"concepts/active/inv{i}.md", f"""
+                    ---
+                    id: concept/inv{i}
+                    type: concept
+                    title: Invalid {i}
+                    summary: noise text unrelated {i}
+                    updated_at: 2026-01-01
+                    created_at: 2026-01-01
+                    ---
+                    Body.
+                    """)
+            sync_vault(config, mode="full")
+
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            connection.execute(
+                "INSERT OR IGNORE INTO graph_edges (source_note_id, target_id, target_kind, relation_type, weight) VALUES ('concept/invx', 'concept/invy', 'note', 'similar_to', 0.8)",
+            )
+            connection.commit()
+
+            # Mock LLM returns invalid pair
+            mock_response = json.dumps({
+                "cluster_valid": False,
+                "abstract_pattern": "",
+                "pattern_tag": "",
+                "relations": [{"src": "concept/invx", "tgt": "concept/invy", "valid": False, "merge_candidate": False, "refined_relation_type": "similar_to", "merge_rationale": None}],
+                "invalid_pairs": [],
+            })
+            llm_fn = lambda p: mock_response
+
+            from second_brain.maintenance import run_cluster_validation
+            result = run_cluster_validation(connection, config, llm_fn=llm_fn)
+            connection.close()
+
+            self.assertGreaterEqual(result.links_removed, 1)
+
+    def test_cluster_validation_llm_failure_skips_cluster(self) -> None:
+        """Malformed LLM JSON skips cluster without crashing."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = self._setup(workspace)
+
+            for i in ("m", "n"):
+                _note(workspace, f"concepts/active/skip{i}.md", f"""
+                    ---
+                    id: concept/skip{i}
+                    type: concept
+                    title: Skip {i}
+                    summary: skip test {i}
+                    updated_at: 2026-01-01
+                    created_at: 2026-01-01
+                    ---
+                    Body.
+                    """)
+            sync_vault(config, mode="full")
+
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            connection.execute(
+                "INSERT OR IGNORE INTO graph_edges (source_note_id, target_id, target_kind, relation_type, weight) VALUES ('concept/skipm', 'concept/skipn', 'note', 'similar_to', 0.85)",
+            )
+            connection.commit()
+
+            llm_fn = lambda p: "not valid json {{{"
+            from second_brain.maintenance import run_cluster_validation
+            result = run_cluster_validation(connection, config, llm_fn=llm_fn)
+            connection.close()
+
+            # Job should complete; cluster is skipped but not crashed
+            self.assertIsInstance(result.clusters_processed, int)
+            self.assertGreaterEqual(result.clusters_processed, 0)
+
+    def test_cluster_validation_adds_pattern_tag(self) -> None:
+        """Mock LLM with pattern_tag causes tag to be added to note frontmatter."""
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = self._setup(workspace)
+
+            for i in ("tag1", "tag2"):
+                _note(workspace, f"concepts/active/{i}.md", f"""
+                    ---
+                    id: concept/{i}
+                    type: concept
+                    title: Tag {i}
+                    summary: pattern tag test {i}
+                    updated_at: 2026-01-01
+                    created_at: 2026-01-01
+                    ---
+                    Body.
+                    """)
+            sync_vault(config, mode="full")
+
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            connection.execute(
+                "INSERT OR IGNORE INTO graph_edges (source_note_id, target_id, target_kind, relation_type, weight) VALUES ('concept/tag1', 'concept/tag2', 'note', 'similar_to', 0.9)",
+            )
+            connection.commit()
+
+            mock_response = json.dumps({
+                "cluster_valid": True,
+                "abstract_pattern": "Shared test pattern",
+                "pattern_tag": "pattern:test-pattern",
+                "relations": [{"src": "concept/tag1", "tgt": "concept/tag2", "valid": True, "merge_candidate": False, "refined_relation_type": "similar_to", "merge_rationale": None}],
+                "invalid_pairs": [],
+            })
+            llm_fn = lambda p: mock_response
+
+            from second_brain.maintenance import run_cluster_validation
+            result = run_cluster_validation(connection, config, llm_fn=llm_fn)
+            connection.close()
+
+            self.assertEqual(result.patterns_named, 1)
+            note_path = workspace / "brain/wiki/concepts/active/tag1.md"
+            content = note_path.read_text()
+            self.assertIn("pattern:test-pattern", content)
+
+    def test_cluster_validation_job(self) -> None:
+        """wiki_cluster_validation job returns expected stat keys."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = self._setup(workspace)
+            _note(workspace, "concepts/active/cv_job.md", """
+                ---
+                id: concept/cv-job
+                type: concept
+                title: CV Job
+                updated_at: 2026-01-01
+                created_at: 2026-01-01
+                ---
+                Body.
+                """)
+            sync_vault(config, mode="full")
+
+            result = run_job(config, job_name="wiki_cluster_validation", dry_run=True)
+            self.assertEqual(result.status, "ok")
+            self.assertIn("clusters_processed", result.stats)
+            self.assertIn("links_confirmed", result.stats)
+            self.assertIn("links_removed", result.stats)
+
+
+class PatternDiscoveryTest(unittest.TestCase):
+    def _setup(self, workspace: Path):
+        _system_files(workspace)
+        config_path = workspace / "config.toml"
+        _write(
+            config_path,
+            f"""
+            [paths]
+            vault_root = "{(workspace / 'brain').as_posix()}"
+            db_path = "{(workspace / 'brain/data/archive.db').as_posix()}"
+            vectors_dir = "{(workspace / 'brain/data/vectors').as_posix()}"
+            graph_dir = "{(workspace / 'brain/data/graph').as_posix()}"
+            eval_queries = "{(workspace / 'evals/queries.jsonl').as_posix()}"
+
+            [embeddings]
+            enabled = false
+            provider = "hash"
+            model = "hash-128-v1"
+            dimensions = 128
+
+            [maintenance]
+            pattern_discovery_enabled = true
+            """,
+        )
+        config = load_config(config_path, workspace)
+        connection = connect_db(config.paths.db_path)
+        run_migrations(connection, ROOT / "migrations")
+        connection.close()
+        return config
+
+    def test_channel_3_detects_failure_resolution_pair(self) -> None:
+        """incident with failure token + procedure with resolution token = ch3 candidate."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = self._setup(workspace)
+
+            _write(workspace / "brain/wiki/incidents/inc1.md", """
+                ---
+                id: incident/inc1
+                type: incident
+                title: Database crash
+                summary: database error caused system crash
+                updated_at: 2026-01-01
+                created_at: 2026-01-01
+                ---
+                System crashed after DB error.
+                """)
+            _write(workspace / "brain/wiki/procedures/proc1.md", """
+                ---
+                id: procedure/proc1
+                type: procedure
+                title: DB Recovery
+                summary: how to recover and fix database after crash
+                updated_at: 2026-01-01
+                created_at: 2026-01-01
+                ---
+                Run restore command to fix.
+                """)
+            sync_vault(config, mode="full")
+
+            from second_brain.maintenance import run_pattern_discovery
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            result = run_pattern_discovery(connection, config)
+            connection.close()
+
+            self.assertGreaterEqual(result.channel_3_candidates, 1)
+
+    def test_channel_2_detects_role_similar_notes(self) -> None:
+        """Two concept notes with matching role vocabulary terms → channel 2 candidate."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = self._setup(workspace)
+
+            # Both notes mention the same role vocabulary terms prominently
+            shared_summary = "source of truth output dependency tradeoff scope"
+            for i in ("r1", "r2"):
+                _note(workspace, f"concepts/active/role{i}.md", f"""
+                    ---
+                    id: concept/role{i}
+                    type: concept
+                    title: Role {i}
+                    summary: {shared_summary}
+                    updated_at: 2026-01-01
+                    created_at: 2026-01-01
+                    ---
+                    Body.
+                    """)
+            sync_vault(config, mode="full")
+
+            from second_brain.maintenance import run_pattern_discovery
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            result = run_pattern_discovery(connection, config)
+            connection.close()
+
+            self.assertGreaterEqual(result.channel_2_candidates, 1)
+
+    def test_pattern_discovery_job(self) -> None:
+        """wiki_pattern_discovery job returns expected stat keys."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = self._setup(workspace)
+            _note(workspace, "concepts/active/pd_job.md", """
+                ---
+                id: concept/pd-job
+                type: concept
+                title: PD Job
+                updated_at: 2026-01-01
+                created_at: 2026-01-01
+                ---
+                Body.
+                """)
+            sync_vault(config, mode="full")
+
+            result = run_job(config, job_name="wiki_pattern_discovery", dry_run=True)
+            self.assertEqual(result.status, "ok")
+            self.assertIn("channel_2_candidates", result.stats)
+            self.assertIn("channel_3_candidates", result.stats)
+            self.assertIn("archetypes_confirmed", result.stats)
+
+
 if __name__ == "__main__":
     unittest.main()

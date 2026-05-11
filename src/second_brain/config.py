@@ -119,6 +119,10 @@ class MaintenanceConfig:
     neighbor_similarity_threshold: float = 0.78
     neighbor_k: int = 10
     neighbor_scan_max_age_days: int = 7
+    cluster_validation_enabled: bool = True
+    cluster_validation_max_size: int = 12
+    cluster_validation_min_cluster_size: int = 2
+    pattern_discovery_enabled: bool = True
 
 
 @dataclass(slots=True)
@@ -313,6 +317,14 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
         importance_scoring_enabled=bool(maintenance_data.get("importance_scoring_enabled", True)),
         semantic_dedup_threshold=float(maintenance_data.get("semantic_dedup_threshold", 0.92)),
         semantic_dedup_enabled=bool(maintenance_data.get("semantic_dedup_enabled", True)),
+        embedding_neighbor_enabled=bool(maintenance_data.get("embedding_neighbor_enabled", True)),
+        neighbor_similarity_threshold=float(maintenance_data.get("neighbor_similarity_threshold", 0.78)),
+        neighbor_k=int(maintenance_data.get("neighbor_k", 10)),
+        neighbor_scan_max_age_days=int(maintenance_data.get("neighbor_scan_max_age_days", 7)),
+        cluster_validation_enabled=bool(maintenance_data.get("cluster_validation_enabled", True)),
+        cluster_validation_max_size=int(maintenance_data.get("cluster_validation_max_size", 12)),
+        cluster_validation_min_cluster_size=int(maintenance_data.get("cluster_validation_min_cluster_size", 2)),
+        pattern_discovery_enabled=bool(maintenance_data.get("pattern_discovery_enabled", True)),
     )
 
     return AppConfig(
