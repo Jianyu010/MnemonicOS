@@ -67,6 +67,53 @@ and titles/summaries. Expected output: `archetype_id`, `label`,
 `layer_a_description`, `layer_b_role_schema`, `relation_type` (from blueprint 6.5),
 `valid: bool`, `reject_reason: str | None`.
 
+## Release Repair: Durable Archetypes
+
+Purpose:
+- Make Layer 2a pattern discovery durable and actionable instead of a stats-only
+  diagnostic pass.
+
+Implementation mark (2026-05-11):
+- The readiness gap is closed. Channel 2/3 discoveries persist confirmed
+  archetypes in `archetypes`, upsert graph edges with archetype metadata, and
+  preserve dry-run safety.
+
+Concrete implementation plan:
+1. Add a migration for:
+   - `archetypes(archetype_id PRIMARY KEY, label, layer_a_description,
+     layer_b_role_schema_json, occurrence_count, score, relation_type,
+     source_channel, created_at, updated_at)`
+   - `graph_edges.archetype_id`
+   - `graph_edges.archetype_score`
+   - `graph_edges.instance_confidence`
+2. Update `run_pattern_discovery` so each LLM-confirmed candidate upserts an
+   archetype record.
+3. For each confirmed candidate pair, upsert or update the matching `graph_edges`
+   row with `relation_type`, `archetype_id`, `archetype_score`, and
+   `instance_confidence`.
+4. Increment or recompute `occurrence_count` from the number of graph-edge
+   instances attached to the archetype.
+5. Return `edges_updated`, `archetypes_confirmed`, and eager trigger booleans from
+   actual persisted changes, not only from candidate counts.
+6. Keep rejected candidates ephemeral unless they are useful for training pairs;
+   do not create graph edges for rejected archetypes.
+
+Acceptance tests:
+- Confirmed Channel 2 archetype writes one `archetypes` row and annotates graph
+  edges.
+- Confirmed Channel 3 archetype writes the expected relation family.
+- Re-running discovery is idempotent: no duplicate archetype rows, occurrence
+  count remains correct.
+- Rejected candidate does not annotate graph edges.
+- When `occurrence_count > M=5`, result marks Layer 3 eager trigger true.
+
+Verified 2026-05-11:
+- `ArchetypePersistenceTest` covers Channel 2, Channel 3, repeat upsert behavior,
+  and dry-run no-write behavior.
+- A live E2E smoke confirmed `wiki_pattern_discovery` creates
+  `archetype/ch3-error-recover` and a matching `graph_edges` row with
+  `archetype_id`, `archetype_score`, and `instance_confidence`.
+
 ## Cluster construction (Layer 1 sub-pass)
 
 A cluster is a connected component of `similar_to` graph edges within a single

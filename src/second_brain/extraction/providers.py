@@ -262,8 +262,9 @@ def make_llm_packet(
     projection_metadata: dict[str, Any],
     windows: list[TextWindow],
     visual_snippets: list[VisualSnippet],
+    existing_knowledge_context: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    packet = {
         "schema_version": SCHEMA_VERSION,
         "active_source_ref": active_source_ref,
         "projection_metadata": projection_metadata,
@@ -279,6 +280,9 @@ def make_llm_packet(
         ],
         "visual_snippets": [snippet.to_payload() for snippet in visual_snippets],
     }
+    if existing_knowledge_context:
+        packet["existing_knowledge_context"] = existing_knowledge_context
+    return packet
 
 
 def _title_from_text(text: str) -> str:

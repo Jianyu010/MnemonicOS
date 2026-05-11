@@ -367,7 +367,7 @@ def run_job(config: AppConfig, *, job_name: str, dry_run: bool = False) -> JobRu
 
     if job_name == "wiki_health_report":
         from .maintenance import compute_wiki_health_stats, detect_semantic_duplicates
-        from .ops import load_open_review_items, load_open_relearn_tasks
+        from .ops import load_open_review_items, load_open_relearn_tasks, write_maintenance_overview
         job_id = _open_job_run(connection, job_name, "dry-run" if dry_run else "live")
         try:
             dedup_pairs = detect_semantic_duplicates(connection, config, dry_run=dry_run)
@@ -382,6 +382,19 @@ def run_job(config: AppConfig, *, job_name: str, dry_run: bool = False) -> JobRu
             stats["wiki_total_notes"] = health.total_notes
             stats["wiki_orphan_notes"] = health.orphan_note_count
             stats["semantic_dedup_candidates"] = len(dedup_pairs)
+            if not dry_run:
+                write_maintenance_overview(
+                    config,
+                    stats=stats,
+                    review_items=open_reviews,
+                    contradiction_rows=[
+                        item for item in open_reviews if item.review_type == "contradiction"
+                    ],
+                    stale_rows=[],
+                    relearn_tasks=open_relearns,
+                    eval_candidates=[],
+                    wiki_health=health,
+                )
             with connection:
                 _close_job_run(connection, job_id, status="ok", stats=stats)
         except Exception as exc:

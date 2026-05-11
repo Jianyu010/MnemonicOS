@@ -1912,10 +1912,22 @@ class ArchetypePersistenceTest(unittest.TestCase):
             run_migrations(connection, ROOT / "migrations")
             result = run_pattern_discovery(connection, config)
             row_count = connection.execute("SELECT COUNT(*) AS n FROM archetypes").fetchone()["n"]
+            edge = connection.execute(
+                """
+                SELECT archetype_id, archetype_score, instance_confidence
+                FROM graph_edges
+                WHERE source_note_id = 'incident/inc-arch'
+                  AND target_id = 'procedure/proc-arch'
+                  AND relation_type = 'evidence_for'
+                """
+            ).fetchone()
             connection.close()
 
             self.assertGreaterEqual(result.archetypes_confirmed, 1)
+            self.assertGreaterEqual(result.edges_updated, 1)
             self.assertGreater(row_count, 0)
+            self.assertIsNotNone(edge, "Channel 3 must create/annotate graph edge")
+            self.assertIsNotNone(edge["archetype_id"])
 
     def test_channel_3_occurrence_count_increments(self) -> None:
         """Running discovery twice increments occurrence_count on the same archetype."""
@@ -1983,12 +1995,6 @@ class ArchetypePersistenceTest(unittest.TestCase):
 
             connection = connect_db(config.paths.db_path)
             run_migrations(connection, ROOT / "migrations")
-            # Insert a graph edge between the two notes so archetype can annotate it
-            connection.execute(
-                "INSERT OR IGNORE INTO graph_edges (source_note_id, target_id, target_kind, relation_type, weight) VALUES ('concept/role-archa2', 'concept/role-archb2', 'note', 'similar_to', 0.9)"
-            )
-            connection.commit()
-
             mock_response = json.dumps({
                 "candidates": [
                     {
@@ -2053,10 +2059,12 @@ class ArchetypePersistenceTest(unittest.TestCase):
             run_migrations(connection, ROOT / "migrations")
             result = run_pattern_discovery(connection, config, dry_run=True)
             row_count = connection.execute("SELECT COUNT(*) AS n FROM archetypes").fetchone()["n"]
+            edge_count = connection.execute("SELECT COUNT(*) AS n FROM graph_edges").fetchone()["n"]
             connection.close()
 
             self.assertGreaterEqual(result.channel_3_candidates, 1)
             self.assertEqual(row_count, 0, "dry_run must not write archetypes rows")
+            self.assertEqual(edge_count, 0, "dry_run must not write graph_edges rows")
 
 
 if __name__ == "__main__":

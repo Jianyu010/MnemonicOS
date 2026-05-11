@@ -14,6 +14,14 @@ _DEFAULT_SCHEDULES = {
     "expire_stale_episodes": "0 * * * *",
     "embed_backfill": "15 * * * *",
     "status_report": "0 * * * *",
+    "wiki_embedding_neighbor_backfill": "20 * * * *",
+    "wiki_cluster_validation": "25 * * * *",
+    "wiki_pattern_discovery": "30 * * * *",
+    "wiki_graph_rebuild": "35 * * * *",
+    "wiki_lifecycle_audit": "40 * * * *",
+    "wiki_importance_scoring": "45 * * * *",
+    "wiki_health_report": "50 * * * *",
+    "wiki_raw_revisitation": "0 2 * * *",
 }
 
 

@@ -13,6 +13,7 @@ if str(SRC) not in sys.path:
 
 from second_brain.config import load_config
 from second_brain.daemon import Daemon
+from second_brain.daemon_jobs import _DEFAULT_SCHEDULES, build_registry
 from second_brain.daemon_status import daemon_status_summary
 from second_brain.db import connect_db, run_migrations
 from second_brain.ingest import ingest_session
@@ -161,6 +162,25 @@ class DaemonJobsTest(unittest.TestCase):
         self.assertIn("oldest pending age: 2 hr 5 min", text)
         self.assertIn("db: 1.5 KB", text)
         self.assertIn("vectors: 8.0 KB", text)
+
+    def test_daemon_defaults_include_maintenance_jobs_without_legacy_rollups(self) -> None:
+        expected = {
+            "wiki_embedding_neighbor_backfill",
+            "wiki_cluster_validation",
+            "wiki_pattern_discovery",
+            "wiki_graph_rebuild",
+            "wiki_lifecycle_audit",
+            "wiki_importance_scoring",
+            "wiki_health_report",
+            "wiki_raw_revisitation",
+        }
+        self.assertTrue(expected.issubset(_DEFAULT_SCHEDULES))
+        self.assertNotIn("daemon_daily", _DEFAULT_SCHEDULES)
+        self.assertNotIn("daemon_weekly", _DEFAULT_SCHEDULES)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = self._prepare_workspace(Path(tmp_dir))
+            registry = build_registry(config)
+            self.assertTrue(expected.issubset(set(registry.job_names())))
 
 
 if __name__ == "__main__":

@@ -794,6 +794,49 @@ def _role_vector(text: str) -> list[float]:
     return [float(lower.count(term.replace("_", " "))) for term in _ROLE_VOCABULARY]
 
 
+def _upsert_archetype_graph_edge(
+    connection: sqlite3.Connection,
+    *,
+    source_note_id: str,
+    target_id: str,
+    relation_type: str,
+    weight: float,
+    archetype_id: str,
+    archetype_score: float,
+    instance_confidence: float,
+    updated_at: str,
+) -> None:
+    target = connection.execute("SELECT type FROM notes WHERE id = ?", (target_id,)).fetchone()
+    target_kind = str(target["type"]) if target is not None else "note"
+    connection.execute(
+        """
+        INSERT INTO graph_edges(
+            source_note_id, target_id, target_kind, relation_type, weight, updated_at,
+            archetype_id, archetype_score, instance_confidence
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(source_note_id, target_id, relation_type) DO UPDATE SET
+            target_kind = excluded.target_kind,
+            weight = excluded.weight,
+            updated_at = excluded.updated_at,
+            archetype_id = excluded.archetype_id,
+            archetype_score = excluded.archetype_score,
+            instance_confidence = excluded.instance_confidence
+        """,
+        (
+            source_note_id,
+            target_id,
+            target_kind,
+            relation_type,
+            weight,
+            updated_at,
+            archetype_id,
+            archetype_score,
+            instance_confidence,
+        ),
+    )
+
+
 def _call_llm_json(prompt: str, llm_fn: "Any") -> "dict | None":
     import json as _json
     try:
@@ -1103,21 +1146,18 @@ def run_pattern_discovery(
                     )
 
             if not dry_run:
-                # Annotate existing edge if any, or create one
-                existing_edge = connection.execute(
-                    "SELECT 1 FROM graph_edges WHERE source_note_id = ? AND target_id = ?",
-                    (inc_id, proc_id),
-                ).fetchone()
-                if existing_edge:
-                    connection.execute(
-                        """
-                        UPDATE graph_edges SET archetype_id = ?, archetype_score = 0.7,
-                        instance_confidence = 0.7, updated_at = ?
-                        WHERE source_note_id = ? AND target_id = ?
-                        """,
-                        (archetype_id, now, inc_id, proc_id),
-                    )
-                    result.edges_updated += 1
+                _upsert_archetype_graph_edge(
+                    connection,
+                    source_note_id=inc_id,
+                    target_id=proc_id,
+                    relation_type="evidence_for",
+                    weight=0.7,
+                    archetype_id=archetype_id,
+                    archetype_score=0.7,
+                    instance_confidence=0.7,
+                    updated_at=now,
+                )
+                result.edges_updated += 1
 
     # --- LLM validation of channel 2 candidates ---
     if llm_fn is not None and ch2_pairs:
@@ -1167,20 +1207,18 @@ def run_pattern_discovery(
                                 "UPDATE archetypes SET occurrence_count = occurrence_count + 1, updated_at = ? WHERE archetype_id = ?",
                                 (now, archetype_id),
                             )
-                        # annotate graph edge if exists
-                        if connection.execute(
-                            "SELECT 1 FROM graph_edges WHERE source_note_id = ? AND target_id = ?",
-                            (src, tgt),
-                        ).fetchone():
-                            connection.execute(
-                                """
-                                UPDATE graph_edges SET archetype_id = ?, archetype_score = 0.8,
-                                instance_confidence = 0.8, updated_at = ?
-                                WHERE source_note_id = ? AND target_id = ?
-                                """,
-                                (archetype_id, now, src, tgt),
-                            )
-                            result.edges_updated += 1
+                        _upsert_archetype_graph_edge(
+                            connection,
+                            source_note_id=src,
+                            target_id=tgt,
+                            relation_type="similar_to",
+                            weight=0.8,
+                            archetype_id=archetype_id,
+                            archetype_score=0.8,
+                            instance_confidence=0.8,
+                            updated_at=now,
+                        )
+                        result.edges_updated += 1
                     result.archetypes_confirmed += 1
                 elif not valid:
                     result.archetypes_rejected += 1

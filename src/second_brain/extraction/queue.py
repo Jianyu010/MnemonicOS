@@ -265,13 +265,17 @@ def _select_queue_row(
 ) -> sqlite3.Row | None:
     if archive_id is not None:
         return connection.execute(
-            "SELECT * FROM extraction_queue WHERE source_kind = ? AND archive_id = ?",
+            """
+            SELECT * FROM extraction_queue
+            WHERE source_kind = ? AND archive_id = ? AND revisit_of_queue_id IS NULL
+            """,
             (source_kind, archive_id),
         ).fetchone()
     return connection.execute(
         """
         SELECT * FROM extraction_queue
         WHERE source_kind = ? AND conversation_id = ? AND episode_id = ?
+          AND revisit_of_queue_id IS NULL
         """,
         (source_kind, conversation_id, episode_id),
     ).fetchone()
@@ -292,6 +296,9 @@ def _row_to_item(row: sqlite3.Row) -> ExtractionQueueItem:
         attempt_count=int(row["attempt_count"]),
         last_error=str(row["last_error"]) if row["last_error"] is not None else None,
         content_hash=str(row["content_hash"]) if row["content_hash"] is not None else None,
+        revisit_of_queue_id=int(row["revisit_of_queue_id"]) if row["revisit_of_queue_id"] is not None else None,
+        revisit_reason=str(row["revisit_reason"]) if row["revisit_reason"] is not None else None,
+        revisit_context_json=str(row["revisit_context_json"]) if row["revisit_context_json"] is not None else None,
     )
 
 

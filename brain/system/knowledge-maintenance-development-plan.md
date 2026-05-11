@@ -249,6 +249,74 @@ regardless of domain vocabulary.
   5 hours; Layer 3 daily 2AM + eager trigger if occurrence_count > M=5.
   Replace the removed `daily_consolidation` and `weekly_hygiene` precursor jobs.
 
+## Release Readiness Repair Purposes
+
+These repair purposes are required before the maintenance layer can be called
+finished. They convert implemented primitives into an operational layer.
+
+### Targeted Loopholes
+
+- **Loophole R1: Historical queue-row reuse.** Raw re-visitation reset a
+  processed queue row even when its candidates were already referenced by
+  `promotion_decisions`.
+- **Loophole R2: Manual-only maintenance.** Maintenance jobs existed as CLI
+  commands but were absent from daemon schedules/composite layer orchestration.
+- **Loophole R3: Invisible health state.** Health stats could be computed without
+  updating the persistent maintenance overview operators read.
+- **Loophole R4: Ephemeral archetypes.** Pattern discovery could count candidates
+  without persisting confirmed archetypes or annotating graph edges.
+- **Loophole R5: Roadmap drift.** Contradictory roadmap status blocks made
+  release readiness ambiguous.
+
+1. **Ledger-safe re-visitation**: Raw re-visitation must insert fresh queue rows
+   with lineage metadata. It must never reset a historical queue row whose
+   candidates may already be referenced by promotion decisions.
+   **Implementation mark 2026-05-11:** fixed with lineage columns, fresh-row
+   insertion, duplicate revisit suppression, and prompt context handoff.
+2. **Scheduled orchestration**: Maintenance must run from daemon schedules or
+   composite scheduled layer jobs, not only from manual `run-job` commands.
+   **Implementation mark 2026-05-11:** individual maintenance jobs are scheduled
+   in daemon defaults and example/local config.
+3. **Visible health reporting**: Wiki health stats must update the maintenance
+   overview markdown in live runs so operators can see the layer's state.
+   **Implementation mark 2026-05-11:** live `wiki_health_report` writes
+   `brain/wiki/overviews/maintenance.md`; dry-run remains read-only.
+4. **Durable archetypes**: Pattern discovery must persist confirmed archetypes
+   and annotate graph edges, not merely return candidate counts.
+   **Implementation mark 2026-05-11:** implemented with
+   `migrations/025_archetype_storage.sql`, Channel 2/3 archetype upserts,
+   graph-edge upserts/back-references, and dry-run guards.
+5. **Roadmap truth maintenance**: Roadmap status blocks must distinguish
+   implemented, release-blocked, deferred, and complete states without duplicate
+   contradictory sections.
+
+Concrete orchestration target:
+
+```text
+Per promotion:
+  run_embedding_neighbor_pass(note_id)
+
+Scheduled Layer 1 sweep:
+  wiki_embedding_neighbor_backfill
+  wiki_cluster_validation
+
+Scheduled Layer 2a/2b governance:
+  wiki_pattern_discovery
+  wiki_graph_rebuild
+  wiki_lifecycle_audit
+  compute_note_trust_stats + compute_note_freshness
+  wiki_importance_scoring
+  wiki_health_report (writes maintenance overview)
+
+Scheduled Layer 3 revisit:
+  wiki_raw_revisitation
+  process_extraction_queue
+  process_promotion_queue
+```
+
+If implemented as composite jobs, keep the individual jobs available for manual
+diagnostics and tests.
+
 ## Invariants
 
 1. **Maintenance jobs never write extraction candidates or promotion decisions.**
