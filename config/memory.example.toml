@@ -98,6 +98,11 @@ wiki_lifecycle_audit = "40 * * * *"
 wiki_importance_scoring = "45 * * * *"
 wiki_health_report = "50 * * * *"
 wiki_raw_revisitation = "0 2 * * *"
+wiki_derive_passive_feedback = "*/30 * * * *"
+
+[maintenance]
+passive_feedback_enabled = true
+passive_feedback_inline_only = false
 
 [bridges.local_cli]
 session_prefix = "local-cli"

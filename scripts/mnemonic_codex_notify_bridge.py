@@ -72,7 +72,7 @@ def _capture_notify_payload(argv: list[str], notify_payload: dict[str, Any]) -> 
         ),
     )
 
-    for event_type, payload in events:
+    for event_type, payload, timestamp in events:
         append_event(
             config,
             AppendEventRequest(
@@ -81,6 +81,7 @@ def _capture_notify_payload(argv: list[str], notify_payload: dict[str, Any]) -> 
                 episode_id=begun.episode_id,
                 event_type=event_type,
                 payload=payload,
+                timestamp=timestamp,
             ),
         )
 
@@ -231,6 +232,7 @@ def _notify_payload(argv: list[str]) -> dict[str, Any] | None:
 
 
 def _capture_notify_events(payload: dict[str, Any]):
+    turn_id = payload.get("turn-id") or payload.get("turn_id")
     input_messages = payload.get("input-messages")
     if isinstance(input_messages, list):
         for message in input_messages:
@@ -238,16 +240,49 @@ def _capture_notify_events(payload: dict[str, Any]):
                 yield "user_message", {
                     "content": message.strip(),
                     "source": "codex_notify_payload",
-                    "turn_id": payload.get("turn-id") or payload.get("turn_id"),
-                }
+                    "turn_id": turn_id,
+                }, None
 
     assistant = payload.get("last-assistant-message") or payload.get("last_assistant_message")
     if isinstance(assistant, str) and assistant.strip():
         yield "assistant_message", {
             "content": assistant.strip(),
             "source": "codex_notify_payload",
-            "turn_id": payload.get("turn-id") or payload.get("turn_id"),
-        }
+            "turn_id": turn_id,
+        }, None
+
+    for embedded in _embedded_notify_entries(payload):
+        for event_type, event_payload, timestamp in _capture_events([embedded]):
+            event_payload.setdefault("turn_id", turn_id)
+            yield event_type, event_payload, timestamp
+
+
+def _embedded_notify_entries(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return structured turn events carried inside an agent-turn-complete payload.
+
+    Codex notify payload shapes have changed over time.  The importer accepts a
+    small set of explicit event-array keys so wrappers can pass full transcript
+    entries without losing the stable turn boundary from agent-turn-complete.
+    """
+    entries: list[dict[str, Any]] = []
+    for key in ("events", "transcript-events", "transcript_events", "response-items", "response_items"):
+        raw_entries = payload.get(key)
+        if not isinstance(raw_entries, list):
+            continue
+        for raw in raw_entries:
+            if not isinstance(raw, dict):
+                continue
+            if key in {"response-items", "response_items"}:
+                entries.append(
+                    {
+                        "type": "response_item",
+                        "timestamp": raw.get("timestamp") or payload.get("timestamp"),
+                        "payload": raw,
+                    }
+                )
+            else:
+                entries.append(raw)
+    return entries
 
 
 def _latest_transcript() -> Path | None:
@@ -302,6 +337,27 @@ def _capture_events(entries: list[dict[str, Any]]):
         timestamp = entry.get("timestamp")
         entry_type = entry.get("type")
         payload = entry.get("payload")
+        if entry_type in {
+            "retrieval_packet",
+            "skill_use",
+            "web_fetch",
+            "file_changed",
+            "file_diff",
+            "artifact_created",
+            "conclusion",
+            "plan_update",
+            "agent_delegation",
+            "failure",
+            "branch_started",
+            "branch_completed",
+            "conversation_reference",
+        }:
+            event_payload = payload if isinstance(payload, dict) else {
+                k: v for k, v in entry.items() if k not in {"type", "timestamp"}
+            }
+            event_payload.setdefault("source", "codex_structured_event")
+            yield str(entry_type), event_payload, timestamp
+            continue
         if not isinstance(payload, dict):
             continue
 
@@ -317,32 +373,114 @@ def _capture_events(entries: list[dict[str, Any]]):
                 elif role == "assistant":
                     yield "assistant_message", {"content": content, "source": "codex_transcript"}, timestamp
             elif item_type in {"function_call", "custom_tool_call"}:
-                yield "tool_call", {"source": "codex_transcript", "payload": payload}, timestamp
+                yield "tool_call", _tool_call_payload(payload, source="codex_transcript"), timestamp
             elif item_type in {"function_call_output", "custom_tool_call_output"}:
-                yield "tool_result", {"source": "codex_transcript", "payload": payload}, timestamp
+                yield "tool_result", _tool_result_payload(payload, source="codex_transcript"), timestamp
             continue
 
         if entry_type == "event_msg":
             event_kind = payload.get("type")
-            if event_kind in {
-                "exec_command_end",
-                "patch_apply_end",
-                "web_search_end",
-                "task_started",
-                "task_complete",
-                "agent_message",
-                "user_message",
-            }:
-                mapped = "assistant_message" if event_kind == "agent_message" else "tool_result"
-                if event_kind == "user_message":
-                    mapped = "user_message"
-                content = payload.get("message") if event_kind in {"agent_message", "user_message"} else None
-                event_payload: dict[str, Any] = {"source": "codex_event_msg", "event_type": event_kind}
+            if event_kind == "agent_message":
+                content = payload.get("message")
                 if isinstance(content, str) and content.strip():
-                    event_payload["content"] = content
-                else:
-                    event_payload["payload"] = payload
+                    yield "assistant_message", {
+                        "source": "codex_event_msg",
+                        "event_type": event_kind,
+                        "content": content.strip(),
+                    }, timestamp
+                continue
+            if event_kind == "user_message":
+                content = payload.get("message")
+                if isinstance(content, str) and content.strip():
+                    yield "user_message", {
+                        "source": "codex_event_msg",
+                        "event_type": event_kind,
+                        "content": content.strip(),
+                    }, timestamp
+                continue
+            mapped = _event_msg_mapping(str(event_kind or ""))
+            if mapped is not None:
+                event_payload = _event_msg_payload(payload, source="codex_event_msg", event_type=str(event_kind or ""))
+                if mapped == "tool_call":
+                    event_payload = _tool_call_payload(payload, source="codex_event_msg")
+                if mapped == "tool_result":
+                    event_payload = _tool_result_payload(payload, source="codex_event_msg")
                 yield mapped, event_payload, timestamp
+
+
+def _event_msg_mapping(event_kind: str) -> str | None:
+    if event_kind in {"exec_command_end", "exec_command_start"}:
+        return "tool_result" if event_kind.endswith("_end") else "tool_call"
+    if event_kind in {"patch_apply_end", "patch_apply_start"}:
+        return "file_diff" if event_kind.endswith("_end") else "tool_call"
+    if event_kind in {"web_search_end", "web_open_end", "web_fetch_end"}:
+        return "web_fetch"
+    if event_kind in {"task_started", "task_complete"}:
+        return "conclusion" if event_kind == "task_complete" else "plan_update"
+    if event_kind in {"skill_use", "retrieval_packet", "artifact_created", "file_changed"}:
+        return event_kind
+    return None
+
+
+def _tool_call_payload(payload: dict[str, Any], *, source: str) -> dict[str, Any]:
+    name = payload.get("name") or payload.get("tool_name") or payload.get("call_name") or payload.get("type")
+    call_id = payload.get("call_id") or payload.get("id") or payload.get("callId")
+    raw_input = payload.get("arguments")
+    if raw_input is None:
+        raw_input = payload.get("input") if "input" in payload else payload.get("tool_input")
+    return {
+        "source": source,
+        "tool_name": str(name or ""),
+        "call_id": str(call_id or ""),
+        "input": _jsonish(raw_input),
+        "raw_payload": payload,
+    }
+
+
+def _event_msg_payload(payload: dict[str, Any], *, source: str, event_type: str) -> dict[str, Any]:
+    normalized = {k: v for k, v in payload.items() if k != "type"}
+    normalized["source"] = source
+    normalized["event_type"] = event_type
+    normalized["raw_payload"] = payload
+    return normalized
+
+
+def _tool_result_payload(payload: dict[str, Any], *, source: str) -> dict[str, Any]:
+    name = payload.get("name") or payload.get("tool_name") or payload.get("call_name") or payload.get("type")
+    call_id = payload.get("call_id") or payload.get("id") or payload.get("callId")
+    output = payload.get("output")
+    if output is None:
+        output = payload.get("result") if "result" in payload else payload.get("content")
+    if output is None and isinstance(payload.get("tool_response"), dict):
+        output = payload["tool_response"].get("output") or payload["tool_response"].get("result")
+    is_error = bool(payload.get("is_error") or payload.get("error") or payload.get("status") == "error")
+    return {
+        "source": source,
+        "tool_name": str(name or ""),
+        "call_id": str(call_id or ""),
+        "is_error": is_error,
+        "output": _stringify_output(output),
+        "raw_payload": payload,
+    }
+
+
+def _jsonish(value: Any) -> Any:
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped:
+            try:
+                return json.loads(stripped)
+            except json.JSONDecodeError:
+                return value
+    return value if value is not None else {}
+
+
+def _stringify_output(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
 
 def _message_text(content: Any) -> str:

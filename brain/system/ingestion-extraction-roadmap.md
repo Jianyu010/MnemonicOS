@@ -425,6 +425,52 @@ Acceptance:
 - Provider failure never creates promoted candidates.
 - All degraded behavior is visible in extraction status and daemon status.
 
+## Phase 9: Retrieval Attribution in Session Extraction
+
+Status: **complete 2026-05-13**.
+
+Owner plan: `ingestion-extraction-plan.md` — "Retrieval Attribution in Session Extraction" section.
+
+### Goal
+
+Enable the extraction LLM to recognize `## Memory Context` blocks in session text
+and emit `retrieval_attribution` arrays in candidate payloads, giving the promotion
+and maintenance layers evidence about which retrieved notes the session used,
+corroborated, corrected, or contradicted.
+
+### Scope
+
+- `src/second_brain/extraction/providers.py` — extend `_candidate_extraction_prompt()`
+  with retrieval context recognition instructions
+- `src/second_brain/extraction/providers.py` — extend `FixtureLLMProvider` to emit
+  `retrieval_attribution` in fixture output when packet contains `retrieval_context_note_ids`
+- `src/second_brain/extraction/validation.py` — validate and strip-on-error
+  `retrieval_attribution` field in candidate payloads
+- `src/second_brain/extraction/providers.py` — extend `make_llm_packet()` to accept
+  optional `retrieval_context_note_ids: list[str]` for downstream tests
+- Tests: session fixture with `## Memory Context` block → validate attribution
+  propagates through extraction → promotion ledger
+
+### Constraints
+
+- Validation warning on malformed attribution does not block promotion.
+- Extraction LLM may only reference `note_id` values from the `## Memory Context`
+  block in the session text — invented IDs are stripped at validation.
+- Only `passive_used_likely`-compatible evidence types emitted by extraction;
+  outcome-quality labels deferred to maintenance post-hoc path.
+
+### Acceptance
+
+- Extraction prompt instructs LLM to recognize retrieval context markers.
+- Valid `retrieval_attribution` arrays pass validation and reach
+  `promotion_decisions.retrieval_attribution_json`.
+- Malformed entries produce warnings, not rejections.
+- Fixture provider supports attribution for deterministic tests.
+- Test covering full path: session with `## Memory Context` → extraction →
+  `retrieval_attribution` in candidate → promotion → ledger row.
+
+---
+
 ## Architectural Conclusion
 
 The LLM/VLM layer is good enough to hand off to the next layer. It consumes only
@@ -437,3 +483,8 @@ extraction queue row and applied to wiki note frontmatter by the promotion layer
 after the bundle's candidates are promoted. Phase 8 is the primary source of graph
 edges between notes that come from the same raw material — the only point in the
 pipeline with visibility across all candidates from one source simultaneously.
+
+Phase 9 adds passive feedback signal production: extraction sessions that include
+retrieved notes in their raw material now annotate candidates with attribution
+evidence, closing the feedback loop between retrieval and ingestion without
+requiring a separate LLM attribution pass at maintenance time for those sessions.

@@ -11,6 +11,15 @@ from .models import (
     ModelCandidate,
 )
 
+SUPPORTED_ATTRIBUTION_EVIDENCE_TYPES: frozenset[str] = frozenset({
+    "paraphrase",
+    "semantic_reliance",
+    "task_trajectory",
+    "correction",
+    "contradiction",
+    "supersession",
+})
+
 # Relation types the LLM may assert between intra-source candidates.
 # Mirrors graph.py RELATION_WEIGHTS keys.
 SUPPORTED_INTRA_RELATION_TYPES: frozenset[str] = frozenset({
@@ -136,6 +145,55 @@ def validate_intra_source_relations(
     return valid
 
 
+def validate_retrieval_attribution(
+    raw: object,
+    *,
+    warnings: list[str],
+) -> list[dict[str, Any]]:
+    """Validate and clean a retrieval_attribution array from a candidate payload.
+
+    Invalid entries are stripped and recorded as warnings. The candidate is never
+    rejected solely on attribution errors. Returns the cleaned list (may be empty).
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        warnings.append("retrieval_attribution_not_list")
+        return []
+    cleaned: list[dict[str, Any]] = []
+    seen_keys: set[tuple[str, str]] = set()
+    for index, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            warnings.append(f"retrieval_attribution_entry_not_object: {index}")
+            continue
+        note_id = str(entry.get("note_id") or "").strip()
+        evidence_type = str(entry.get("evidence_type") or "").strip()
+        if not note_id:
+            warnings.append(f"retrieval_attribution_missing_note_id: {index}")
+            continue
+        if evidence_type not in SUPPORTED_ATTRIBUTION_EVIDENCE_TYPES:
+            warnings.append(
+                f"retrieval_attribution_unsupported_evidence_type: {evidence_type or '<empty>'} at {index}"
+            )
+            continue
+        key = (note_id, evidence_type)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        confidence_raw = entry.get("confidence")
+        if confidence_raw is None:
+            confidence = 0.0
+        else:
+            try:
+                confidence = float(confidence_raw)
+            except (TypeError, ValueError):
+                warnings.append(f"retrieval_attribution_bad_confidence: {index}")
+                confidence = 0.0
+        confidence = max(0.0, min(1.0, confidence))
+        cleaned.append({"note_id": note_id, "evidence_type": evidence_type, "confidence": confidence})
+    return cleaned
+
+
 def validate_candidate(
     payload: dict[str, Any],
     *,
@@ -167,7 +225,22 @@ def validate_candidate(
     _validate_component_links(payload.get("components"), component_ids, errors)
     _validate_temporal_order(payload.get("temporal_order"), component_ids, errors)
     _validate_traces(payload.get("traces"), component_ids, errors)
-    validation_status = "promotion_ready" if not errors else "invalid"
+    # Validate optional retrieval_attribution. Warnings go into errors list with
+    # "retrieval_attribution_warning:" prefix so they are visible but do not block
+    # promotion (the final validation_status check is on non-warning errors only).
+    attribution_warnings: list[str] = []
+    cleaned_attribution = validate_retrieval_attribution(
+        payload.get("retrieval_attribution"),
+        warnings=attribution_warnings,
+    )
+    for w in attribution_warnings:
+        errors.append(f"retrieval_attribution_warning:{w}")
+    # Replace payload attribution with cleaned version (strips invalid entries).
+    # Do this on a copy so caller's dict is not mutated unexpectedly.
+    if "retrieval_attribution" in payload or cleaned_attribution:
+        payload = {**payload, "retrieval_attribution": cleaned_attribution}
+    hard_errors = [e for e in errors if not e.startswith("retrieval_attribution_warning:")]
+    validation_status = "promotion_ready" if not hard_errors else "invalid"
     return ModelCandidate(
         candidate_type=candidate_type or "unknown",
         title=title or "Untitled candidate",

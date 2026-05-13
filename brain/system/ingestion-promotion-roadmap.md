@@ -213,6 +213,36 @@ LLM bundle → intra_source_relations_json (Phase 8)
 
 - Intra-source relation application (blocked on LLM/VLM Phase 8).
 
+## Amendment: Passive Attribution Ledger Write
+
+Status: **complete 2026-05-13**.
+
+Owner plan: `ingestion-promotion-plan-phase4.md` — "Passive Attribution Ledger Write" section.
+
+When a promoted candidate's payload contains a `retrieval_attribution` array
+(extracted by the LLM during session extraction per extraction Phase 9), the wiki
+writer stores it as `promotion_decisions.retrieval_attribution_json`. This column
+is the handoff to the maintenance layer's passive feedback derivation job.
+
+Planned deliverables:
+
+- `migrations/026_passive_feedback.sql` — adds `retrieval_attribution_json TEXT`
+  column to `promotion_decisions`; creates `note_passive_feedback` table.
+- `src/second_brain/promotion/writer.py` — extend `write_promotion()` to accept
+  `retrieval_attribution_json: str | None` and store it in the ledger row.
+- `src/second_brain/promotion/worker.py` — extract `retrieval_attribution` from
+  `payload["retrieval_attribution"]` (if present) and pass serialized to writer.
+- Tests: promotion with `retrieval_attribution` in payload → ledger row has
+  non-null `retrieval_attribution_json`.
+
+Constraints:
+- Does not modify the wiki file of any note referenced in `retrieval_attribution`.
+- Does not write `note_passive_feedback` — that is maintenance-owned.
+- Stored for all decision types (`new`, `confirm`, `update`, `review`).
+- Absence of field in payload → null in ledger (no error, no warning).
+
+---
+
 ## Architectural Conclusion
 
 The promotion layer is operational. The two Phase 5 gaps (stuck-row recovery, post-
@@ -223,13 +253,22 @@ post-processing to write LLM-asserted relations between same-source notes to the
 frontmatter and rebuild their graph edges. This closes the primary graph edge gap
 for notes produced through the automated pipeline.
 
-MnemonicOS full pipeline after both amendments ship:
+The passive attribution amendment closes the feedback loop: extracted sessions that
+include retrieved notes now carry attribution evidence through to the promotion ledger,
+where the maintenance passive feedback derivation job can consume it without a
+separate LLM pass.
+
+MnemonicOS full pipeline after all amendments ship:
 
 ```text
 west flange
-    → LLM/VLM extraction (candidates + intra_source_relations)
+    → LLM/VLM extraction (candidates + intra_source_relations + retrieval_attribution)
     → promotion gate → decision engine → note renderer → atomic wiki write
     → bundle-aware second pass → apply_relation_to_note → rebuild_note_graph
+    → store retrieval_attribution_json in promotion_decisions
     → sync_vault (writes corroboration_count + all note fields to DB) + embed_backfill
-    → knowledge maintenance layer (see ingestion-maintenance-plan.md)
+    → knowledge maintenance layer:
+        derive_passive_feedback (inline + post-hoc paths)
+        → note_passive_feedback → note_trust / note_freshness updates
+    → (retrieval Stage 3 reads note_passive_feedback for NoteSignals)
 ```

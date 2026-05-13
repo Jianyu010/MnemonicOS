@@ -16,6 +16,13 @@ finding notes that share abstract patterns or semantic neighborhoods. It also
 periodically re-visits original true raws to extract richer structure as the wiki
 and its schemas mature.
 
+Maintenance also owns passive retrieval feedback derivation. Most agents will
+not explicitly report which retrieved note helped or misled them. Instead, the
+raw session becomes evidence: after extraction and promotion, maintenance may
+infer that a retrieved note was used, useful, stale, superseded, contradicted, or
+misleading. This inference may use broad semantic and LLM-validated evidence,
+not just exact note-ID/title matches.
+
 The precursor `daily_consolidation` and `weekly_hygiene` daemon jobs have been
 removed as a clean slate. Their trust/freshness, contradiction detection, and
 review routing logic will be rebuilt inside this layer's job structure.
@@ -248,6 +255,160 @@ regardless of domain vocabulary.
   Layers 2a+2b batched trigger (N≥10 new notes OR T≥1hr); B-only routine every
   5 hours; Layer 3 daily 2AM + eager trigger if occurrence_count > M=5.
   Replace the removed `daily_consolidation` and `weekly_hygiene` precursor jobs.
+- **Passive retrieval feedback**: delayed, evidence-backed feedback inferred from
+  raw sessions and promoted notes after a retrieval call. Labels include
+  `passive_used_likely`, `passive_useful_likely`, and
+  `passive_misleading_likely`. Evidence may include paraphrased reliance on a
+  retrieved note, code/command/decision trajectories aligned with retrieved
+  guidance, fresh research that contradicts a note, supersession, later
+  correction, incidents linked to retrieved procedures/decisions, or repeated
+  retries that abandon prior guidance. Exact note IDs and quotes are useful but
+  not required when LLM-validated semantic attribution is strong.
+- **`note_passive_feedback`**: the materialized table of passive feedback evidence
+  written exclusively by the maintenance layer. Each row records a `note_id`,
+  `feedback_state`, `confidence`, `method` (`extraction_inline` or
+  `maintenance_post_hoc`), and the session that produced the evidence. The
+  retrieval path's Stage 3 signal integration reads this table to populate
+  `NoteSignals.passive_feedback_state`.
+- **`extraction_inline` method**: passive feedback derived from
+  `promotion_decisions.retrieval_attribution_json`. Only `passive_used_likely` is
+  emitted. Does not require a separate LLM call — the extraction LLM already did
+  the attribution work during session extraction.
+- **`maintenance_post_hoc` method**: passive feedback derived by the maintenance
+  job via cross-episode analysis of retrieval logs and promoted session evidence.
+  All three labels (`passive_used_likely`, `passive_useful_likely`,
+  `passive_misleading_likely`) are possible. Requires a maintenance LLM call.
+- **Session pairing key**: `promotion_decisions.archive_id` links a promoted
+  candidate to the session archive that produced it. This is the join key between
+  a retrieval event (`retrieval_hits`) and the session evidence that followed it.
+
+## Passive Retrieval Feedback
+
+Maintenance derives passive retrieval feedback from the join between retrieval
+logs and later session evidence:
+
+```text
+retrieval_queries / retrieval_hits
+  + raw session episode
+  + promoted notes, incidents, decisions, relations, outcomes
+  -> confidence-weighted passive feedback
+  -> note_trust, note_freshness, relearn tasks, rerank training labels
+```
+
+Evidence classes:
+
+| Evidence | Derived feedback |
+|----------|------------------|
+| retrieved note is paraphrased, followed, or operationalized | `passive_used_likely` |
+| task succeeds after attributable use | `passive_useful_likely` |
+| later correction says retrieved knowledge was wrong/stale | `passive_misleading_likely` |
+| promoted incident contradicts retrieved note | freshness/contradiction negative |
+| promoted note supersedes retrieved note | lifecycle/freshness negative |
+| task fails with no note-specific attribution | weak query failure only |
+
+Guardrails:
+
+- Do not infer `misleading` from task failure alone.
+- Require note-specific attribution for strong negative labels.
+- Weight passive labels below explicit runtime feedback.
+- Preserve evidence provenance and confidence for audit/review.
+- Feed confirmed passive evidence into `note_trust`, `note_freshness`, and
+  rerank training; do not mutate canonical note content solely from feedback.
+
+### Two-Path Architecture
+
+Passive feedback is derived via two complementary paths. Both write to the same
+`note_passive_feedback` table, distinguished by the `method` column.
+
+#### Path 1 — Inline Attribution (per-session, extraction-time)
+
+```text
+session raw (contains ## Memory Context block)
+  -> extraction LLM recognizes retrieved note IDs
+  -> candidate payload: retrieval_attribution: [{note_id, evidence_type, confidence}]
+  -> promotion stores in promotion_decisions.retrieval_attribution_json
+  -> derive_passive_feedback reads promotion_decisions rows
+  -> writes note_passive_feedback(method="extraction_inline")
+  -> updates note_trust / note_freshness for referenced note
+```
+
+Scope of inline path:
+- Covers only the current episode. Cannot observe task outcome from later episodes.
+- Can assert `passive_used_likely` when evidence_type is paraphrase, semantic_reliance,
+  or task_trajectory.
+- Cannot assert `passive_useful_likely` or `passive_misleading_likely` — those require
+  outcome evidence from a later episode. These labels are reserved for Path 2.
+- Fires per-session as part of the `derive_passive_feedback` job run after promotion.
+
+Strongest inline signal: a candidate whose promotion decision is `confirm` or `update`
+on note X AND whose `retrieval_attribution` points to note X. This means the session
+both retrieved note X and produced new content that independently corroborates it —
+high-confidence `passive_used_likely` with a `passive_useful_likely` bias.
+
+#### Path 2 — Post-Hoc Maintenance Derivation (batched, maintenance-time)
+
+```text
+retrieval_hits (query_id, note_id, retrieved_at)
+  + promoted notes, incidents, decisions from sessions after the retrieval call
+  -> same session pairing via promotion_decisions.archive_id
+  -> LLM attribution: did session use / contradict / supersede note X?
+  -> writes note_passive_feedback(method="maintenance_post_hoc")
+  -> updates note_trust / note_freshness
+```
+
+Scope of post-hoc path:
+- Covers all historical and new sessions regardless of whether inline attribution
+  was extracted.
+- Can derive all label types including outcome-quality labels (`passive_useful_likely`,
+  `passive_misleading_likely`) by observing cross-episode task trajectories.
+- Skips sessions where `note_passive_feedback` already has an `extraction_inline`
+  row for the same `(note_id, session_archive_id)` pair (avoids double-counting).
+- Uses `promotion_decisions.archive_id` as the session identity key to join
+  retrieval hits with promoted session evidence.
+- Runs as a batched maintenance job (Layer 2b cadence or per-ingestion).
+
+#### Session Pairing
+
+The link between a retrieval call and the session evidence that follows it is:
+
+```
+retrieval_hits.query_id → retrieval_queries.archive_id (the session that triggered retrieval)
+promotion_decisions.archive_id (the session whose raw produced this candidate)
+```
+
+When both reference the same `archive_id`, the candidate's session and the retrieval
+event are the same session. Cross-episode pairing (retrieval in session A, outcome
+in session B) requires session chain linking via agent identity or `chain_id`.
+
+#### `note_passive_feedback` Table (migration 026)
+
+```sql
+CREATE TABLE note_passive_feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    note_id TEXT NOT NULL,
+    retrieval_hit_id INTEGER,               -- FK to retrieval_hits if available
+    session_archive_id TEXT,                -- which session produced the evidence
+    feedback_state TEXT NOT NULL,           -- passive_used_likely | passive_useful_likely | passive_misleading_likely
+    confidence REAL NOT NULL DEFAULT 0.0,   -- 0.0–1.0
+    method TEXT NOT NULL,                   -- extraction_inline | maintenance_post_hoc
+    evidence_type TEXT,                     -- from retrieval_attribution vocabulary
+    derived_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    UNIQUE(note_id, session_archive_id, feedback_state, method)
+);
+
+CREATE INDEX IF NOT EXISTS idx_note_passive_feedback_note
+    ON note_passive_feedback(note_id, derived_at DESC);
+```
+
+#### Ownership Invariant
+
+**Maintenance is the sole writer of `note_passive_feedback`.**
+
+- Promotion stores `retrieval_attribution_json` in the ledger; it does not write
+  `note_passive_feedback`.
+- The retrieval path (Stage 3 signal integration) reads `note_passive_feedback`
+  as a consumer; it does not write it.
+- No other layer may insert or update `note_passive_feedback` rows.
 
 ## Release Readiness Repair Purposes
 
@@ -344,6 +505,18 @@ diagnostics and tests.
    re-extraction prompts are never modified by the re-extraction process itself;
    only the new extracted candidates can create new wiki notes or corroborate
    existing ones through the normal promotion path.
+10. **Maintenance is the sole writer of `note_passive_feedback`.** No other layer
+    (promotion, retrieval, extraction) may insert or update rows in this table.
+    Promotion stores raw attribution evidence in `promotion_decisions.retrieval_attribution_json`;
+    maintenance reads that and decides how to materialize passive labels.
+11. **`passive_used_likely` is the only label the inline path emits.** Outcome-quality
+    labels (`passive_useful_likely`, `passive_misleading_likely`) require cross-episode
+    task trajectory evidence that is not available within a single extraction session.
+    The maintenance post-hoc path is the only path authorized to assign these labels.
+12. **Deduplication of inline and post-hoc coverage.** The post-hoc derivation job
+    skips sessions that already have an `extraction_inline` row for the same
+    `(note_id, session_archive_id, feedback_state)` triple. Double-counting is
+    prevented by the UNIQUE constraint on `note_passive_feedback`.
 
 ## Existing infrastructure reused (do not rebuild)
 

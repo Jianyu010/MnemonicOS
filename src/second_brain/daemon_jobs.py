@@ -22,6 +22,7 @@ _DEFAULT_SCHEDULES = {
     "wiki_importance_scoring": "45 * * * *",
     "wiki_health_report": "50 * * * *",
     "wiki_raw_revisitation": "0 2 * * *",
+    "wiki_derive_passive_feedback": "*/30 * * * *",
 }
 
 

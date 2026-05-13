@@ -158,6 +158,97 @@ STOP: later deterministic wiki promotion layer
 - **East flange**: retrieval and context delivery. It remains decoupled from
   extraction processing.
 
+## Retrieval Attribution in Session Extraction
+
+### Background
+
+Agent sessions may contain retrieved MnemonicOS notes embedded as context before
+the agent responds. The `mnemonic_context.sh` hook injects this as a
+`## Memory Context` block at the head of the prompt, including note titles, types,
+summaries, freshness flags, and note IDs under `current_hits:`, `stale_hits:`, and
+`contested_hits:`. This block is part of the raw session text and is therefore
+present in the text windows seen by the extraction LLM.
+
+Without explicit instruction, the LLM may re-extract retrieved note content as new
+candidates, producing redundant wiki notes, or may silently ignore it. Both
+outcomes lose useful signal. The correct behavior is to recognize the block and
+emit `retrieval_attribution` metadata that the promotion and maintenance layers can
+use to derive passive feedback for the retrieved notes.
+
+### `retrieval_attribution` Field
+
+Each candidate in `mnemos-extraction-v1` may carry an optional top-level field:
+
+```json
+"retrieval_attribution": [
+  {
+    "note_id": "procedure/use-run-python-after-write-file",
+    "evidence_type": "semantic_reliance",
+    "confidence": 0.8
+  }
+]
+```
+
+Rules:
+- Optional. Omit entirely if no retrieval context is identifiable.
+- `note_id` must be a string matching a `current_hits:`, `stale_hits:`, or
+  `contested_hits:` entry from the `## Memory Context` block in the session.
+- `evidence_type` must be one of:
+  - `paraphrase` — agent restated retrieved note content verbatim or nearly so
+  - `semantic_reliance` — agent used the guidance without explicit restatement
+  - `task_trajectory` — agent's action sequence matches retrieved procedure/decision
+  - `correction` — agent corrected or updated the retrieved note's content
+  - `contradiction` — agent's findings contradict the retrieved note
+  - `supersession` — agent produced a newer version of the retrieved concept
+- `confidence` is a float 0.0–1.0. Omit or set to 0.0 if attribution is weak.
+- A single candidate may attribute to multiple notes (array).
+- Attribution on a candidate means that candidate's session content provides
+  evidence about that note — not that the candidate is a copy of that note.
+
+### Outcome Label Scope
+
+The extraction LLM can observe only what is in the current episode. Therefore:
+
+- `passive_used_likely` is derivable inline: LLM sees retrieved note + session use.
+- `passive_useful_likely` and `passive_misleading_likely` require task outcome
+  evidence, which may appear only in a later episode. These labels are deferred to
+  the maintenance post-hoc derivation path (Gap 3). The extraction LLM must not
+  attempt to assign outcome-quality labels.
+
+### Extraction Prompt Responsibility
+
+The extraction prompt instructs the LLM to:
+1. Scan text windows for a `<!-- MnemonicOS context block` marker and
+   `## Memory Context` section.
+2. If found, read `current_hits:`, `stale_hits:`, and `contested_hits:` note IDs.
+3. For each candidate it produces: if the candidate's content appears to rely on,
+   paraphrase, correct, or contradict a retrieved note, add `retrieval_attribution`
+   to that candidate.
+4. Do not re-extract retrieved note content as a standalone new candidate unless it
+   genuinely contains new information not in the existing note.
+5. Do not invent note IDs. Use only IDs present in the `## Memory Context` block.
+
+### Validation
+
+`retrieval_attribution` is optional. When present, validation checks:
+- Is an array.
+- Each entry has `note_id` (non-empty string) and `evidence_type` (from vocabulary).
+- `confidence` if present is a float 0.0–1.0.
+- Entries with unrecognized `evidence_type` are stripped and recorded as a
+  validation warning (not a hard rejection).
+
+Invalid `retrieval_attribution` does not block promotion. It produces a validation
+warning and the field is treated as absent.
+
+### What This Layer Does Not Do
+
+- Does not modify existing wiki notes based on retrieval attribution.
+- Does not assign outcome-quality feedback labels (useful/misleading).
+- Does not call the retrieval API; it reads only what is already in the session raw.
+- Does not produce `note_passive_feedback` rows. That is maintenance's job.
+
+---
+
 ## Acceptance Criteria
 
 The LLM/VLM layer is complete when:

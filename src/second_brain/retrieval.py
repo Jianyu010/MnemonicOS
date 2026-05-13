@@ -1,205 +1,22 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from dataclasses import asdict
-from datetime import date
 import json
 import re
-import sqlite3
 
 from .config import AppConfig
 from .db import connect_db, run_migrations
-from .embedding_providers import build_embedding_provider, embedding_model_key
-from .graph import graph_expand
-from .models import RetrieveHit, RetrieveResult
+from .models import RetrieveHit, RetrieveResult, RecallCandidate
 from .paths import VaultPaths
-from .query_parser import QueryHints, TYPE_PRIORS, parse_query, tokenize as _tokenize_query
-from .semantics import cosine_similarity, vector_from_json
-from .trust import freshness_multiplier, load_note_freshness, load_note_trust, load_rerank_model
-
-@dataclass(slots=True)
-class _Candidate:
-    id: str
-    title: str
-    type: str
-    status: str | None
-    chain_id: str | None
-    lifecycle_state: str | None
-    body_path: str
-    summary: str
-    body: str
-    channels: set[str]
-    exact_rank: int | None = None
-    bm25_rank: int | None = None
-    bm25_score: float | None = None
-    semantic_score: float | None = None
-    graph_score: float | None = None
-    graph_relations: list[str] | None = None
-    freshness_score: float | None = None
-    freshness_state: str | None = None
-    trust_score: float | None = None
-    type_prior_score: float | None = None
-    updated_at: str | None = None
-    created_at: str | None = None
-    last_verified_at: str | None = None
-
-
-def _query_terms(query: str) -> str:
-    terms = _tokenize_query(query)
-    if terms == ["*"]:
-        escaped = query.replace('"', ' ')
-        return f'"{escaped}"'
-    return " OR ".join(f'"{term.replace(chr(34), " ")}"' for term in terms)
+from .query_parser import QueryHints, parse_query
+from .recall import recall
+from .signal_integration import integrate_signals
+from .trust import load_rerank_model
 
 
 def _load_pinned_paths(config: AppConfig) -> list[str]:
     vault_paths = VaultPaths(config.paths.workspace_root, config.paths.vault_root)
     return [str(path.resolve()) for path in vault_paths.pinned_files() if path.exists()]
-
-
-def _exact_hits(connection: sqlite3.Connection, query: str) -> list[sqlite3.Row]:
-    rows = connection.execute(
-        """
-        SELECT DISTINCT n.id, n.title, n.type, n.status, n.chain_id, n.lifecycle_state, n.body_path, n.summary, ns.body,
-               n.updated_at, n.created_at, n.last_verified_at
-        FROM notes n
-        JOIN notes_search ns ON ns.note_id = n.id
-        LEFT JOIN aliases a ON a.note_id = n.id
-        WHERE (
-               a.alias = ?
-            OR n.id = ?
-            OR lower(n.title) = lower(?)
-        )
-          AND (n.status IS NULL OR n.status != 'retired')
-          AND (n.valid_to IS NULL OR n.valid_to > date('now'))
-        ORDER BY n.updated_at DESC, n.title ASC
-        """,
-        (query, query, query),
-    ).fetchall()
-    return rows
-
-
-def _bm25_hits(connection: sqlite3.Connection, query: str, limit: int) -> list[sqlite3.Row]:
-    match_query = _query_terms(query)
-    rows = connection.execute(
-        """
-        SELECT
-            n.id,
-            n.title,
-            n.type,
-            n.status,
-            n.chain_id,
-            n.lifecycle_state,
-            n.body_path,
-            n.summary,
-            ns.body,
-            n.updated_at,
-            n.created_at,
-            n.last_verified_at,
-            bm25(notes_fts) AS bm25_score
-        FROM notes_fts
-        JOIN notes_search ns ON ns.rowid = notes_fts.rowid
-        JOIN notes n ON n.id = ns.note_id
-        WHERE notes_fts MATCH ?
-          AND (n.status IS NULL OR n.status != 'retired')
-          AND (n.valid_to IS NULL OR n.valid_to > date('now'))
-        ORDER BY bm25_score
-        LIMIT ?
-        """,
-        (match_query, limit),
-    ).fetchall()
-    return rows
-
-
-def _semantic_hits(connection: sqlite3.Connection, config: AppConfig, query: str, limit: int) -> list[sqlite3.Row]:
-    if not config.embeddings.enabled:
-        return []
-    query_vector = build_embedding_provider(config).embed_texts([query])[0]
-    rows = connection.execute(
-        """
-        SELECT
-            n.id,
-            n.title,
-            n.type,
-            n.status,
-            n.chain_id,
-            n.lifecycle_state,
-            n.body_path,
-            n.summary,
-            ns.body,
-            n.updated_at,
-            n.created_at,
-            n.last_verified_at,
-            nv.vector_json
-        FROM note_vectors nv
-        JOIN notes n ON n.id = nv.note_id
-        JOIN notes_search ns ON ns.note_id = n.id
-        WHERE nv.model = ?
-          AND (n.status IS NULL OR n.status != 'retired')
-          AND (n.valid_to IS NULL OR n.valid_to > date('now'))
-        """,
-        (embedding_model_key(config),),
-    ).fetchall()
-
-    scored: list[tuple[float, sqlite3.Row]] = []
-    for row in rows:
-        score = cosine_similarity(query_vector, vector_from_json(str(row["vector_json"])))
-        if score <= 0.0:
-            continue
-        scored.append((score, row))
-    scored.sort(key=lambda item: item[0], reverse=True)
-    return [row for _, row in scored[:limit]]
-
-
-def _archive_hits(connection: sqlite3.Connection, query: str, limit: int) -> list[sqlite3.Row]:
-    match_query = _query_terms(query)
-    return connection.execute(
-        """
-        SELECT
-            ac.id AS chunk_id,
-            ac.chunk_index,
-            ac.summary,
-            ac.body,
-            a.id AS archive_id,
-            a.path AS archive_path,
-            bm25(chunks_fts) AS bm25_score
-        FROM chunks_fts
-        JOIN archive_chunks ac ON ac.id = chunks_fts.rowid
-        JOIN archive a ON a.id = ac.archive_id
-        WHERE chunks_fts MATCH ?
-        ORDER BY bm25_score
-        LIMIT ?
-        """,
-        (match_query, limit),
-    ).fetchall()
-
-
-def _freshness_score(candidate: _Candidate) -> float:
-    raw_date = candidate.last_verified_at or candidate.updated_at or candidate.created_at
-    if not raw_date:
-        return 0.2
-    try:
-        year, month, day = (int(part) for part in raw_date.split("-")[:3])
-        delta = (date.today() - date(year, month, day)).days
-    except Exception:
-        return 0.2
-    return max(0.0, 1.0 - min(delta, 365) / 365.0)
-
-
-def _type_prior(query_type: str | None, note_type: str) -> float:
-    if query_type is None:
-        return 0.0
-    return TYPE_PRIORS.get(query_type, {}).get(note_type, 0.0)
-
-
-def _seed_score(candidate: _Candidate) -> float:
-    if candidate.exact_rank is not None:
-        return 1_000_000.0 - candidate.exact_rank
-    bm25_component = 0.0
-    if candidate.bm25_rank is not None:
-        bm25_component = 1.0 / candidate.bm25_rank
-    semantic_component = max(candidate.semantic_score or 0.0, 0.0)
-    return bm25_component + semantic_component
 
 
 def retrieve(
@@ -232,143 +49,29 @@ def retrieve(
     query_type = parsed_query.query_type
     classifier_confidence = parsed_query.classifier_confidence
     temporality = parsed_query.temporality
-    candidates: dict[str, _Candidate] = {}
+    candidate_pool = recall(
+        config,
+        parsed_query,
+        connection=connection,
+        include_archive_fallback=include_archive_fallback,
+    )
+    enriched_pool = integrate_signals(config, parsed_query, candidate_pool, connection=connection)
+    candidates: dict[str, RecallCandidate] = {
+        item.candidate.id: item.candidate for item in enriched_pool.wiki_candidates
+    }
+    signal_map = {item.candidate.id: item.signals for item in enriched_pool.wiki_candidates}
 
-    exact_rows = _exact_hits(connection, query)
-    for rank, row in enumerate(exact_rows, start=1):
-        candidates[str(row["id"])] = _Candidate(
-            id=str(row["id"]),
-            title=str(row["title"]),
-            type=str(row["type"]),
-            status=str(row["status"]) if row["status"] is not None else None,
-            chain_id=str(row["chain_id"]) if row["chain_id"] is not None else None,
-            lifecycle_state=str(row["lifecycle_state"]) if row["lifecycle_state"] is not None else None,
-            body_path=str(row["body_path"]),
-            summary=str(row["summary"] or ""),
-            body=str(row["body"] or ""),
-            channels={"exact"},
-            exact_rank=rank,
-            updated_at=str(row["updated_at"] or ""),
-            created_at=str(row["created_at"] or ""),
-            last_verified_at=str(row["last_verified_at"] or ""),
-        )
-
-    bm25_rows = _bm25_hits(connection, query, requested_top_k * 4)
-    for rank, row in enumerate(bm25_rows, start=1):
-        note_id = str(row["id"])
-        bm25_score = float(row["bm25_score"] or 0.0)
-        if note_id in candidates:
-            candidate = candidates[note_id]
-            candidate.channels.add("bm25")
-            candidate.bm25_rank = rank
-            candidate.bm25_score = bm25_score
-            continue
-        candidates[note_id] = _Candidate(
-            id=note_id,
-            title=str(row["title"]),
-            type=str(row["type"]),
-            status=str(row["status"]) if row["status"] is not None else None,
-            chain_id=str(row["chain_id"]) if row["chain_id"] is not None else None,
-            lifecycle_state=str(row["lifecycle_state"]) if row["lifecycle_state"] is not None else None,
-            body_path=str(row["body_path"]),
-            summary=str(row["summary"] or ""),
-            body=str(row["body"] or ""),
-            channels={"bm25"},
-            bm25_rank=rank,
-            bm25_score=bm25_score,
-            updated_at=str(row["updated_at"] or ""),
-            created_at=str(row["created_at"] or ""),
-            last_verified_at=str(row["last_verified_at"] or ""),
-        )
-
-    semantic_rows = _semantic_hits(connection, config, query, requested_top_k * 4)
-    query_vector = build_embedding_provider(config).embed_texts([query])[0] if config.embeddings.enabled else []
-    for row in semantic_rows:
-        note_id = str(row["id"])
-        semantic_score = cosine_similarity(query_vector, vector_from_json(str(row["vector_json"])))
-        if note_id in candidates:
-            candidate = candidates[note_id]
-            candidate.channels.add("semantic")
-            candidate.semantic_score = semantic_score
-            continue
-        candidates[note_id] = _Candidate(
-            id=note_id,
-            title=str(row["title"]),
-            type=str(row["type"]),
-            status=str(row["status"]) if row["status"] is not None else None,
-            chain_id=str(row["chain_id"]) if row["chain_id"] is not None else None,
-            lifecycle_state=str(row["lifecycle_state"]) if row["lifecycle_state"] is not None else None,
-            body_path=str(row["body_path"]),
-            summary=str(row["summary"] or ""),
-            body=str(row["body"] or ""),
-            channels={"semantic"},
-            semantic_score=semantic_score,
-            updated_at=str(row["updated_at"] or ""),
-            created_at=str(row["created_at"] or ""),
-            last_verified_at=str(row["last_verified_at"] or ""),
-        )
-
-    if config.graph.enabled and candidates:
-        focal_ids = [
-            candidate.id
-            for candidate in sorted(candidates.values(), key=_seed_score, reverse=True)[: config.graph.focal_limit]
-        ]
-        graph_rows = graph_expand(connection, focal_ids=focal_ids, limit=config.graph.expand_limit)
-        for graph_hit in graph_rows:
-            if graph_hit.id in candidates:
-                candidate = candidates[graph_hit.id]
-                candidate.channels.add("graph")
-                candidate.graph_score = graph_hit.graph_score
-                candidate.graph_relations = graph_hit.relation_types
-                continue
-            candidates[graph_hit.id] = _Candidate(
-                id=graph_hit.id,
-                title=graph_hit.title,
-                type=graph_hit.type,
-                status=graph_hit.status,
-                chain_id=None,
-                lifecycle_state=None,
-                body_path=graph_hit.body_path,
-                summary=graph_hit.summary,
-                body=graph_hit.body,
-                channels={"graph"},
-                graph_score=graph_hit.graph_score,
-                graph_relations=graph_hit.relation_types,
-                updated_at=graph_hit.updated_at,
-                created_at=graph_hit.created_at,
-                last_verified_at=graph_hit.last_verified_at,
-            )
-
-    trust_signals = load_note_trust(connection, list(candidates))
-    freshness_signals = load_note_freshness(connection, list(candidates))
-    candidate_ids = list(candidates)
-    importance_map: dict[str, float] = {}
-    if candidate_ids:
-        placeholders = ",".join("?" * len(candidate_ids))
-        imp_rows = connection.execute(
-            f"SELECT note_id, importance_score FROM note_importance WHERE note_id IN ({placeholders})",
-            candidate_ids,
-        ).fetchall()
-        importance_map = {str(r["note_id"]): float(r["importance_score"] or 0.0) for r in imp_rows}
     rerank_model = load_rerank_model(connection)
     ranked_hits: list[RetrieveHit] = []
     bm25_max_rank = max(((candidate.bm25_rank or 0) for candidate in candidates.values()), default=0) or 1
     graph_max_score = max(((candidate.graph_score or 0.0) for candidate in candidates.values()), default=0.0) or 1.0
-    for candidate in candidates.values():
-        trust_signal = trust_signals.get(candidate.id)
-        freshness_signal = freshness_signals.get(candidate.id)
-        trust_score = trust_signal.usefulness_score if trust_signal is not None else 0.0
-        freshness_score = _freshness_score(candidate)
-        type_prior_score = _type_prior(query_type, candidate.type)
-        if freshness_signal is not None:
-            freshness_state = freshness_signal.freshness_state
-            freshness_score = max(0.0, 1.0 - freshness_signal.staleness_score)
-        else:
-            freshness_state = "fresh"
-        candidate.trust_score = trust_score
-        candidate.freshness_score = freshness_score
-        candidate.freshness_state = freshness_state
-        candidate.type_prior_score = type_prior_score
+    for enriched_candidate in enriched_pool.wiki_candidates:
+        candidate = enriched_candidate.candidate
+        signals = enriched_candidate.signals
+        trust_score = signals.trust_score
+        freshness_score = signals.freshness_score
+        freshness_state = signals.freshness_state
+        type_prior_score = signals.type_prior_score
 
         if candidate.exact_rank is not None:
             final_score = 1_000_000.0 - candidate.exact_rank
@@ -377,7 +80,10 @@ def retrieve(
             bm25_norm = 0.0
             if candidate.bm25_rank is not None:
                 bm25_norm = 1.0 - ((candidate.bm25_rank - 1) / bm25_max_rank)
-            semantic_norm = max(candidate.semantic_score or 0.0, 0.0)
+            semantic_norm = max(
+                candidate.learned_score if candidate.learned_score is not None else (candidate.semantic_score or 0.0),
+                0.0,
+            )
             graph_norm = max(candidate.graph_score or 0.0, 0.0) / graph_max_score
             freshness_weight = rerank_model.weights.get("freshness_weight", config.retrieval.freshness_weight)
             bm25_weight = rerank_model.weights.get("bm25_weight", config.retrieval.bm25_weight)
@@ -385,15 +91,13 @@ def retrieve(
             graph_weight = rerank_model.weights.get("graph_weight", config.graph.graph_weight)
             type_prior_weight = rerank_model.weights.get("type_prior_weight", config.retrieval.type_prior_weight)
             trust_weight = rerank_model.weights.get("trust_weight", config.retrieval.memory_strength_weight)
+            if query_type is not None and (classifier_confidence or 0.0) >= 1.0:
+                type_prior_weight = max(type_prior_weight, 0.25)
             if query_type == "what_changed":
                 freshness_weight = max(freshness_weight, 0.25)
 
             exact_bonus = 1.0 if "exact" in candidate.channels else 0.0
-            freshness_multiplier_value = freshness_multiplier(
-                config,
-                state=freshness_state,
-                temporality=temporality,
-            )
+            freshness_multiplier_value = signals.freshness_multiplier
             historical_bonus = 0.0
             if temporality == "historical":
                 if freshness_state == "stale":
@@ -412,14 +116,20 @@ def retrieve(
                 + config.retrieval.exact_alias_weight * exact_bonus
                 + historical_bonus
             ) * freshness_multiplier_value
-            if candidate.graph_score is not None and candidate.semantic_score is None and candidate.bm25_score is None:
+            if candidate.graph_score is not None and candidate.semantic_score is None and candidate.learned_score is None and candidate.bm25_score is None:
                 raw_score = candidate.graph_score
             else:
-                raw_score = candidate.semantic_score if candidate.semantic_score is not None else candidate.bm25_score
+                raw_score = (
+                    candidate.learned_score
+                    if candidate.learned_score is not None
+                    else candidate.semantic_score
+                    if candidate.semantic_score is not None
+                    else candidate.bm25_score
+                )
 
         excerpt = candidate.summary or candidate.body[:240]
-        if candidate.graph_relations:
-            relation_summary = ", ".join(candidate.graph_relations[:3])
+        if candidate.relation_types:
+            relation_summary = ", ".join(candidate.relation_types[:3])
             if relation_summary:
                 excerpt = f"{excerpt} | graph: {relation_summary}".strip(" |")
         if freshness_state not in {"fresh", ""}:
@@ -439,32 +149,32 @@ def retrieve(
                 raw_score=raw_score,
                 final_score=final_score,
                 excerpt=excerpt,
-                relation_types=list(candidate.graph_relations or []),
+                relation_types=list(candidate.relation_types or []),
             )
         )
 
     ranked_hits = sorted(ranked_hits, key=lambda hit: (-hit.final_score, hit.title.casefold()))[:requested_top_k]
 
     archive_hits: list[RetrieveHit] = []
-    include_archive = config.retrieval.include_archive_fallback if include_archive_fallback is None else include_archive_fallback
-    if not ranked_hits and include_archive:
-        for rank, row in enumerate(_archive_hits(connection, query, requested_top_k), start=1):
-            score = 1.0 - ((rank - 1) / max(requested_top_k, 1))
+    if not ranked_hits and enriched_pool.archive_candidates:
+        for archive_item in enriched_pool.archive_candidates:
+            archive_candidate = archive_item.candidate
+            score = 1.0 - (((archive_candidate.bm25_rank or 1) - 1) / max(requested_top_k, 1))
             archive_hits.append(
                 RetrieveHit(
-                    id=f"{row['archive_id']}#chunk-{row['chunk_index']}",
-                    title=f"Archive chunk {row['chunk_index']}",
+                    id=archive_candidate.id,
+                    title=f"Archive chunk {archive_candidate.chunk_index}",
                     type="archive_chunk",
                     status=None,
                     chain_id=None,
                     freshness_state=None,
                     lifecycle_state=None,
-                    body_path=str(row["archive_path"]),
-                    summary=str(row["summary"] or ""),
+                    body_path=archive_candidate.archive_path,
+                    summary=archive_candidate.summary,
                     channels=["archive"],
-                    raw_score=float(row["bm25_score"] or 0.0),
+                    raw_score=archive_candidate.bm25_score,
                     final_score=score,
-                    excerpt=str(row["summary"] or row["body"][:240]),
+                    excerpt=archive_candidate.excerpt,
                     relation_types=[],
                 )
             )
@@ -512,6 +222,8 @@ def retrieve(
             primary_channel = (
                 "exact"
                 if "exact" in hit.channels
+                else "learned"
+                if "learned" in hit.channels
                 else "semantic"
                 if "semantic" in hit.channels
                 else "graph"
@@ -527,6 +239,7 @@ def retrieve(
             )
             original = candidates.get(hit.id)
             if original is not None:
+                signals = signal_map[hit.id]
                 connection.execute(
                     """
                     INSERT INTO retrieval_hit_features(
@@ -551,12 +264,12 @@ def retrieve(
                         1 if original.exact_rank is not None else 0,
                         original.bm25_rank,
                         original.bm25_score,
-                        original.semantic_score,
+                        original.learned_score if original.learned_score is not None else original.semantic_score,
                         original.graph_score,
-                        original.freshness_score,
-                        original.type_prior_score,
-                        original.trust_score,
-                        importance_map.get(hit.id, 0.0),
+                        signals.freshness_score,
+                        signals.type_prior_score,
+                        signals.trust_score,
+                        signals.importance_score,
                     ),
                 )
 

@@ -41,16 +41,17 @@ Critical bugs found:
 
 ## Stage 2 — Multi-Channel Recall
 
-**Plan:** retrieval-recall-plan.md (not yet written)
+**Plan:** [retrieval-recall-plan.md](retrieval-recall-plan.md)
+**Roadmap:** [retrieval-recall-roadmap.md](retrieval-recall-roadmap.md)
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| S2-P1 | `CandidatePool` contract + exact channel | not started |
-| S2-P2 | BM25 channel (expanded terms, single query prep) | not started |
-| S2-P3 | Semantic channel (single query-vector encode, no double-encode) | not started |
-| S2-P4 | Graph channel (seed from top candidates, cold-start handling) | not started |
-| S2-P5 | Archive channel with policy gate | not started |
-| S2-P6 | Candidate merge + structural wiki/archive separation | not started |
+| S2-P1 | `CandidatePool` contract + exact channel | done |
+| S2-P2 | BM25 channel (expanded terms, single query prep) | done |
+| S2-P3 | Semantic channel (single query-vector encode, no double-encode) | done |
+| S2-P4 | Graph channel (bounded seeds, depth-1 expansion, cold-start handling) | done |
+| S2-P5 | Archive channel with policy gate | done |
+| S2-P6 | Candidate merge + structural wiki/archive separation | done |
 
 **Gate:** `CandidatePool` correctly separates wiki and archive candidates.
 
@@ -58,31 +59,38 @@ Critical bugs found:
 
 ## Stage 3 — Signal Integration
 
-**Plan:** retrieval-signal-integration-plan.md (not yet written)
+**Plan:** [retrieval-signal-integration-plan.md](retrieval-signal-integration-plan.md)
+**Roadmap:** [retrieval-signal-integration-roadmap.md](retrieval-signal-integration-roadmap.md)
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| S3-P1 | `NoteSignals` typed struct | not started |
-| S3-P2 | Batch signal load (trust, freshness, importance) | not started |
-| S3-P3 | Content quality gate (`quality_pass` field) | not started |
-| S3-P4 | Freshness multiplier precompute | not started |
+| S3-P1 | `NoteSignals` / `SignalEnrichedCandidatePool` contract and defaults | done |
+| S3-P2 | Batch loaders for trust, freshness, importance, passive feedback | done |
+| S3-P3 | Summary/control-signal quality gate | done |
+| S3-P4 | Passive feedback evidence vocabulary and confidence classes | done |
+| S3-P5 | Integration assembly and instrumentation payload | done |
 
-**Gate:** `importance_score` loaded and carried through to Stage 4 scoring formula.
-This fixes the critical dead-code bug from the audit.
+**Gate:** v1 complete. `integrate_signals()` exists, Stage 3 emits typed
+enriched candidates, `importance_score` is carried into retrieval feature
+logging, passive feedback is loaded from `note_passive_feedback` when migration
+026 is present, and the east-flange → recall → signal-integration path is
+covered by tests. Pre-migration databases fall back to deterministic passive
+feedback defaults.
 
 ---
 
 ## Stage 4 — Reranking
 
-**Plan:** retrieval-reranking-plan.md (not yet written)
+**Plan:** [retrieval-reranking-plan.md](retrieval-reranking-plan.md)
+**Roadmap:** [retrieval-reranking-roadmap.md](retrieval-reranking-roadmap.md)
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| S4-P1 | Scoring formula with all signals (including `importance_weight`) | not started |
-| S4-P2 | Separate archive scoring (BM25 rank only) | not started |
-| S4-P3 | `mnemonic_eval_train.sh` + daemon job to trigger training | not started |
-| S4-P4 | Weight key alignment (`trust_weight` in `trust.py` ↔ config key) | not started |
-| S4-P5 | Instrumentation logging moved to Stage 4 (out of `retrieve()` monolith) | not started |
+| S4-P1 | `RankedHits` contract and wiki/archive lane separation | not started |
+| S4-P2 | Heuristic scoring formula with importance and quality | not started |
+| S4-P3 | Exact bypass and archive scoring rules | not started |
+| S4-P4 | Caps, diversification, deterministic stability | not started |
+| S4-P5 | Training labels, weights, and feedback integration | not started |
 
 **Gate:** `train_rerank_model()` triggered by daemon; weights confirmed in
 `rerank_weights` table. This fixes the second critical bug from the audit.

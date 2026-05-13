@@ -108,6 +108,20 @@ fi
 
 [[ -z "$RESULT" ]] && exit 0
 
+# Emit retrieval_packet event when a retrieval result exists (even if empty/no-hit).
+if [[ -n "$CONVERSATION_ID" && -n "$EPISODE_ID" && -n "$STATE" ]]; then
+  RETRIEVAL_PAYLOAD=$(CONTEXT="$CONTEXT" STATE="$STATE" python3 -c \
+    "import json,os; print(json.dumps({'state': os.environ.get('STATE',''), 'context_markdown': os.environ.get('CONTEXT','')}))" \
+    2>/dev/null) || RETRIEVAL_PAYLOAD="{}"
+  "${CLI[@]}" capture append-event \
+    --bridge-id claude \
+    --conversation-id "$CONVERSATION_ID" \
+    --episode-id "$EPISODE_ID" \
+    --type retrieval_packet \
+    --payload-json "$RETRIEVAL_PAYLOAD" \
+    --json >/dev/null 2>&1 || true
+fi
+
 [[ -z "$CONTEXT" || "$STATE" == "insufficient_no_hit" ]] && exit 0
 
 python3 -c "import json,sys; print(json.dumps({'context':sys.argv[1]}))" "$CONTEXT"
