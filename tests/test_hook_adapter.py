@@ -505,6 +505,7 @@ class TestCodexHookAdapter(unittest.TestCase):
         self.assertEqual([event["type"] for event in events], [
             "episode_started",
             "user_message",
+            "retrieval_packet",
             "assistant_message",
             "episode_ended",
         ])
@@ -555,6 +556,138 @@ class TestCodexHookAdapter(unittest.TestCase):
             self.assertIn("first user message", transcript)
             self.assertIn("second user message", transcript)
             self.assertIn("assistant response", transcript)
+        finally:
+            shutil.rmtree(raw_session_dir, ignore_errors=True)
+
+    def test_codex_notify_payload_captures_faithful_structured_turn(self) -> None:
+        """Structured Codex notify payloads preserve rich turn details."""
+        session_id = "codex-unit-faithful-session"
+        turn_id = "turn-unit-faithful-001"
+        raw_session_dir = ROOT / "brain" / "raw" / "sessions" / session_id
+        shutil.rmtree(raw_session_dir, ignore_errors=True)
+        try:
+            payload = json.dumps(
+                {
+                    "type": "agent-turn-complete",
+                    "thread-id": session_id,
+                    "turn-id": turn_id,
+                    "cwd": str(ROOT),
+                    "client": "Codex Desktop",
+                    "input-messages": ["please make the bridge faithful"],
+                    "last-assistant-message": "Implemented and verified.",
+                    "events": [
+                        {
+                            "type": "retrieval_packet",
+                            "timestamp": "2026-05-13T08:00:00+00:00",
+                            "payload": {
+                                "query": "codex bridge capture",
+                                "state": "partial",
+                                "hit_ids": ["source/codex-bridge"],
+                            },
+                        },
+                        {
+                            "type": "skill_use",
+                            "payload": {
+                                "skill": "mnemonicos-bridge",
+                                "path": "/Users/jianyulong/.codex/skills/mnemonicos-bridge/SKILL.md",
+                                "reason": "memory-aware bridge implementation",
+                            },
+                        },
+                        {
+                            "type": "response_item",
+                            "payload": {
+                                "type": "function_call",
+                                "name": "exec_command",
+                                "call_id": "call-shell-1",
+                                "arguments": json.dumps({"cmd": "python3 -m unittest tests.test_hook_adapter"}),
+                            },
+                        },
+                        {
+                            "type": "response_item",
+                            "payload": {
+                                "type": "function_call_output",
+                                "call_id": "call-shell-1",
+                                "output": "Ran 1 test in 0.1s\nOK",
+                            },
+                        },
+                        {
+                            "type": "event_msg",
+                            "payload": {
+                                "type": "web_search_end",
+                                "url": "https://example.com/docs",
+                                "title": "Example docs",
+                                "status": 200,
+                            },
+                        },
+                        {
+                            "type": "event_msg",
+                            "payload": {
+                                "type": "patch_apply_end",
+                                "changes": [
+                                    {
+                                        "path": "scripts/mnemonic_codex_notify_bridge.py",
+                                        "diff": "@@ faithful capture @@",
+                                    }
+                                ],
+                            },
+                        },
+                        {
+                            "type": "artifact_created",
+                            "payload": {
+                                "path": "/tmp/mnemo-generated-report.json",
+                                "sha256": "abc123",
+                                "kind": "report",
+                            },
+                        },
+                        {
+                            "type": "conclusion",
+                            "payload": {
+                                "summary": "Bridge captured retrieval, skill, tools, web, files, artifacts, and conclusion.",
+                                "tests": ["tests.test_hook_adapter"],
+                                "files_modified": ["scripts/mnemonic_codex_notify_bridge.py"],
+                            },
+                        },
+                    ],
+                }
+            )
+            result = subprocess.run(
+                [sys.executable, str(CODEX_NOTIFY_IMPORTER), "turn-ended", payload],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            event_files = list(raw_session_dir.glob("episodes/*/events.jsonl"))
+            self.assertEqual(len(event_files), 1)
+            events = [json.loads(line) for line in event_files[0].read_text().splitlines()]
+            event_types = [event["type"] for event in events]
+            for expected in [
+                "episode_started",
+                "user_message",
+                "assistant_message",
+                "retrieval_packet",
+                "skill_use",
+                "tool_call",
+                "tool_result",
+                "web_fetch",
+                "file_diff",
+                "artifact_created",
+                "conclusion",
+                "episode_ended",
+            ]:
+                self.assertIn(expected, event_types)
+
+            by_type = {event["type"]: event for event in events}
+            self.assertEqual(by_type["tool_call"]["payload"]["tool_name"], "exec_command")
+            self.assertEqual(by_type["tool_call"]["payload"]["input"]["cmd"], "python3 -m unittest tests.test_hook_adapter")
+            self.assertEqual(by_type["tool_result"]["payload"]["call_id"], "call-shell-1")
+            self.assertIn("OK", by_type["tool_result"]["payload"]["output"])
+            self.assertEqual(by_type["web_fetch"]["payload"]["url"], "https://example.com/docs")
+            self.assertEqual(by_type["file_diff"]["payload"]["changes"][0]["path"], "scripts/mnemonic_codex_notify_bridge.py")
+            self.assertEqual(by_type["skill_use"]["payload"]["skill"], "mnemonicos-bridge")
+            self.assertIn("Bridge captured", by_type["conclusion"]["payload"]["summary"])
+            self.assertTrue(all(event["bridge_id"] == "codex" for event in events))
         finally:
             shutil.rmtree(raw_session_dir, ignore_errors=True)
 

@@ -165,6 +165,14 @@ def process_promotion_queue(
                 continue
 
             # Phase 4: Write
+            # Serialize retrieval_attribution from validated payload if present.
+            raw_attribution = payload.get("retrieval_attribution")
+            retrieval_attribution_json: str | None = None
+            if isinstance(raw_attribution, list) and raw_attribution:
+                try:
+                    retrieval_attribution_json = json.dumps(raw_attribution)
+                except (TypeError, ValueError):
+                    retrieval_attribution_json = None
             try:
                 with conn:
                     write_promotion(
@@ -176,6 +184,7 @@ def process_promotion_queue(
                         bridge_id=_DEFAULT_BRIDGE_ID,
                         conn=conn,
                         vault_root=config.paths.vault_root,
+                        retrieval_attribution_json=retrieval_attribution_json,
                     )
             except Exception as exc:
                 result.errors.append(f"candidate:{candidate_id}:write_error:{exc}")
@@ -220,6 +229,23 @@ def process_promotion_queue(
         if result.promoted > 0:
             from ..pipeline import trigger_embed_backfill
             trigger_embed_backfill(config)
+            # Inline passive-feedback pass: run immediately when new promoted rows
+            # may carry retrieval_attribution_json. Post-hoc labels are handled by
+            # the scheduled daemon job (wiki_derive_passive_feedback).
+            if getattr(config.maintenance, "passive_feedback_enabled", True):
+                try:
+                    from ..db import connect_db as _connect_db
+                    from ..maintenance import derive_passive_feedback
+                    _pf_conn = _connect_db(config.paths.db_path)
+                    try:
+                        pf_result = derive_passive_feedback(
+                            _pf_conn, config, dry_run=False, llm_fn=None
+                        )
+                        result.relations_applied += pf_result.feedback_written
+                    finally:
+                        _pf_conn.close()
+                except Exception:
+                    pass  # non-fatal; daemon job will catch any missed rows
 
     return result
 

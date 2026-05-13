@@ -118,6 +118,19 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 fi
 
+if [[ -n "$CONVERSATION_ID" && -n "$EPISODE_ID" && -n "$STATE" ]]; then
+  RETRIEVAL_PAYLOAD=$(CONTEXT="$CONTEXT" STATE="$STATE" TURN_ID="$TURN_ID" python3 -c \
+    "import json,os; print(json.dumps({'state': os.environ.get('STATE',''), 'context_markdown': os.environ.get('CONTEXT',''), 'turn_id': os.environ.get('TURN_ID') or None, 'source': 'codex_user_prompt_submit'}))" \
+    2>/dev/null) || RETRIEVAL_PAYLOAD="{}"
+  "${CLI[@]}" capture append-event \
+    --bridge-id codex \
+    --conversation-id "$CONVERSATION_ID" \
+    --episode-id "$EPISODE_ID" \
+    --type retrieval_packet \
+    --payload-json "$RETRIEVAL_PAYLOAD" \
+    --json >/dev/null 2>&1 || true
+fi
+
 [[ -z "$RESULT" || -z "$CONTEXT" || "$STATE" == "insufficient_no_hit" ]] && exit 0
 
 python3 -c 'import json,sys; print(json.dumps({"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":sys.argv[1]}}))' "$CONTEXT" 2>/dev/null || true

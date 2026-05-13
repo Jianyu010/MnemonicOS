@@ -30,6 +30,8 @@ class RetrievalConfig:
     type_prior_weight: float = 0.15
     freshness_weight: float = 0.10
     memory_strength_weight: float = 0.10
+    importance_weight: float = 0.10
+    quality_weight: float = 0.08
     exact_alias_weight: float = 0.10
 
 
@@ -138,6 +140,8 @@ class MaintenanceConfig:
     requeue_context_enabled: bool = True
     requeue_context_top_k: int = 5
     requeue_max_per_run: int = 20
+    passive_feedback_enabled: bool = True
+    passive_feedback_inline_only: bool = False
 
 
 @dataclass(slots=True)
@@ -239,6 +243,8 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
         type_prior_weight=float(retrieval_data.get("type_prior_weight", 0.15)),
         freshness_weight=float(retrieval_data.get("freshness_weight", 0.10)),
         memory_strength_weight=float(retrieval_data.get("memory_strength_weight", 0.10)),
+        importance_weight=float(retrieval_data.get("importance_weight", 0.10)),
+        quality_weight=float(retrieval_data.get("quality_weight", 0.08)),
         exact_alias_weight=float(retrieval_data.get("exact_alias_weight", 0.10)),
     )
 

@@ -1379,3 +1379,362 @@ def run_raw_revisitation(
     if not dry_run and result.sources_requeued > 0:
         connection.commit()
     return result
+
+
+# ---------------------------------------------------------------------------
+# Passive Feedback Derivation
+# ---------------------------------------------------------------------------
+
+PASSIVE_INLINE_CONFIDENCE_BOOST_THRESHOLD = 0.85
+
+
+@dataclass(slots=True)
+class PassiveFeedbackResult:
+    inline_processed: int = 0
+    post_hoc_processed: int = 0
+    feedback_written: int = 0
+    trust_updated: int = 0
+    freshness_updated: int = 0
+    skipped: int = 0
+    errors: list[str] = field(default_factory=list)
+
+
+def _write_passive_feedback(
+    conn: sqlite3.Connection,
+    *,
+    note_id: str,
+    session_archive_id: str | None,
+    feedback_state: str,
+    confidence: float,
+    method: str,
+    evidence_type: str | None,
+    retrieval_hit_id: int | None = None,
+) -> bool:
+    """Insert a note_passive_feedback row. Returns True if inserted (False if duplicate)."""
+    try:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO note_passive_feedback
+                (note_id, retrieval_hit_id, session_archive_id,
+                 feedback_state, confidence, method, evidence_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                note_id,
+                retrieval_hit_id,
+                session_archive_id,
+                feedback_state,
+                confidence,
+                method,
+                evidence_type,
+            ),
+        )
+        return conn.execute("SELECT changes()").fetchone()[0] > 0
+    except sqlite3.OperationalError:
+        return False
+
+
+def _inline_already_covered(
+    conn: sqlite3.Connection,
+    note_id: str,
+    session_archive_id: str | None,
+    feedback_state: str,
+) -> bool:
+    try:
+        row = conn.execute(
+            """
+            SELECT 1 FROM note_passive_feedback
+            WHERE note_id = ? AND session_archive_id = ?
+              AND feedback_state = ? AND method = 'extraction_inline'
+            LIMIT 1
+            """,
+            (note_id, session_archive_id, feedback_state),
+        ).fetchone()
+        return row is not None
+    except sqlite3.OperationalError:
+        return False
+
+
+def _derive_inline_path(
+    conn: sqlite3.Connection,
+    config: AppConfig,
+    *,
+    dry_run: bool,
+    result: PassiveFeedbackResult,
+) -> set[str]:
+    """Phase A: read promotion_decisions.retrieval_attribution_json, write inline feedback rows."""
+    affected_note_ids: set[str] = set()
+    try:
+        rows = conn.execute(
+            """
+            SELECT pd.id, pd.candidate_id, pd.decision, pd.target_note_id,
+                   pd.archive_id, pd.retrieval_attribution_json
+            FROM promotion_decisions pd
+            WHERE pd.retrieval_attribution_json IS NOT NULL
+              AND pd.retrieval_attribution_json != '[]'
+              AND pd.promotion_state IN ('promoted', 'review_routed')
+            ORDER BY pd.id ASC
+            """,
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return affected_note_ids
+
+    for row in rows:
+        session_archive_id = str(row["archive_id"] or "") or None
+        target_note_id = str(row["target_note_id"] or "") or None
+        decision = str(row["decision"] or "")
+
+        try:
+            attributions = json.loads(str(row["retrieval_attribution_json"]))
+        except (json.JSONDecodeError, TypeError):
+            result.errors.append(f"inline:bad_json:pd_id={row['id']}")
+            continue
+
+        if not isinstance(attributions, list):
+            continue
+
+        result.inline_processed += 1
+        for entry in attributions:
+            if not isinstance(entry, dict):
+                continue
+            note_id = str(entry.get("note_id") or "").strip()
+            evidence_type = str(entry.get("evidence_type") or "").strip()
+            if not note_id or not evidence_type:
+                continue
+
+            try:
+                confidence = float(entry.get("confidence") or 0.0)
+            except (TypeError, ValueError):
+                confidence = 0.0
+            confidence = max(0.0, min(1.0, confidence))
+
+            # Boost confidence when this promotion also corroborated the referenced note.
+            if decision in ("confirm", "update") and target_note_id == note_id:
+                confidence = max(confidence, PASSIVE_INLINE_CONFIDENCE_BOOST_THRESHOLD)
+
+            if not dry_run:
+                wrote = _write_passive_feedback(
+                    conn,
+                    note_id=note_id,
+                    session_archive_id=session_archive_id,
+                    feedback_state="passive_used_likely",
+                    confidence=confidence,
+                    method="extraction_inline",
+                    evidence_type=evidence_type,
+                )
+                if wrote:
+                    result.feedback_written += 1
+                    affected_note_ids.add(note_id)
+                else:
+                    result.skipped += 1
+            else:
+                result.feedback_written += 1
+                affected_note_ids.add(note_id)
+
+    return affected_note_ids
+
+
+def _derive_post_hoc_path(
+    conn: sqlite3.Connection,
+    config: AppConfig,
+    *,
+    dry_run: bool,
+    result: PassiveFeedbackResult,
+    llm_fn=None,
+) -> set[str]:
+    """Phase B: cross-session retrieval_hits analysis for post-hoc passive feedback."""
+    affected_note_ids: set[str] = set()
+
+    # Only run if retrieval_hits table exists.
+    try:
+        conn.execute("SELECT 1 FROM retrieval_hits LIMIT 1")
+    except sqlite3.OperationalError:
+        return affected_note_ids
+
+    try:
+        hit_rows = conn.execute(
+            """
+            SELECT rh.id AS hit_id, rh.note_id, rh.final_score,
+                   rq.archive_id AS session_archive_id
+            FROM retrieval_hits rh
+            LEFT JOIN retrieval_queries rq ON rq.id = rh.query_id
+            WHERE rh.note_id IS NOT NULL
+            ORDER BY rh.id DESC
+            LIMIT 500
+            """,
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return affected_note_ids
+
+    for hit_row in hit_rows:
+        note_id = str(hit_row["note_id"] or "").strip()
+        session_archive_id = str(hit_row["session_archive_id"] or "") or None
+        hit_id = int(hit_row["hit_id"])
+        if not note_id:
+            continue
+
+        # Skip if inline path already covered this pair.
+        if _inline_already_covered(conn, note_id, session_archive_id, "passive_used_likely"):
+            result.skipped += 1
+            continue
+
+        # Find promoted notes from same session archive after this retrieval hit.
+        promoted_summaries: list[str] = []
+        if session_archive_id:
+            try:
+                promo_rows = conn.execute(
+                    """
+                    SELECT n.summary, n.type, pd.decision
+                    FROM promotion_decisions pd
+                    JOIN notes n ON n.id = pd.target_note_id
+                    WHERE pd.archive_id = ?
+                      AND pd.promotion_state = 'promoted'
+                    LIMIT 10
+                    """,
+                    (session_archive_id,),
+                ).fetchall()
+                promoted_summaries = [
+                    f"[{r['type']}:{r['decision']}] {r['summary']}" for r in promo_rows
+                ]
+            except sqlite3.OperationalError:
+                pass
+
+        result.post_hoc_processed += 1
+
+        if not llm_fn or not promoted_summaries:
+            # No LLM available or no session evidence: emit weak passive_used_likely
+            # based on retrieval exposure alone, with low confidence.
+            confidence = 0.2
+            if not dry_run:
+                wrote = _write_passive_feedback(
+                    conn,
+                    note_id=note_id,
+                    session_archive_id=session_archive_id,
+                    feedback_state="passive_used_likely",
+                    confidence=confidence,
+                    method="maintenance_post_hoc",
+                    evidence_type=None,
+                    retrieval_hit_id=hit_id,
+                )
+                if wrote:
+                    result.feedback_written += 1
+                    affected_note_ids.add(note_id)
+                else:
+                    result.skipped += 1
+            else:
+                result.feedback_written += 1
+                affected_note_ids.add(note_id)
+            continue
+
+        # LLM attribution call.
+        try:
+            retrieved_note_row = conn.execute(
+                "SELECT summary FROM notes WHERE id = ? LIMIT 1", (note_id,)
+            ).fetchone()
+            retrieved_summary = str(retrieved_note_row["summary"] if retrieved_note_row else "")
+            classification = llm_fn(
+                retrieved_note_id=note_id,
+                retrieved_summary=retrieved_summary,
+                session_evidence=promoted_summaries,
+            )
+            feedback_state = str(classification.get("feedback_state") or "passive_used_likely")
+            confidence = float(classification.get("confidence") or 0.3)
+            confidence = max(0.0, min(1.0, confidence))
+        except Exception as exc:
+            result.errors.append(f"post_hoc:llm_error:note={note_id}:{exc}")
+            continue
+
+        if feedback_state not in {"passive_used_likely", "passive_useful_likely", "passive_misleading_likely"}:
+            feedback_state = "passive_used_likely"
+
+        if not dry_run:
+            wrote = _write_passive_feedback(
+                conn,
+                note_id=note_id,
+                session_archive_id=session_archive_id,
+                feedback_state=feedback_state,
+                confidence=confidence,
+                method="maintenance_post_hoc",
+                evidence_type=None,
+                retrieval_hit_id=hit_id,
+            )
+            if wrote:
+                result.feedback_written += 1
+                affected_note_ids.add(note_id)
+            else:
+                result.skipped += 1
+        else:
+            result.feedback_written += 1
+            affected_note_ids.add(note_id)
+
+    return affected_note_ids
+
+
+def derive_passive_feedback(
+    connection: sqlite3.Connection,
+    config: AppConfig,
+    *,
+    dry_run: bool = False,
+    llm_fn=None,
+) -> PassiveFeedbackResult:
+    """Derive passive retrieval feedback labels and write to note_passive_feedback.
+
+    Two paths:
+    - Inline (Phase A): reads promotion_decisions.retrieval_attribution_json.
+      Emits passive_used_likely only. No LLM call.
+    - Post-hoc (Phase B): joins retrieval_hits + promoted session notes.
+      Can emit all three label types when llm_fn is provided.
+
+    Maintenance is the sole writer of note_passive_feedback. Neither promotion
+    nor retrieval may insert rows into this table.
+    """
+    if not getattr(config.maintenance, "passive_feedback_enabled", True):
+        return PassiveFeedbackResult()
+
+    result = PassiveFeedbackResult()
+
+    inline_affected = _derive_inline_path(connection, config, dry_run=dry_run, result=result)
+    post_hoc_skip = getattr(config.maintenance, "passive_feedback_inline_only", False)
+    post_hoc_affected: set[str] = set()
+    if not post_hoc_skip:
+        post_hoc_affected = _derive_post_hoc_path(
+            connection, config, dry_run=dry_run, result=result, llm_fn=llm_fn
+        )
+
+    # Propagate to trust/freshness when new labels were written.
+    all_affected = inline_affected | post_hoc_affected
+    if all_affected and not dry_run:
+        from .trust import compute_note_trust_stats, compute_note_freshness
+
+        # Check whether any misleading labels exist for affected notes.
+        has_misleading = False
+        try:
+            placeholders = ",".join("?" * len(all_affected))
+            misleading_rows = connection.execute(
+                f"""
+                SELECT 1 FROM note_passive_feedback
+                WHERE note_id IN ({placeholders})
+                  AND feedback_state = 'passive_misleading_likely'
+                  AND confidence >= 0.5
+                LIMIT 1
+                """,
+                list(all_affected),
+            ).fetchone()
+            has_misleading = misleading_rows is not None
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            compute_note_trust_stats(connection)
+            result.trust_updated = len(all_affected)
+        except Exception as exc:
+            result.errors.append(f"propagation:trust_error:{exc}")
+
+        if has_misleading:
+            try:
+                compute_note_freshness(connection)
+                result.freshness_updated = len(all_affected)
+            except Exception as exc:
+                result.errors.append(f"propagation:freshness_error:{exc}")
+
+    return result

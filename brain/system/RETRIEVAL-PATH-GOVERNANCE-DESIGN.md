@@ -32,7 +32,7 @@ Natural Language Query  +  QueryHints (type hint, temporality, budget, scope)
                      ▼
 ┌─────────────────────────────────────────────────────┐
 │  STAGE 2 · Multi-Channel Recall                     │
-│  retrieval-recall-plan.md  (not yet written)        │
+│  retrieval-recall-plan.md                           │
 │  Exact match · BM25 · Semantic · Graph · Archive.   │
 │  Produces typed CandidatePool. Archive channel      │
 │  gated by policy. Single query-vector encode.       │
@@ -41,7 +41,7 @@ Natural Language Query  +  QueryHints (type hint, temporality, budget, scope)
                      ▼
 ┌─────────────────────────────────────────────────────┐
 │  STAGE 3 · Signal Integration                       │
-│  retrieval-signal-integration-plan.md  (not yet)   │
+│  retrieval-signal-integration-plan.md               │
 │  Loads trust, freshness, importance per candidate   │
 │  from maintenance layer (read-only). Computes       │
 │  quality gate (quality_pass) and freshness          │
@@ -51,7 +51,7 @@ Natural Language Query  +  QueryHints (type hint, temporality, budget, scope)
                      ▼
 ┌─────────────────────────────────────────────────────┐
 │  STAGE 4 · Reranking                                │
-│  retrieval-reranking-plan.md  (not yet written)     │
+│  retrieval-reranking-plan.md                        │
 │  Multi-factor scoring: BM25, semantic, graph,       │
 │  type prior, freshness, trust, importance, alias.   │
 │  Freshness multiplier applied. Weights from         │
@@ -129,7 +129,8 @@ Internal phases:
 ---
 
 ### Stage 2 — Multi-Channel Recall
-**Plan:** retrieval-recall-plan.md (not yet written)
+**Plan:** [retrieval-recall-plan.md](retrieval-recall-plan.md)
+**Roadmap:** [retrieval-recall-roadmap.md](retrieval-recall-roadmap.md)
 
 Runs five retrieval channels in sequence against the canonical wiki and raw
 archive: exact alias/title match, BM25 full-text (FTS5), semantic vector
@@ -141,21 +142,44 @@ with wiki and archive candidates structurally separated.
 ---
 
 ### Stage 3 — Signal Integration
-**Plan:** retrieval-signal-integration-plan.md (not yet written)
+**Plan:** [retrieval-signal-integration-plan.md](retrieval-signal-integration-plan.md)
+**Roadmap:** [retrieval-signal-integration-roadmap.md](retrieval-signal-integration-roadmap.md)
 
 Batch-loads maintenance signals for all candidates:
 - `note_trust.usefulness_score` → trust signal
 - `note_freshness.freshness_state` + `staleness_score` → freshness signal
 - `note_importance.importance_score` → importance signal (currently dead in legacy — fix here)
+- `note_passive_feedback.feedback_state` + `confidence` → passive feedback signal
+  after Maintenance migration 026
 
 Applies content quality gate (`quality_pass: bool`) per candidate. Precomputes
 freshness multiplier from freshness_state × query temporality. Emits `NoteSignals`
 per candidate. No DB writes.
 
+Boundary:
+```
+RecallCandidate + ParsedQuery
+  -> Stage 3 Signal Integration
+  -> SignalEnrichedCandidate
+  -> Stage 4 Reranking
+  -> RankedHits
+```
+
+Stage 3 answers: "What do we know about this candidate?" It may read title,
+summary, compact control signal, and metadata, but it must not inspect full note
+content for ranking decisions.
+
+Passive feedback is an input to this stage only after maintenance has
+materialized it into `note_passive_feedback` or downstream trust/freshness
+signals. Stage 3 does not read raw sessions, extraction payloads, or
+`promotion_decisions.retrieval_attribution_json`, and it performs no LLM
+attribution.
+
 ---
 
 ### Stage 4 — Reranking
-**Plan:** retrieval-reranking-plan.md (not yet written)
+**Plan:** [retrieval-reranking-plan.md](retrieval-reranking-plan.md)
+**Roadmap:** [retrieval-reranking-roadmap.md](retrieval-reranking-roadmap.md)
 
 Scores candidates using all signals. Formula:
 ```
@@ -167,6 +191,7 @@ final_score = (
   + freshness_weight * (1.0 − staleness_score)
   + trust_weight     * trust_score
   + importance_weight* normalize_importance(importance_score, pool_max)
+  + quality_weight   * quality_pass
   + exact_alias_weight * exact_bonus
   + historical_bonus(temporality, freshness_state)
 ) * freshness_multiplier
@@ -177,6 +202,30 @@ Weights loaded from `rerank_weights` (model `east-flange-v1`); config defaults
 are the cold-start fallback. Archive candidates scored separately (BM25 rank only).
 Training triggered by `scripts/mnemonic_eval_train.sh` (daily daemon job) when
 `sample_count ≥ min_training_samples`.
+
+Stage 4 answers: "Given the integrated signals, where should this candidate
+rank?" It consumes `SignalEnrichedCandidate` only; it must not load maintenance
+tables or full note bodies.
+
+Feedback is hierarchical:
+- `hit`: candidate appeared in recall/ranking output; weak exposure signal.
+- `selected`: candidate was emitted into the packet/result; LFU-style exposure
+  signal already represented by `retrieval_hits.selected`.
+- `explicit_used`: caller or outcome assessment marked the note useful; strong positive
+  relevance signal represented by `retrieval_hits.useful = 1`.
+- `explicit_misleading`: caller or outcome assessment marked the note harmful; strong
+  negative signal represented by `retrieval_hits.useful = 0`.
+
+Stage 3/4 may log hit/selected feature rows for learning. Post-assessment and
+runtime outcome capture own used/misleading labels. Do not promote mere exposure
+into usefulness.
+
+Most feedback is expected to be passive rather than explicit. Raw sessions may
+later be promoted into evidence that a retrieved note was used, helpful,
+stale, contradicted, or misleading. Extraction may emit
+`retrieval_attribution`; promotion stores it in the ledger; maintenance is the
+sole writer of `note_passive_feedback`. Stage 4 consumes only Stage 3 signals or
+training labels derived from those maintenance-owned rows.
 
 ---
 
@@ -284,6 +333,13 @@ ANN index → `brain/data/note_ann.index`.
 | ≥ 200 | cross-encoder + wiki-native bi-encoder |
 | ≥ 1000 | full model with signal fusion layer |
 
+Compatibility note: this rollout assumes the Stage 2 recall boundary stays
+stable while retrieval internals evolve. BM25, hash-256 semantic search, ANN
+retrieval, and future learned recall are all implementations of candidate
+generation under the same bounded `CandidatePool` contract. Upgrading the
+retriever should not require refactoring Stages 3–7 as long as candidate
+identity, provenance, structural separation, and boundedness remain intact.
+
 ---
 
 ## Boundary Rules
@@ -318,8 +374,8 @@ DL north star:
 | Stage | Module | Key types |
 |-------|--------|-----------|
 | 1 | `query_parser.py` | `ParsedQuery`, `QueryHints`, `QueryScope` |
-| 2 | `recall.py` | `CandidatePool`, `Candidate`, `RecallConfig` |
-| 3 | `signal_integration.py` | `NoteSignals`, quality gate |
+| 2 | `recall.py` | `CandidatePool`, `RecallCandidate`, `ArchiveCandidate` |
+| 3 | `signal_integration.py` | `NoteSignals`, `SignalEnrichedCandidatePool`, quality gate |
 | 4 | `reranker.py` | `ScoredCandidate`, `RankedHits`, `RerankerWeights` |
 | 5 | `assembler.py` | `RawPacket`, `AssembledNote`, `ArchiveNote`, `ContradictionPair` |
 | 6 | `assessor.py` | `AssessedPacket`, `RetrievalState`, `Recommendation` |
@@ -353,6 +409,12 @@ as its retrieval substrate.
 ### Plans and Roadmaps
 - [retrieval-east-flange-plan.md](retrieval-east-flange-plan.md) — Stage 1 detailed plan
 - [retrieval-east-flange-roadmap.md](retrieval-east-flange-roadmap.md) — Stage 1 phase status
+- [retrieval-recall-plan.md](retrieval-recall-plan.md) — Stage 2 detailed plan
+- [retrieval-recall-roadmap.md](retrieval-recall-roadmap.md) — Stage 2 phase status
+- [retrieval-signal-integration-plan.md](retrieval-signal-integration-plan.md) — Stage 3 detailed plan
+- [retrieval-signal-integration-roadmap.md](retrieval-signal-integration-roadmap.md) — Stage 3 phase status
+- [retrieval-reranking-plan.md](retrieval-reranking-plan.md) — Stage 4 detailed plan
+- [retrieval-reranking-roadmap.md](retrieval-reranking-roadmap.md) — Stage 4 phase status
 - [retrieval-development-roadmap.md](retrieval-development-roadmap.md) — all 7 stages + DL north star status
 - [retrieval-control-signal-quality-roadmap.md](retrieval-control-signal-quality-roadmap.md) — cross-cutting signal quality
 

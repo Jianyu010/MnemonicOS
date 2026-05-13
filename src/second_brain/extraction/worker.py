@@ -118,12 +118,14 @@ def _process_item(
         llm = build_llm_provider(config)
         visual_snippets = [vlm.describe(artifact) for artifact in artifacts]
         existing_knowledge_context = _existing_knowledge_context(item.revisit_context_json)
+        retrieval_context_note_ids = _parse_memory_context_note_ids(windows)
         packet = make_llm_packet(
             active_source_ref=source_ref_id(item),
             projection_metadata=projection_metadata,
             windows=windows,
             visual_snippets=visual_snippets,
             existing_knowledge_context=existing_knowledge_context,
+            retrieval_context_note_ids=retrieval_context_note_ids or None,
         )
         raw_output = llm.extract_candidates(packet)
         candidates = _extract_and_validate_candidates(
@@ -172,6 +174,48 @@ def _process_item(
         }
     finally:
         service.close_projection(lease.lease_id)
+
+
+def _parse_memory_context_note_ids(windows: list[Any]) -> list[str]:
+    """Extract note IDs listed under '## Memory Context' in session text windows.
+
+    The mnemonic_context.sh script injects a block like:
+        ## Memory Context
+        current_hits: concept/foo, concept/bar
+        stale_hits: concept/baz
+
+    Parses all values after 'current_hits:', 'stale_hits:', 'contested_hits:' lines.
+    Returns deduplicated list of valid note_id strings (must contain '/').
+    """
+    import re
+
+    note_ids: list[str] = []
+    seen: set[str] = set()
+    in_memory_section = False
+    pattern = re.compile(
+        r"^\s*(?:current_hits|stale_hits|contested_hits)\s*:\s*(.+)$", re.IGNORECASE
+    )
+    for window in windows:
+        if isinstance(window, dict):
+            text = str(window.get("text") or "")
+        else:
+            text = str(getattr(window, "text", "") or "")
+        for line in text.splitlines():
+            stripped = line.strip()
+            if re.match(r"^##\s+Memory Context", stripped, re.IGNORECASE):
+                in_memory_section = True
+                continue
+            if in_memory_section and stripped.startswith("## "):
+                in_memory_section = False
+            if in_memory_section:
+                m = pattern.match(line)
+                if m:
+                    for raw in m.group(1).split(","):
+                        nid = raw.strip()
+                        if nid and "/" in nid and nid not in seen:
+                            seen.add(nid)
+                            note_ids.append(nid)
+    return note_ids
 
 
 def _existing_knowledge_context(raw_context: str | None) -> str | None:

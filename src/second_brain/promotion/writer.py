@@ -58,6 +58,7 @@ def write_promotion(
     bridge_id: str,
     conn: sqlite3.Connection,
     vault_root: Path,
+    retrieval_attribution_json: str | None = None,
 ) -> None:
     """Atomically write a promoted note to wiki and record in the ledger.
 
@@ -129,8 +130,8 @@ def write_promotion(
         """
         INSERT INTO promotion_decisions
             (candidate_id, decision, target_note_id, archive_id,
-             check_errors_json, promotion_state, bridge_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+             check_errors_json, promotion_state, bridge_id, retrieval_attribution_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             candidate_id,
@@ -140,6 +141,7 @@ def write_promotion(
             "[]",
             promotion_state,
             bridge_id,
+            retrieval_attribution_json,
         ),
     )
 

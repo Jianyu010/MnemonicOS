@@ -535,5 +535,28 @@ def run_job(config: AppConfig, *, job_name: str, dry_run: bool = False) -> JobRu
         connection.close()
         return JobRunResult(job_name=job_name, status="ok", stats=stats, review_items_created=[])
 
+    if job_name == "wiki_derive_passive_feedback":
+        from .maintenance import derive_passive_feedback
+        job_id = _open_job_run(connection, job_name, "dry-run" if dry_run else "live")
+        try:
+            pf_result = derive_passive_feedback(connection, config, dry_run=dry_run)
+            stats["inline_processed"] = pf_result.inline_processed
+            stats["post_hoc_processed"] = pf_result.post_hoc_processed
+            stats["feedback_written"] = pf_result.feedback_written
+            stats["trust_updated"] = pf_result.trust_updated
+            stats["freshness_updated"] = pf_result.freshness_updated
+            stats["skipped"] = pf_result.skipped
+            if pf_result.errors:
+                stats["errors"] = pf_result.errors
+            with connection:
+                _close_job_run(connection, job_id, status="ok", stats=stats)
+        except Exception as exc:
+            with connection:
+                _close_job_run(connection, job_id, status="error", stats=stats, error_text=str(exc))
+            connection.close()
+            raise
+        connection.close()
+        return JobRunResult(job_name=job_name, status="ok", stats=stats, review_items_created=[])
+
     connection.close()
     raise ValueError(f"unsupported job: {job_name}")

@@ -88,6 +88,13 @@ Current state at start of this layer:
   importance weights, and advancing lifecycle states based on cross-note signals.
   Distinct from the promotion layer, which writes individual notes from individual
   candidates.
+- **Passive retrieval feedback evidence**: structured evidence produced from raw
+  sessions that may later imply a retrieved note was used, useful, stale,
+  superseded, contradicted, or misleading. Evidence may originate from LLM/VLM
+  extraction as paraphrase, semantic reliance, task trajectory, correction,
+  contradiction, or supersession, not only exact note-ID/title matches. Promotion
+  applies this evidence only when it is present in validated candidate payloads;
+  it does not perform separate LLM attribution calls.
 - **Intra-source relation**: a typed relation asserted by the LLM between two
   candidates produced from the same true raw material (same extraction queue row /
   same bundle). Stored in `extraction_queue.intra_source_relations_json`. Applied
@@ -101,6 +108,22 @@ Current state at start of this layer:
 - **`apply_relation_to_note`**: atomic frontmatter mutation function that appends
   a `{target, type}` entry to the `relations` list in a note's YAML frontmatter,
   deduplicates, and writes back via `.tmp` → `os.rename()`.
+- **`retrieval_attribution`**: an optional field in a `mnemos-extraction-v1`
+  candidate payload. Carries a list of `{note_id, evidence_type, confidence}`
+  entries asserting that the session from which this candidate was extracted
+  contains evidence about a previously retrieved wiki note. Evidence types:
+  `paraphrase`, `semantic_reliance`, `task_trajectory`, `correction`,
+  `contradiction`, `supersession`. Populated by the extraction LLM when it
+  detects a `## Memory Context` block in the session raw. Never contains outcome
+  labels (`useful`/`misleading`) — those require cross-episode evidence and belong
+  to the maintenance derivation path.
+- **`retrieval_attribution_json`**: the JSON-serialized `retrieval_attribution`
+  array stored in `promotion_decisions` after the wiki writer records a successful
+  promotion. Null when the candidate payload carried no `retrieval_attribution`.
+  This column is the handoff from the promotion layer to the maintenance layer's
+  passive feedback derivation job. Maintenance is the sole reader and the sole
+  writer of `note_passive_feedback`; promotion only stores the raw attribution
+  evidence it found in the candidate payload.
 
 ## Boundary
 
@@ -118,6 +141,11 @@ Outputs:
 - `promotion_decisions` ledger rows
 - updated `extraction_candidates.promotion_state` field
 - entries in `brain/wiki/log.md`
+- promoted notes and relations that can serve as passive retrieval feedback
+  evidence for maintenance
+- `promotion_decisions.retrieval_attribution_json` — the raw attribution array
+  from the candidate payload, stored per promotion decision for maintenance to
+  consume. Null when absent from payload.
 
 Out of scope:
 
@@ -148,6 +176,21 @@ Out of scope:
   passed through with a `canonical_duplicate` or `lsh_duplicate` label are
   treated as corroboration signals and biased toward `confirm` when a matching
   note exists.
+- Passive retrieval feedback is evidence, not a direct rerank label. Promotion
+  may create or update notes/relations that later let maintenance derive
+  `passive_used_likely`, `passive_useful_likely`, or
+  `passive_misleading_likely`, but promotion itself does not mutate retrieval
+  trust/freshness scores.
+- Retrieval attribution storage: when `retrieval_attribution` is present in a
+  validated candidate payload, the wiki writer stores it as
+  `promotion_decisions.retrieval_attribution_json`. Promotion does not modify
+  the wiki file of any note referenced in `retrieval_attribution` on the basis
+  of attribution alone. The only permitted wiki-file mutations from attribution
+  are those already allowed by the `confirm`/`update` gate path (content
+  similarity triggering corroboration), not raw attribution presence.
+- Promotion never writes to `note_passive_feedback`. That table is
+  maintenance-owned. Promotion's output is `retrieval_attribution_json` in the
+  ledger; maintenance reads it and decides how to materialize passive labels.
 
 ## High-Level Flow
 
@@ -202,6 +245,13 @@ sync + index materializers (embed_backfill, FTS sync)
   `weekly_hygiene` daemon jobs are the current precursors to that layer. The
   maintenance layer will be software-driven initially, with an extensible seam for
   AI-assisted relationship discovery added later.
+- Direct rerank feedback assignment. Promotion emits canonical evidence;
+  maintenance decides how that evidence affects trust, freshness, and training
+  labels.
+- Modifying referenced note wiki files based on retrieval attribution alone.
+  A `retrieval_attribution` entry pointing to note X does not grant promotion
+  permission to mutate note X's markdown file or frontmatter outside of the
+  normal confirm/update decision path driven by content similarity.
 
 ## Readiness
 

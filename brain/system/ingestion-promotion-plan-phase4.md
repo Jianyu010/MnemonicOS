@@ -132,8 +132,42 @@ Raises on rollback. Caller (daemon job) catches and records the error.
 - `extraction_candidates.promotion_state` is `'rejected'` on rollback.
 - Running the same candidate twice: second run returns without writing anything.
 
+## Passive Attribution Ledger Write
+
+When a candidate payload contains a valid `retrieval_attribution` array (as
+defined in `ingestion-extraction-plan.md`), the wiki writer stores it verbatim
+into `promotion_decisions.retrieval_attribution_json` after the promotion decision
+row is inserted.
+
+This field is the handoff point between promotion and maintenance. Maintenance
+reads it during the passive feedback derivation job to derive `note_passive_feedback`
+rows without needing to re-parse candidate payloads.
+
+Rules:
+- Stored only when `retrieval_attribution` is non-empty in the validated payload.
+- Stored as a JSON array string. No transformation.
+- Stored regardless of the promotion decision type (`new`, `confirm`, `update`,
+  `review`). A `review`-routed candidate may still carry valid attribution evidence.
+- For `rejected` candidates, `retrieval_attribution_json` is not stored (no
+  `promotion_decisions` row is created for rejections).
+- Promotion does NOT validate that `note_id` values reference existing wiki notes.
+  Maintenance is responsible for resolving references.
+
+Confirmed+attribution is the strongest passive feedback signal: a candidate that
+both corroborates note X (confirm/update decision on note X) and carries
+`retrieval_attribution` pointing to note X from the same session is high-confidence
+evidence that note X was retrieved and used productively.
+
+The `promotion_decisions` schema extension (migration 026) adds:
+```sql
+ALTER TABLE promotion_decisions ADD COLUMN
+    retrieval_attribution_json TEXT;
+```
+
 ## Out Of Scope
 
 - Daemon scheduling (Phase 5).
 - CLI and HTTP admin surfaces (Phase 5).
 - Sync and embedding backfill (triggered by the daemon job in Phase 5, not here).
+- Writing to `note_passive_feedback` — that is the maintenance layer's job.
+- Resolving `note_id` references to verify they point to live wiki notes.

@@ -134,6 +134,16 @@ class FixtureLLMProvider:
                     "rationale": "Concept candidate derived from source material.",
                 }
             ]
+        # If packet includes retrieval_context_note_ids, add attribution to first candidate.
+        retrieval_note_ids: list[str] = packet.get("retrieval_context_note_ids") or []
+        if retrieval_note_ids and candidates:
+            candidates[0]["retrieval_attribution"] = [
+                {
+                    "note_id": retrieval_note_ids[0],
+                    "evidence_type": "semantic_reliance",
+                    "confidence": 0.7,
+                }
+            ]
         return json.dumps(
             {
                 "schema_version": SCHEMA_VERSION,
@@ -379,6 +389,7 @@ def make_llm_packet(
     windows: list[TextWindow],
     visual_snippets: list[VisualSnippet],
     existing_knowledge_context: str | None = None,
+    retrieval_context_note_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     packet = {
         "schema_version": SCHEMA_VERSION,
@@ -398,6 +409,8 @@ def make_llm_packet(
     }
     if existing_knowledge_context:
         packet["existing_knowledge_context"] = existing_knowledge_context
+    if retrieval_context_note_ids:
+        packet["retrieval_context_note_ids"] = list(retrieval_context_note_ids)
     return packet
 
 
@@ -469,6 +482,31 @@ def _candidate_extraction_prompt(packet: dict[str, Any]) -> str:
     source_ref = packet.get("active_source_ref", "")
     window_ids = [w.get("window_id", "") for w in packet.get("text_windows", [])]
     ids_str = ", ".join(f'"{w}"' for w in window_ids[:8])
+    retrieval_note_ids: list[str] = packet.get("retrieval_context_note_ids") or []
+    retrieval_section = ""
+    if retrieval_note_ids:
+        ids_listed = ", ".join(f'"{nid}"' for nid in retrieval_note_ids)
+        retrieval_section = (
+            "RETRIEVAL ATTRIBUTION RULES:\n"
+            "The text windows may contain a '<!-- MnemonicOS context block' section with\n"
+            "a '## Memory Context' header. This section lists notes that were retrieved\n"
+            "from the MnemonicOS wiki and provided as context to an agent before it acted.\n"
+            f"The retrieved note IDs present in this session are: [{ids_listed}]\n"
+            "For each candidate you produce:\n"
+            "- If the candidate's content appears to paraphrase, follow, rely on, correct,\n"
+            "  contradict, or supersede one of these retrieved notes, add a top-level\n"
+            '  "retrieval_attribution" array to that candidate.\n'
+            "- Each entry: {\"note_id\": \"<id from the list above>\", "
+            '"evidence_type\": \"<type>\", \"confidence\": <0.0-1.0>}\n'
+            "- evidence_type MUST be one of: paraphrase, semantic_reliance, task_trajectory,\n"
+            "  correction, contradiction, supersession\n"
+            "- Only use note_id values from the list above. Do not invent IDs.\n"
+            "- Do not assign outcome-quality labels (useful/misleading) — those require\n"
+            "  evidence from later episodes that is not available here.\n"
+            "- Do not re-extract retrieved note content as a new standalone candidate\n"
+            "  unless it genuinely contains new information beyond the retrieved note.\n"
+            "- If no attribution is evident for a candidate, omit 'retrieval_attribution'.\n\n"
+        )
     return (
         "You are the MnemonicOS extraction layer.\n"
         "Return a single JSON object. No markdown, no code fences, no prose — raw JSON only.\n\n"
@@ -506,7 +544,8 @@ def _candidate_extraction_prompt(packet: dict[str, Any]) -> str:
         "- Both indices must be valid positions in the candidates array (0 to N-1).\n"
         "- Only assert relations the source explicitly supports. Do not invent connections.\n"
         "- If no clear intra-source relations exist, emit an empty array.\n\n"
-        "Use only the provided packet as evidence. Reject nothing silently — "
+        + retrieval_section
+        + "Use only the provided packet as evidence. Reject nothing silently — "
         "if a window has usable content, extract it.\n\n"
         f"{json.dumps(packet, sort_keys=True)}"
     )

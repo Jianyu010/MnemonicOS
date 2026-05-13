@@ -86,6 +86,169 @@ class RetrieveResult:
 
 
 @dataclass(slots=True)
+class RecallCandidate:
+    id: str
+    title: str
+    type: str
+    status: str | None
+    chain_id: str | None
+    lifecycle_state: str | None
+    body_path: str
+    summary: str
+    body: str
+    channels: set[str] = field(default_factory=set)
+    relation_types: list[str] = field(default_factory=list)
+    graph_depth: int | None = None
+    seed_from_ids: list[str] = field(default_factory=list)
+    exact_rank: int | None = None
+    bm25_rank: int | None = None
+    bm25_score: float | None = None
+    semantic_score: float | None = None
+    graph_score: float | None = None
+    learned_score: float | None = None
+    freshness_score: float | None = None
+    freshness_state: str | None = None
+    trust_score: float | None = None
+    type_prior_score: float | None = None
+    updated_at: str | None = None
+    created_at: str | None = None
+    last_verified_at: str | None = None
+
+
+@dataclass(slots=True)
+class ArchiveCandidate:
+    id: str
+    archive_id: str
+    chunk_index: int
+    archive_path: str
+    summary: str
+    excerpt: str
+    channels: set[str] = field(default_factory=set)
+    bm25_rank: int | None = None
+    bm25_score: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ArchivePolicyDecision:
+    allowed: bool
+    mode: str
+    reasons: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class RecallMetrics:
+    exact_count: int = 0
+    bm25_count: int = 0
+    semantic_count: int = 0
+    graph_count: int = 0
+    archive_count: int = 0
+    merged_wiki_count: int = 0
+    seed_count: int = 0
+    graph_seed_ids: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class CandidatePool:
+    parsed_query: Any
+    wiki_candidates: list[RecallCandidate] = field(default_factory=list)
+    archive_candidates: list[ArchiveCandidate] = field(default_factory=list)
+    recall_metrics: RecallMetrics = field(default_factory=RecallMetrics)
+    archive_policy: ArchivePolicyDecision = field(
+        default_factory=lambda: ArchivePolicyDecision(allowed=False, mode="disabled", reasons=[])
+    )
+
+
+@dataclass(slots=True)
+class NoteSignals:
+    trust_score: float = 0.0
+    freshness_score: float = 0.0
+    freshness_state: str = "fresh"
+    importance_score: float = 0.0
+    type_prior_score: float = 0.0
+    summary_quality: str = "none"
+    quality_pass: bool = False
+    quality_reasons: list[str] = field(default_factory=list)
+    freshness_multiplier: float = 1.0
+    passive_feedback_state: str = "none"
+    passive_feedback_confidence: float = 0.0
+
+
+@dataclass(slots=True)
+class SignalEnrichedCandidate:
+    candidate: RecallCandidate
+    signals: NoteSignals
+
+
+@dataclass(slots=True)
+class ArchiveSignals:
+    summary_quality: str = "none"
+    quality_pass: bool = False
+    quality_reasons: list[str] = field(default_factory=list)
+    passive_feedback_state: str = "none"
+    passive_feedback_confidence: float = 0.0
+
+
+@dataclass(slots=True)
+class SignalEnrichedArchiveCandidate:
+    candidate: ArchiveCandidate
+    signals: ArchiveSignals
+
+
+@dataclass(slots=True)
+class SignalEnrichedCandidatePool:
+    parsed_query: Any
+    wiki_candidates: list[SignalEnrichedCandidate] = field(default_factory=list)
+    archive_candidates: list[SignalEnrichedArchiveCandidate] = field(default_factory=list)
+    recall_metrics: RecallMetrics = field(default_factory=RecallMetrics)
+    archive_policy: ArchivePolicyDecision = field(
+        default_factory=lambda: ArchivePolicyDecision(allowed=False, mode="disabled", reasons=[])
+    )
+
+
+@dataclass(slots=True)
+class RerankFeatureRow:
+    note_id: str
+    exact_hit: int
+    bm25_rank: int | None
+    bm25_score: float | None
+    semantic_score: float | None
+    graph_score: float | None
+    freshness_score: float
+    type_prior_score: float
+    trust_score: float
+    importance_score: float
+    quality_pass: bool
+    quality_score: float
+    passive_feedback_state: str
+    passive_feedback_confidence: float
+
+
+@dataclass(slots=True)
+class ScoredCandidate:
+    candidate: RecallCandidate
+    signals: NoteSignals
+    hit: RetrieveHit
+    feature_row: RerankFeatureRow
+
+
+@dataclass(slots=True)
+class ScoredArchiveCandidate:
+    candidate: ArchiveCandidate
+    signals: ArchiveSignals
+    hit: RetrieveHit
+
+
+@dataclass(slots=True)
+class RankedHits:
+    wiki_hits: list[ScoredCandidate] = field(default_factory=list)
+    archive_hits: list[ScoredArchiveCandidate] = field(default_factory=list)
+
+    @property
+    def hits(self) -> list[RetrieveHit]:
+        return [item.hit for item in self.wiki_hits] if self.wiki_hits else [item.hit for item in self.archive_hits]
+
+
+@dataclass(slots=True)
 class IngestSessionResult:
     archive_id: str
     raw_path: str

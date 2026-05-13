@@ -547,6 +547,117 @@ west flange
           version-based incremental + pattern-relevance gating
 ```
 
+---
+
+## Phase: Passive Feedback Derivation
+
+Status: **complete 2026-05-13**.
+
+Owner plan: `ingestion-maintenance-plan.md` — "Passive Retrieval Feedback" section,
+"Two-Path Architecture" subsection.
+
+### Goal
+
+Derive passive retrieval feedback labels (`passive_used_likely`,
+`passive_useful_likely`, `passive_misleading_likely`) from the join between
+retrieval logs and promoted session evidence. Materialize results into
+`note_passive_feedback`, then propagate into `note_trust` and `note_freshness`
+for consumption by the retrieval Stage 3 signal integration.
+
+### Planned Deliverables
+
+**Migration 026** (shared with promotion attribution amendment):
+- `ALTER TABLE promotion_decisions ADD COLUMN retrieval_attribution_json TEXT`
+- `CREATE TABLE note_passive_feedback (...)` — see schema in maintenance plan
+
+**`src/second_brain/maintenance.py`** — new function:
+```python
+def derive_passive_feedback(
+    conn: sqlite3.Connection,
+    config: AppConfig,
+    *,
+    dry_run: bool = False,
+    llm_fn=None,
+) -> PassiveFeedbackResult:
+```
+
+Two-phase logic inside the function:
+
+**Phase A — Inline path** (reads `promotion_decisions.retrieval_attribution_json`):
+1. Query `promotion_decisions` rows with non-null `retrieval_attribution_json`
+   not yet processed (check for existing `note_passive_feedback` rows with
+   `method='extraction_inline'` for the same `(note_id, archive_id)` pair).
+2. For each attribution entry: write `note_passive_feedback` row with
+   `feedback_state='passive_used_likely'`, `method='extraction_inline'`,
+   `confidence` from attribution entry, `session_archive_id` from
+   `promotion_decisions.archive_id`.
+3. Special case: if the same promotion decision row has `decision='confirm'` or
+   `decision='update'` on the attributed `note_id` — boost confidence to min 0.85
+   and set a `confirmed_corroborated=true` flag in evidence.
+
+**Phase B — Post-hoc path** (reads `retrieval_hits` + promoted notes):
+1. Query `retrieval_hits` rows not yet processed (time window since last run).
+2. For each retrieval hit, find promoted session notes from the same `archive_id`
+   window using `promotion_decisions.archive_id`.
+3. If `llm_fn` provided: call with context (retrieved note summary + promoted
+   note summaries) to classify use/useful/misleading with confidence.
+4. Write `note_passive_feedback` rows with `method='maintenance_post_hoc'`.
+5. Skip sessions already covered by `extraction_inline` for same pair.
+
+**Propagation step** (after both phases):
+- For `passive_used_likely` + `passive_useful_likely` with confidence ≥ 0.5:
+  call `compute_note_trust_stats(conn, config)` for affected note IDs.
+- For `passive_misleading_likely` with confidence ≥ 0.5: call
+  `compute_note_freshness(conn, config)` for affected note IDs (staleness signal).
+
+**`PassiveFeedbackResult`** dataclass:
+- `inline_processed: int`
+- `post_hoc_processed: int`
+- `feedback_written: int`
+- `trust_updated: int`
+- `freshness_updated: int`
+- `skipped: int`
+- `errors: list[str]`
+
+**`src/second_brain/jobs.py`**:
+- `wiki_derive_passive_feedback` job registered.
+- `run_job()` branch added.
+- `collect_status_snapshot()` includes passive feedback stats.
+
+**`src/second_brain/daemon_jobs.py`**:
+- `"wiki_derive_passive_feedback": "*/30 * * * *"` — runs every 30 minutes.
+  Per-ingestion trigger also fires inline from `process_promotion_queue` when
+  `promoted > 0` and `retrieval_attribution_json` rows exist.
+
+**`config/memory.example.toml`**:
+- `wiki_derive_passive_feedback = "*/30 * * * *"` in `[daemon.schedules]`.
+- `passive_feedback_enabled = true` in `[maintenance]`.
+- `passive_feedback_inline_only = false` (set true to skip post-hoc LLM path).
+
+### Tests
+
+- Inline path: fixture candidate with `retrieval_attribution` → promotion → derive
+  → `note_passive_feedback` row exists with `method='extraction_inline'`.
+- Confirm+attribution boost: `decision='confirm'` on attributed note → confidence ≥ 0.85.
+- Post-hoc path: mock `llm_fn` returning classification → `note_passive_feedback`
+  row with `method='maintenance_post_hoc'`.
+- Deduplication: running derive twice → no duplicate rows (UNIQUE constraint).
+- Inline-covers-post-hoc skip: existing `extraction_inline` row → post-hoc skips it.
+- `passive_misleading_likely` → `compute_note_freshness` called for that note.
+- Dry-run: no DB writes.
+
+### Acceptance
+
+- `note_passive_feedback` populated from both paths after a session with retrieved
+  notes is ingested.
+- `note_trust` and `note_freshness` updated for attributed notes.
+- `wiki_derive_passive_feedback` in daemon schedule and CLI.
+- All tests pass.
+- E2E: ingest a feedback-type session → full pipeline → verify passive label in
+  `note_passive_feedback` and trust/freshness tables updated.
+
+---
+
 Design authority: `development/humanoid-MnemonicOS-core-blueprint.md`.
 
 Layer 2b (Phases 2–5) has no embedding model dependency and ships first.
