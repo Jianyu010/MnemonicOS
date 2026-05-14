@@ -1569,7 +1569,8 @@ def _derive_post_hoc_path(
     for hit_row in hit_rows:
         note_id = str(hit_row["note_id"] or "").strip()
         session_archive_id = str(hit_row["session_archive_id"] or "") or None
-        hit_id = int(hit_row["hit_id"])
+        raw_hit_id = hit_row["hit_id"]
+        hit_id = int(raw_hit_id) if raw_hit_id is not None else None
         if not note_id:
             continue
 
