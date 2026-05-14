@@ -50,6 +50,7 @@ class IngestConfig:
     default_archive_type: str = "session"
     explicit_markers_only: bool = False
     auto_trigger_pipeline: bool = True
+    lazy_pdf_ingest: bool = True
 
 
 @dataclass(slots=True)
@@ -279,6 +280,7 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
         auto_trigger_pipeline=auto_trigger_override
         if auto_trigger_override is not None
         else bool(ingest_data.get("auto_trigger_pipeline", True)),
+        lazy_pdf_ingest=bool(ingest_data.get("lazy_pdf_ingest", True)),
     )
 
     embeddings_data = data.get("embeddings", {})

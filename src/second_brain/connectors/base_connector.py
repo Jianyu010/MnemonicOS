@@ -20,6 +20,7 @@ class ConnectorConfig:
     archive_source_attachments: bool = True
     max_in_memory_figure_bytes: int | None = None
     optional_dependencies: dict[str, bool] = field(default_factory=dict)
+    skip_text_extraction: bool = False
 
 
 @dataclass(slots=True)

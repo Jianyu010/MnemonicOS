@@ -43,6 +43,7 @@ def _config(workspace: Path) -> Path:
 
         [ingest]
         auto_trigger_pipeline = false
+        lazy_pdf_ingest = false
         """,
     )
     return config_path

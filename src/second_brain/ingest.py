@@ -904,7 +904,13 @@ def ingest_artifact(
         )
 
     connector = connector_for_path(raw_path)
-    result = connector.extract(raw_path, config=connector_config or ConnectorConfig())
+    effective_connector_config = connector_config
+    if effective_connector_config is None:
+        if getattr(connector, "source_format", None) == "pdf" and config.ingest.lazy_pdf_ingest:
+            effective_connector_config = ConnectorConfig(skip_text_extraction=True)
+        else:
+            effective_connector_config = ConnectorConfig()
+    result = connector.extract(raw_path, config=effective_connector_config)
     metadata = dict(result.metadata)
     source_format = str(metadata.get("source_format") or getattr(connector, "source_format", "unknown"))
     warnings = list(result.warnings)
