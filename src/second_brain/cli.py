@@ -144,6 +144,12 @@ def _build_parser() -> argparse.ArgumentParser:
     extraction_status_parser.add_argument("--limit", type=int, default=20, help="Max items to show (default: 20).")
     extraction_status_parser.add_argument("--json", action="store_true", help="Emit JSON output.")
 
+    retry_parser = subparsers.add_parser("retry-extraction", help="Reset errored extraction queue items back to pending.")
+    retry_group = retry_parser.add_mutually_exclusive_group(required=True)
+    retry_group.add_argument("--queue-id", type=int, help="Retry a single item by queue id.")
+    retry_group.add_argument("--all-errors", action="store_true", help="Retry all non-tombstoned error items.")
+    retry_parser.add_argument("--dry-run", action="store_true", help="Print what would be retried without changing status.")
+
     promote_status_parser = subparsers.add_parser("promote-status", help="Show promotion queue health (pending/promoted/review/rejected counts).")
     promote_status_parser.add_argument("--json", action="store_true", help="Emit JSON output.")
 
@@ -266,6 +272,8 @@ def _build_parser() -> argparse.ArgumentParser:
     bt.add_argument("--project", default=None)
     bt.add_argument("--repo", default=None)
     bt.add_argument("--tag", action="append", default=[])
+    bt.add_argument("--auto-retry", action="store_true", help="Allow one orchestrator-owned focused retry when Stage 7 requests it.")
+    bt.add_argument("--max-focused-retries", type=int, default=1)
     bt.add_argument("--json", action="store_true", help="Emit JSON output.")
 
     mf = orch_subs.add_parser("mark-failure", help="Record failure and re-resolve context with the same task_id.")
@@ -804,6 +812,56 @@ def _queue_extraction(
     return _print_or_json(item.to_dict(), emit_json)
 
 
+def _retry_extraction(config_path: str, queue_id: int | None, all_errors: bool, dry_run: bool) -> int:
+    config = load_config(config_path)
+    from .db import connect_db, run_migrations
+    connection = connect_db(config.paths.db_path)
+    run_migrations(connection, config.paths.workspace_root / "migrations")
+    try:
+        if queue_id is not None:
+            row = connection.execute(
+                "SELECT id, status, last_error FROM extraction_queue WHERE id = ?", (queue_id,)
+            ).fetchone()
+            if row is None:
+                print(f"error: queue id {queue_id} not found")
+                return 1
+            if row["status"] != "error":
+                print(f"error: item {queue_id} has status '{row['status']}', not 'error'")
+                return 1
+            if dry_run:
+                print(f"[dry-run] would retry #{queue_id}  last_error={row['last_error']}")
+                return 0
+            with connection:
+                connection.execute(
+                    "UPDATE extraction_queue SET status='pending', last_error=NULL, attempt_count=0, started_at=NULL, finished_at=NULL WHERE id=?",
+                    (queue_id,),
+                )
+            print(f"retried #{queue_id}")
+            return 0
+
+        rows = connection.execute(
+            "SELECT id, last_error FROM extraction_queue WHERE status='error' AND (last_error IS NULL OR last_error NOT LIKE '%tombstoned%')"
+        ).fetchall()
+        if not rows:
+            print("no retryable errors found")
+            return 0
+        if dry_run:
+            print(f"[dry-run] would retry {len(rows)} item(s):")
+            for r in rows:
+                print(f"  #{r['id']}  {r['last_error']}")
+            return 0
+        ids = [r["id"] for r in rows]
+        with connection:
+            connection.executemany(
+                "UPDATE extraction_queue SET status='pending', last_error=NULL, attempt_count=0, started_at=NULL, finished_at=NULL WHERE id=?",
+                [(i,) for i in ids],
+            )
+        print(f"retried {len(ids)} item(s)")
+        return 0
+    finally:
+        connection.close()
+
+
 def _format_queue_item(item: dict) -> str:
     lines = []
     item_id = item.get("id", "?")
@@ -972,6 +1030,8 @@ def _orchestrator_begin_task(
     project: str | None,
     repo: str | None,
     tags: list[str],
+    auto_retry: bool,
+    max_focused_retries: int,
     emit_json: bool,
 ) -> int:
     import uuid as _uuid
@@ -988,6 +1048,8 @@ def _orchestrator_begin_task(
         project=project,
         repo=repo,
         tags=tags,
+        auto_retry=auto_retry,
+        max_focused_retries=max_focused_retries,
     )
     result = begin_task(config, req)
     if emit_json:
@@ -1000,6 +1062,10 @@ def _orchestrator_begin_task(
     print(f"retrieval_state={result.retrieval_state}")
     print(f"recommendation={result.recommendation}")
     print(f"verification_action={result.verification_action}")
+    if result.auto_retry_summary.get("attempted"):
+        print(f"auto_retry_attempted=1")
+        print(f"auto_retry_cutoff={result.auto_retry_summary.get('cutoff_reason')}")
+        print(f"final_pass_index={result.final_pass_index}")
     print(f"primary_memories={len(result.memory_packet.primary_memories)}")
     for m in result.memory_packet.primary_memories:
         print(f"  memory={m.id} [{m.type}] score={m.final_score:.3f}")
@@ -1305,6 +1371,8 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.command == "extraction-status":
         return _extraction_status(args.config, args.queue_id, args.errors_only, args.limit, args.json)
+    if args.command == "retry-extraction":
+        return _retry_extraction(args.config, args.queue_id, args.all_errors, args.dry_run)
     if args.command == "promote-status":
         return _promote_status(args.config, args.json)
     if args.command == "review":
@@ -1393,6 +1461,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.project,
                 args.repo,
                 args.tag,
+                args.auto_retry,
+                args.max_focused_retries,
                 args.json,
             )
         if args.orchestrator_command == "mark-failure":

@@ -18,12 +18,19 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .config import AppConfig
+from .emission import (
+    DEFAULT_MAX_FOCUSED_RETRIES,
+    render_composed_markdown,
+    render_emission,
+    render_single_markdown,
+    retry_cutoff_reason,
+    should_auto_retry,
+)
 from .models import (
     DecideWritebackRequest,
     MemoryPacket,
     RecordOutcomeRequest,
     ResolveTaskContextRequest,
-    RuntimeMemory,
 )
 from .runtime import (
     decide_writeback_runtime,
@@ -50,6 +57,8 @@ class OrchestratorTaskRequest:
     project: str | None = None
     repo: str | None = None
     tags: list[str] = field(default_factory=list)
+    auto_retry: bool = False
+    max_focused_retries: int = DEFAULT_MAX_FOCUSED_RETRIES
 
 
 @dataclass(slots=True)
@@ -65,6 +74,10 @@ class OrchestratorContextResult:
     context_markdown: str
     task_kind: str
     temporality: str
+    emission: dict[str, Any] = field(default_factory=dict)
+    retrieval_passes: list[dict[str, Any]] = field(default_factory=list)
+    final_pass_index: int = 1
+    auto_retry_summary: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -78,6 +91,10 @@ class OrchestratorContextResult:
             "context_markdown": self.context_markdown,
             "task_kind": self.task_kind,
             "temporality": self.temporality,
+            "emission": dict(self.emission),
+            "retrieval_passes": list(self.retrieval_passes),
+            "final_pass_index": self.final_pass_index,
+            "auto_retry_summary": dict(self.auto_retry_summary),
         }
 
 
@@ -200,67 +217,15 @@ def _infer_token_budget(task_kind: str, explicit: int | None) -> int:
 # Context markdown formatter
 # ---------------------------------------------------------------------------
 
-def _format_context_markdown(
-    result: Any,
-    *,
-    task_kind: str,
-    temporality: str,
-) -> str:
+def _format_context_markdown(result: Any, *, task_kind: str, temporality: str) -> str:
     """Render a ResolveTaskContextResult into an injectable ## Memory Context block."""
-    lines: list[str] = [
-        "<!-- MnemonicOS orchestrator context — do not edit -->",
-        "## Memory Context",
-        "",
-        f"- retrieval_state: `{result.retrieval_state}`",
-        f"- recommendation: `{result.recommendation}`",
-        f"- verification_action: `{result.verification_action}`",
-        f"- task_id: `{result.task_id}`",
-        "",
-    ]
-
-    packet: MemoryPacket = result.memory_packet
-
-    if packet.warnings:
-        lines += ["### Warnings", ""]
-        for w in packet.warnings:
-            lines.append(f"- {w}")
-        lines.append("")
-
-    def _append_memories(heading: str, memories: list[RuntimeMemory]) -> None:
-        if not memories:
-            return
-        lines.extend([f"### {heading}", ""])
-        for m in memories:
-            flag = ""
-            if m.freshness_state in ("stale", "suspect", "contested"):
-                flag = f" [{m.freshness_state}]"
-            elif m.lifecycle_state in ("contested", "archived"):
-                flag = f" [{m.lifecycle_state}]"
-            lines.append(f"**{m.title}** ({m.type}){flag}")
-            if m.summary:
-                lines.append(f"  {m.summary[:200]}")
-            lines.append("")
-
-    _append_memories("Primary Memory", packet.primary_memories)
-    _append_memories("Same Episode", packet.same_episode_context)
-    _append_memories("Related by Topic", packet.related_by_topic)
-    _append_memories("Related by Timeline", packet.related_by_timeline)
-    _append_memories("Related by Similarity", packet.related_by_similarity)
-    _append_memories("Related by Contrast", packet.related_by_contrast)
-
-    has_content = any([
-        packet.primary_memories,
-        packet.same_episode_context,
-        packet.related_by_topic,
-        packet.related_by_timeline,
-        packet.related_by_similarity,
-        packet.related_by_contrast,
-    ])
-    if not has_content:
-        lines += ["### Relevant Notes", "", "- No relevant MnemonicOS notes found.", ""]
-
-    lines.append("<!-- end MnemonicOS orchestrator context -->")
-    return "\n".join(lines)
+    emission = render_emission(
+        result,
+        original_task_text=getattr(result, "task_text", ""),
+        task_kind=task_kind,
+        temporality=temporality,
+    )
+    return render_single_markdown(emission)
 
 
 # ---------------------------------------------------------------------------
@@ -306,21 +271,119 @@ def begin_task(config: AppConfig, req: OrchestratorTaskRequest) -> OrchestratorC
     )
 
     result = resolve_task_context(config, runtime_req)
-    context_markdown = _format_context_markdown(
-        result, task_kind=task_kind, temporality=temporality
+    first_emission = render_emission(
+        result,
+        original_task_text=req.task_text,
+        task_kind=task_kind,
+        temporality=temporality,
+        auto_retry_allowed=req.auto_retry,
+        max_focused_retries=req.max_focused_retries,
+        retry_attempt=0,
+        previous_queries=[req.task_text],
+    )
+    retrieval_passes: list[dict[str, Any]] = [
+        {
+            "pass_index": 1,
+            "query_id": result.query_id,
+            "query_text": req.task_text,
+            "emission": first_emission,
+            "triggered_followup_query": first_emission.get("followup_query"),
+            "new_ids": first_emission.get("stable_ids", []),
+            "cutoff_reason": None,
+        }
+    ]
+    final_result = result
+    final_emission = first_emission
+    final_pass_index = 1
+    auto_retry_summary: dict[str, Any] = {
+        "attempted": False,
+        "attempt_count": 0,
+        "new_ids": [],
+        "cutoff_reason": None,
+    }
+
+    if should_auto_retry(first_emission):
+        followup = first_emission["followup_query"]
+        focused_query = str(followup.get("suggested_query") or "").strip()
+        if focused_query and focused_query != req.task_text:
+            retry_req = ResolveTaskContextRequest(
+                bridge_id=req.bridge_id,
+                session_id=req.session_id,
+                task_id=req.task_id,
+                task_text=focused_query,
+                task_kind=task_kind,
+                temporality=temporality,
+                token_budget=token_budget,
+                workspace=req.workspace,
+                project=req.project,
+                repo=req.repo,
+                tags=req.tags,
+            )
+            retry_result = resolve_task_context(config, retry_req)
+            retry_emission = render_emission(
+                retry_result,
+                original_task_text=focused_query,
+                task_kind=task_kind,
+                temporality=temporality,
+                auto_retry_allowed=False,
+                max_focused_retries=req.max_focused_retries,
+                retry_attempt=1,
+                previous_ids=first_emission.get("stable_ids", []),
+                previous_queries=[req.task_text, focused_query],
+            )
+            cutoff = retry_cutoff_reason(
+                first_emission,
+                retry_emission,
+                previous_queries=[req.task_text, focused_query],
+                max_focused_retries=max(1, req.max_focused_retries),
+                retry_attempt=1,
+            )
+            if cutoff:
+                retry_emission["retry_control"]["cutoff_reason"] = cutoff
+            new_ids = retry_emission.get("new_ids", [])
+            retrieval_passes.append(
+                {
+                    "pass_index": 2,
+                    "query_id": retry_result.query_id,
+                    "query_text": focused_query,
+                    "emission": retry_emission,
+                    "triggered_followup_query": retry_emission.get("followup_query"),
+                    "new_ids": new_ids,
+                    "cutoff_reason": cutoff,
+                }
+            )
+            final_result = retry_result
+            final_emission = retry_emission
+            final_pass_index = 2
+            auto_retry_summary = {
+                "attempted": True,
+                "attempt_count": 1,
+                "new_ids": list(new_ids),
+                "cutoff_reason": cutoff,
+            }
+
+    context_markdown = render_composed_markdown(
+        final_emission,
+        retrieval_passes=retrieval_passes,
+        final_pass_index=final_pass_index,
+        auto_retry_summary=auto_retry_summary,
     )
 
     return OrchestratorContextResult(
-        task_id=result.task_id,
-        session_id=result.session_id,
-        retrieval_state=result.retrieval_state,
-        recommendation=result.recommendation,
-        verification_action=result.verification_action,
-        memory_packet=result.memory_packet,
-        query_id=result.query_id,
+        task_id=final_result.task_id,
+        session_id=final_result.session_id,
+        retrieval_state=final_emission["retrieval_state"],
+        recommendation=final_emission["recommendation"],
+        verification_action=final_emission["verification_action"],
+        memory_packet=final_result.memory_packet,
+        query_id=final_result.query_id,
         context_markdown=context_markdown,
         task_kind=task_kind,
         temporality=temporality,
+        emission=final_emission,
+        retrieval_passes=retrieval_passes,
+        final_pass_index=final_pass_index,
+        auto_retry_summary=auto_retry_summary,
     )
 
 
