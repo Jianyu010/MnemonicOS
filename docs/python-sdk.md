@@ -98,9 +98,10 @@ result = ingest_session(
 
 result = ingest_artifact(
     config,
-    path: str,                    # absolute path to file
+    path: str,                              # absolute path to file
     tags: list[str] = [],
-    attachments: list[str] = [],  # companion files or dirs
+    attachments: list[str] = [],            # companion files or dirs
+    connector_config: ConnectorConfig = None,  # override per-call; see ConnectorConfig below
 ) -> IngestArtifactResult
 
 result = reprocess_artifact(config, archive_id: str) -> IngestArtifactResult
@@ -115,12 +116,35 @@ results = reprocess_failed_artifacts(config) -> list[IngestArtifactResult]
 | `archive_id` | `str` |
 | `raw_path` | `str` |
 | `manifest_path` | `str` |
-| `ingest_status` | `str` (`"ok"` / `"failed"` / `"needs_manual_projection"`) |
+| `ingest_status` | `str` (`"accepted"` / `"accepted_with_warnings"` / `"failed_extraction"` / `"manual_fix_needed"`) |
 | `source_format` | `str` |
 | `figure_count` | `int` |
 | `warnings` | `list[str]` |
 | `failure_reason` | `str \| None` |
 | `needs_visual_pass` | `bool` |
+| `image_only_pdf` | `bool` |
+| `duplicate_state` | `str` |
+
+**`ConnectorConfig` fields** (from `second_brain.connectors.base_connector`):
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `figures_enabled` | `True` | Extract and return figures from document |
+| `skip_text_extraction` | `False` | Skip text extraction; return `accepted` immediately. Used by lazy PDF ingest. The worker always runs with `skip_text_extraction=False`. |
+| `max_in_memory_figure_bytes` | `None` | Stop rendering page images when a single page exceeds this byte threshold |
+| `persist_extracted_figures` | `False` | Write figure payloads to disk rather than keeping in memory |
+
+To force full (non-lazy) extraction for a single call, pass an explicit config:
+
+```python
+from second_brain.connectors.base_connector import ConnectorConfig
+
+result = ingest_artifact(
+    config,
+    path="/path/to/scan.pdf",
+    connector_config=ConnectorConfig(skip_text_extraction=False),
+)
+```
 
 ---
 

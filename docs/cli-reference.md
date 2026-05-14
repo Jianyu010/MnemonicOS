@@ -195,6 +195,18 @@ mnemonicos ingest-artifact --file PATH [--tag TAG ...] \
 
 `--attachment` archives companion files alongside the primary artifact (e.g. images with an HTML export). It is **not** for bulk ingestion of independent files — use `ingest-dir` for that.
 
+**PDF ingestion** has two stages:
+
+1. **Ingest** (fast): the raw file is copied to the vault, page/image counts are recorded, and the artifact is queued for extraction. Returns `status=accepted` immediately — text extraction does not block the CLI. Controlled by `ingest.lazy_pdf_ingest` (default: `true`).
+2. **Extraction** (async, via daemon or `trigger_pipeline`): the worker extracts text using [PyMuPDF](https://pymupdf.readthedocs.io) for text-layer PDFs. For scanned / image-only PDFs (`image_only_pdf=true`), OCR is attempted via [Tesseract](https://github.com/tesseract-ocr/tesseract) + [pytesseract](https://github.com/madmaze/pytesseract), limited to the first 50 pages by default. Page images are also rendered and queued for VLM description.
+
+To disable lazy ingest and extract text synchronously at ingest time, set:
+
+```toml
+[ingest]
+lazy_pdf_ingest = false
+```
+
 ---
 
 ### `ingest-dir`
