@@ -220,7 +220,7 @@ class OpenAICompatibleLLMProvider:
         *,
         base_url: str,
         api_key_env: str = "",
-        timeout_seconds: int = 180,
+        timeout_seconds: int | None = None,
     ) -> None:
         self.model_name = model_name
         self.base_url = base_url.rstrip("/")
@@ -260,7 +260,7 @@ class OpenAICompatibleVLMProvider:
         *,
         base_url: str,
         api_key_env: str = "",
-        timeout_seconds: int = 180,
+        timeout_seconds: int | None = None,
     ) -> None:
         self.model_name = model_name
         self.base_url = base_url.rstrip("/")
@@ -565,7 +565,7 @@ def _ollama_generate(base_url: str, *, model: str, prompt: str, images: list[str
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with _open_request(req, timeout_seconds=180) as response:
+    with _open_request(req, timeout_seconds=None) as response:
         data = json.loads(response.read().decode("utf-8"))
     return str(data.get("response") or "").strip()
 
@@ -584,7 +584,7 @@ def _json_request(
     payload: dict[str, Any],
     *,
     headers: dict[str, str],
-    timeout_seconds: int,
+    timeout_seconds: int | None,
 ) -> dict[str, Any]:
     req = request.Request(
         url,
@@ -599,7 +599,7 @@ def _json_request(
     return data
 
 
-def _open_request(req: request.Request, *, timeout_seconds: int):
+def _open_request(req: request.Request, *, timeout_seconds: int | None):
     host = urlparse(req.full_url).hostname or ""
     if host in {"127.0.0.1", "localhost", "::1"}:
         opener = request.build_opener(request.ProxyHandler({}))

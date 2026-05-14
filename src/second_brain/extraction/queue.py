@@ -70,7 +70,13 @@ def enqueue_extraction(
         connection.close()
 
 
-def extraction_status(config: AppConfig, *, queue_id: int | None = None) -> dict[str, Any]:
+def extraction_status(
+    config: AppConfig,
+    *,
+    queue_id: int | None = None,
+    errors_only: bool = False,
+    limit: int = 20,
+) -> dict[str, Any]:
     connection = connect_db(config.paths.db_path)
     run_migrations(connection, _migrations_dir(config))
     try:
@@ -104,24 +110,41 @@ def extraction_status(config: AppConfig, *, queue_id: int | None = None) -> dict
             LIMIT 1
             """
         ).fetchone()
-        recent = connection.execute(
-            """
-            SELECT q.*,
-                   (SELECT COUNT(*) FROM extraction_candidates c WHERE c.queue_id = q.id) AS candidate_rows,
-                   (SELECT COUNT(*) FROM extraction_visual_snippets v WHERE v.queue_id = q.id) AS snippet_rows
-            FROM extraction_queue q
-            ORDER BY q.id DESC
-            LIMIT 10
-            """
-        ).fetchall()
         counts = {str(row["status"]): int(row["count"]) for row in rows}
-        return {
+        result: dict[str, Any] = {
             "queue_counts": counts,
             "pending_count": counts.get("pending", 0),
             "error_count": counts.get("error", 0),
             "oldest_pending_queued_at": str(oldest["queued_at"]) if oldest is not None else None,
-            "recent": [_status_row_to_dict(row) for row in recent],
         }
+        if errors_only:
+            error_rows = connection.execute(
+                """
+                SELECT q.*,
+                       (SELECT COUNT(*) FROM extraction_candidates c WHERE c.queue_id = q.id) AS candidate_rows,
+                       (SELECT COUNT(*) FROM extraction_visual_snippets v WHERE v.queue_id = q.id) AS snippet_rows
+                FROM extraction_queue q
+                WHERE q.status = 'error'
+                ORDER BY q.finished_at DESC NULLS LAST, q.id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            result["errors"] = [_status_row_to_dict(row) for row in error_rows]
+        else:
+            recent = connection.execute(
+                """
+                SELECT q.*,
+                       (SELECT COUNT(*) FROM extraction_candidates c WHERE c.queue_id = q.id) AS candidate_rows,
+                       (SELECT COUNT(*) FROM extraction_visual_snippets v WHERE v.queue_id = q.id) AS snippet_rows
+                FROM extraction_queue q
+                ORDER BY q.id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            result["recent"] = [_status_row_to_dict(row) for row in recent]
+        return result
     finally:
         connection.close()
 

@@ -108,12 +108,12 @@ Reranking creates exposure evidence, not usefulness evidence.
 | `passive_useful_likely` | post-hoc evidence suggests the note helped | maintenance | medium positive |
 | `passive_misleading_likely` | promoted evidence suggests harm/staleness | maintenance | medium negative |
 
-Stage 4 training may consume both explicit and passive labels after maintenance
-has materialized them, but label weights must reflect confidence. Passive labels
-are not produced by the reranker itself. Stage 4 reads passive labels only through
-Stage 3 `NoteSignals` or training datasets derived from `note_passive_feedback`;
-it must not read raw sessions, extraction candidates, or
-`promotion_decisions.retrieval_attribution_json`.
+Stage 4 local-linear training may consume both explicit and passive labels after
+maintenance has materialized them, but label weights must reflect confidence.
+Passive labels are not produced by the reranker itself. Runtime scoring reads
+passive labels only through Stage 3 `NoteSignals`; the training job may consume
+training datasets derived from `note_passive_feedback`. It must not read raw
+sessions, extraction candidates, or `promotion_decisions.retrieval_attribution_json`.
 
 ---
 
@@ -144,15 +144,24 @@ Primary entry point:
 ```python
 rerank(
     config,
-    parsed_query,
     enriched_pool,
     *,
     connection,
+    top_k=None,
 ) -> RankedHits
 ```
 
 `connection` is permitted for loading rerank weights and writing
 instrumentation after ranking. It is not permitted for candidate signal loading.
+
+Training hook:
+
+```text
+run_job(config, job_name="rerank_training")
+```
+
+This runs the current scalar weight calibration path. It is not the future DL
+retrieval path.
 
 ---
 
@@ -166,6 +175,8 @@ Stage 4 is complete when:
 4. `importance_score` participates in final scoring.
 5. Exposure logging is distinct from usefulness feedback.
 6. Rerank training can consume explicit and passive labels with confidence weights.
+
+All done for the current local-linear Stage 4 implementation.
 
 ---
 

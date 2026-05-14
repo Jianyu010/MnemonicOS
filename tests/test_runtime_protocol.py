@@ -13,6 +13,7 @@ if str(SRC) not in sys.path:
 
 from second_brain.config import load_config
 from second_brain.db import connect_db, run_migrations
+from second_brain.ingest import ingest_session
 from second_brain.models import ResolveTaskContextRequest
 from second_brain.runtime import resolve_task_context
 from second_brain.sync import sync_vault
@@ -149,6 +150,97 @@ class RuntimeProtocolTest(unittest.TestCase):
             self.assertEqual(result.verification_action, "verify_current_truth")
             self.assertIn("concept/jwt-rotation", result.memory_packet.verification_needed)
 
+    def test_resolve_task_context_surfaces_archive_context_from_designed_ingest_api(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            _, config = self._prepare_workspace(workspace)
+            config.ingest.auto_trigger_pipeline = False
+            ingest = ingest_session(
+                config,
+                bridge_id="codex",
+                session_id="archive-only-runtime",
+                content="""
+                # Debug Session
+
+                The kerberos handshake timeout was fixed by rotating the service
+                ticket cache. Keep this raw session available for fallback.
+                """,
+            )
+            self.assertGreater(ingest.chunk_count, 0)
+
+            result = resolve_task_context(
+                config,
+                ResolveTaskContextRequest(
+                    bridge_id="api-client",
+                    session_id="session-archive",
+                    task_id="task-archive",
+                    task_text="kerberos handshake timeout service ticket cache",
+                    task_kind="debugging",
+                    token_budget=1200,
+                    include_archive_fallback=True,
+                ),
+            )
+
+            self.assertEqual(result.memory_packet.primary_memories, [])
+            self.assertEqual(len(result.memory_packet.archive_context), 1)
+            self.assertEqual(result.memory_packet.archive_context[0].type, "archive_chunk")
+            self.assertIn("source:raw_session", result.memory_packet.archive_context[0].provenance)
+            self.assertTrue(result.memory_packet.assembly_notes["archive_only"])
+            self.assertIn("archive_context=1", result.provenance_summary)
+
+    def test_resolve_task_context_marks_contested_hits_as_structured_contradictions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            _, config = self._prepare_workspace(workspace)
+            _write(
+                workspace / "brain/wiki/concepts/token-cache.md",
+                """
+                ---
+                id: concept/token-cache
+                type: concept
+                title: Token Cache
+                aliases: [token cache]
+                status: active
+                tags: [auth]
+                updated_at: 2026-04-12
+                created_at: 2026-04-12
+                source_refs: [session/2026-04-12-0900]
+                confidence: high
+                ---
+
+                Token cache entries are scoped per tenant and rotated during auth deploys.
+                """,
+            )
+            sync_vault(config, mode="full")
+            connection = connect_db(config.paths.db_path)
+            with connection:
+                connection.execute(
+                    """
+                    INSERT INTO note_freshness(note_id, staleness_score, freshness_state)
+                    VALUES ('concept/token-cache', 0.95, 'contested')
+                    """
+                )
+            connection.close()
+
+            result = resolve_task_context(
+                config,
+                ResolveTaskContextRequest(
+                    bridge_id="api-client",
+                    session_id="session-contested",
+                    task_id="task-contested",
+                    task_text="token cache auth deploy",
+                    task_kind="architecture",
+                    token_budget=1200,
+                ),
+            )
+
+            self.assertIn("concept/token-cache", result.memory_packet.verification_needed)
+            self.assertEqual(result.memory_packet.assembly_notes["contradiction_count"], 1)
+            self.assertIn("contradictions=1", result.provenance_summary)
+            contradiction = result.memory_packet.contradictions[0]
+            self.assertEqual(contradiction["item_ids"], ["concept/token-cache"])
+            self.assertEqual(contradiction["severity"], "high")
+
     def test_resolve_task_context_allows_historical_reuse_for_stale_memory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             workspace = Path(tmp_dir)
@@ -197,7 +289,7 @@ class RuntimeProtocolTest(unittest.TestCase):
             )
 
             self.assertEqual(result.retrieval_state, "sufficient_historical")
-            self.assertEqual(result.recommendation, "reuse")
+            self.assertEqual(result.recommendation, "reuse_with_verification")
             self.assertEqual(result.verification_action, "treat_as_historical_only")
 
     def test_resolve_task_context_warns_on_contested_lifecycle(self) -> None:
@@ -532,18 +624,33 @@ class RuntimeProtocolTest(unittest.TestCase):
                     task_id="task-chain-context",
                     task_text="how do we recover auth rollout",
                     task_kind="debugging",
-                    token_budget=800,
+                    token_budget=2400,
                 ),
             )
 
             self.assertEqual(result.memory_packet.primary_memories[0].id, "procedure/recover-auth-rollout")
-            self.assertEqual(len(result.memory_packet.same_episode_context), 1)
-            self.assertIn(
-                result.memory_packet.same_episode_context[0].id,
-                {"incident/auth-rollout-failure", "decision/auth-rollout-decision", "concept/schema-reconciliation"},
+            self.assertGreaterEqual(len(result.memory_packet.same_episode_context), 1)
+            self.assertTrue(
+                {
+                    item.id for item in result.memory_packet.same_episode_context
+                }
+                & {"incident/auth-rollout-failure", "decision/auth-rollout-decision", "concept/schema-reconciliation"}
             )
-            self.assertEqual(result.memory_packet.same_episode_context[0].chain_id, "trace/auth-rollout-recovery")
-            self.assertEqual(len(result.memory_packet.primary_memories), 2)
+            self.assertTrue(
+                all(item.chain_id == "trace/auth-rollout-recovery" for item in result.memory_packet.same_episode_context)
+            )
+            self.assertTrue(result.memory_packet.functional_path)
+            path_ids = [str(item["id"]) for item in result.memory_packet.functional_path]
+            self.assertIn("incident/auth-rollout-failure", path_ids)
+            self.assertIn("procedure/recover-auth-rollout", path_ids)
+            self.assertLess(path_ids.index("incident/auth-rollout-failure"), path_ids.index("procedure/recover-auth-rollout"))
+            roles = {str(item["id"]): str(item["assembly_role"]) for item in result.memory_packet.functional_path}
+            self.assertEqual(roles["incident/auth-rollout-failure"], "failed_attempt")
+            self.assertEqual(roles["procedure/recover-auth-rollout"], "current_reusable_procedure")
+            self.assertEqual(result.memory_packet.assembly_notes["functional_path_terminal_state"], "success")
+            self.assertTrue(result.memory_packet.assembly_notes["functional_path_present"])
+            self.assertTrue(result.memory_packet.assembly_notes["score_order_differs_from_assembly_order"])
+            self.assertEqual(result.memory_packet.primary_memories[0].rank_order, 1)
 
     def test_resolve_task_context_keeps_flat_factual_queries_without_episode_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -595,6 +702,194 @@ class RuntimeProtocolTest(unittest.TestCase):
             self.assertEqual(str(row["task_kind"]), "knowledge")
             self.assertEqual(int(row["primary_memory_count"]), len(result.memory_packet.primary_memories))
             self.assertEqual(int(row["same_episode_context_count"]), 0)
+
+    def test_trace_completion_adds_missing_resolution_for_debugging_purpose(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            _, config = self._prepare_workspace(workspace)
+            _write(
+                workspace / "brain/wiki/incidents/auth-outage-failure.md",
+                """
+                ---
+                id: incident/auth-outage-failure
+                type: incident
+                title: Auth Outage Failure
+                status: resolved
+                updated_at: 2026-04-15
+                created_at: 2026-04-15
+                source_refs: [session/2026-04-15-0900]
+                confidence: high
+                relations:
+                  - target: procedure/tenant-reconcile-fix
+                    type: resolved_by
+                  - target: concept/logging-style-guide
+                    type: linked_note
+                ---
+
+                Auth outage failed logins after tenant state drift.
+                """,
+            )
+            _write(
+                workspace / "brain/wiki/procedures/active/tenant-reconcile-fix.md",
+                """
+                ---
+                id: procedure/tenant-reconcile-fix
+                type: procedure
+                title: Tenant Reconcile Fix
+                status: active
+                updated_at: 2026-04-15
+                created_at: 2026-04-15
+                source_refs: [session/2026-04-15-0900]
+                confidence: high
+                ---
+
+                Run tenant reconciliation before restarting workers.
+                """,
+            )
+            _write(
+                workspace / "brain/wiki/concepts/logging-style-guide.md",
+                """
+                ---
+                id: concept/logging-style-guide
+                type: concept
+                title: Logging Style Guide
+                status: active
+                updated_at: 2026-04-15
+                created_at: 2026-04-15
+                source_refs: [session/2026-04-15-0900]
+                confidence: high
+                ---
+
+                Prefer concise structured messages in service logs.
+                """,
+            )
+            sync_vault(config, mode="full")
+            connection = connect_db(config.paths.db_path)
+            with connection:
+                connection.execute(
+                    """
+                    INSERT INTO graph_edges(source_note_id, target_id, target_kind, relation_type, weight)
+                    VALUES (?, ?, 'note', ?, 0.8)
+                    """,
+                    ("incident/auth-outage-failure", "procedure/tenant-reconcile-fix", "resolved_by"),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO graph_edges(source_note_id, target_id, target_kind, relation_type, weight)
+                    VALUES (?, ?, 'note', ?, 0.7)
+                    """,
+                    ("incident/auth-outage-failure", "concept/logging-style-guide", "linked_note"),
+                )
+            connection.close()
+
+            result = resolve_task_context(
+                config,
+                ResolveTaskContextRequest(
+                    bridge_id="api-client",
+                    session_id="session-trace-debug",
+                    task_id="task-trace-debug",
+                    task_text="debug auth outage failed logins",
+                    task_kind="debugging",
+                    token_budget=2400,
+                ),
+            )
+
+            traced_ids = {
+                item.id
+                for item in [
+                    *result.memory_packet.related_by_topic,
+                    *result.memory_packet.related_by_timeline,
+                    *result.memory_packet.related_by_similarity,
+                    *result.memory_packet.related_by_contrast,
+                ]
+                if item.trace_source == "relation_completion"
+            }
+            self.assertIn("procedure/tenant-reconcile-fix", traced_ids)
+            self.assertNotIn("concept/logging-style-guide", traced_ids)
+            self.assertEqual(result.memory_packet.assembly_notes["trace_completion_status"], "completed")
+            self.assertIn(
+                "procedure/tenant-reconcile-fix",
+                result.memory_packet.assembly_notes["trace_added_item_ids"],
+            )
+            self.assertGreaterEqual(result.memory_packet.assembly_notes["assessment_reservoir_branch_count"], 1)
+            self.assertEqual(result.memory_packet.assessment_reservoir[0]["terminal_state"], "success")
+
+    def test_trace_completion_rejects_purpose_irrelevant_linked_notes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            _, config = self._prepare_workspace(workspace)
+            _write(
+                workspace / "brain/wiki/concepts/redis-expiry.md",
+                """
+                ---
+                id: concept/redis-expiry
+                type: concept
+                title: Redis Expiry
+                status: active
+                updated_at: 2026-04-16
+                created_at: 2026-04-16
+                source_refs: [session/2026-04-16-0900]
+                confidence: high
+                relations:
+                  - target: procedure/unrelated-worker-restart
+                    type: linked_procedure
+                ---
+
+                Redis expires keys lazily and actively.
+                """,
+            )
+            _write(
+                workspace / "brain/wiki/procedures/active/unrelated-worker-restart.md",
+                """
+                ---
+                id: procedure/unrelated-worker-restart
+                type: procedure
+                title: Worker Restart Procedure
+                status: active
+                updated_at: 2026-04-16
+                created_at: 2026-04-16
+                source_refs: [session/2026-04-16-0900]
+                confidence: high
+                ---
+
+                Restart background workers after deploy windows.
+                """,
+            )
+            sync_vault(config, mode="full")
+            connection = connect_db(config.paths.db_path)
+            with connection:
+                connection.execute(
+                    """
+                    INSERT INTO graph_edges(source_note_id, target_id, target_kind, relation_type, weight)
+                    VALUES (?, ?, 'note', ?, 0.8)
+                    """,
+                    ("concept/redis-expiry", "procedure/unrelated-worker-restart", "linked_procedure"),
+                )
+            connection.close()
+
+            result = resolve_task_context(
+                config,
+                ResolveTaskContextRequest(
+                    bridge_id="api-client",
+                    session_id="session-trace-factual",
+                    task_id="task-trace-factual",
+                    task_text="redis expiry semantics",
+                    task_kind="knowledge",
+                    token_budget=1600,
+                ),
+            )
+
+            all_related_ids = {
+                item.id
+                for item in [
+                    *result.memory_packet.related_by_topic,
+                    *result.memory_packet.related_by_timeline,
+                    *result.memory_packet.related_by_similarity,
+                    *result.memory_packet.related_by_contrast,
+                ]
+            }
+            self.assertNotIn("procedure/unrelated-worker-restart", all_related_ids)
+            self.assertEqual(result.memory_packet.assembly_notes["trace_completion_status"], "not_needed")
 
 
 if __name__ == "__main__":

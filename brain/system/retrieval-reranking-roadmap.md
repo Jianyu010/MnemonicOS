@@ -13,26 +13,52 @@
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| S4-P1 | `RankedHits` contract and wiki/archive lane separation | not started |
-| S4-P2 | Heuristic scoring formula with importance and quality | not started |
-| S4-P3 | Exact bypass and archive scoring rules | not started |
-| S4-P4 | Caps, diversification, deterministic stability | not started |
-| S4-P5 | Training labels, weights, and feedback integration | not started |
+| S4-P1 | `RankedHits` contract and wiki/archive lane separation | done |
+| S4-P2 | Heuristic scoring formula with importance and quality | done |
+| S4-P3 | Exact bypass and archive scoring rules | done |
+| S4-P4 | Caps, diversification, deterministic stability | done |
+| S4-P5 | Training labels, weights, and feedback integration | done |
+
+---
+
+## Implementation Mark
+
+**2026-05-13:** Stage 4 implemented and verified.
+
+Implemented:
+- `src/second_brain/reranker.py`
+- `RankedHits`, `ScoredCandidate`, `ScoredArchiveCandidate`, and
+  `RerankFeatureRow`
+- deterministic wiki scoring with BM25, semantic, graph, type-prior,
+  freshness, trust, importance, quality, exact alias, and historical signals
+- exact-match bypass: `1_000_000 - exact_rank`
+- separate archive lane with archive-only ranked hits
+- top-k cap, title/id tie-breaks, and deterministic same-chain diversity cap
+- Stage 4 feature logging fields for quality and passive feedback metadata
+- `rerank_training` job and daemon schedule for local linear weight updates
+- passive-label training with confidence weighting; explicit labels dominate
+
+Verification:
+- `python3 -m unittest tests.test_reranker` -> 7 passed
+- targeted retrieval regression suite -> 23 passed
+- `python3 -m unittest discover -s tests` -> 417 passed
 
 ---
 
 ## Legacy State
 
-Current behavior exists as inline scoring inside `retrieve()`.
+Previous behavior existed as inline scoring inside `retrieve()`. It has been
+migrated to `reranker.py`, while `retrieve()` remains responsible for
+orchestration and DB persistence.
 
 | Gap | Legacy location | Target |
 |-----|----------------|--------|
 | scoring formula | `retrieval.py:retrieve()` loop | `reranker.py` |
 | exact bypass | inline `1_000_000 - exact_rank` | Phase 3 rule |
 | archive ranking | inline empty-wiki fallback | separate archive lane |
-| importance score | loaded but historically not scored | formula includes `importance_weight` |
-| training trigger | `train_rerank_model()` exists but is not stage-owned | Stage 4 training hook |
-| feedback hierarchy | implicit `selected/useful` fields | explicit exposure vs usefulness split |
+| importance score | loaded but historically not scored | done: formula includes `importance_weight` |
+| training trigger | `train_rerank_model()` existed but was not stage-owned | done: `rerank_training` job |
+| feedback hierarchy | implicit `selected/useful` fields | done: exposure vs usefulness split documented and logged |
 
 ---
 
@@ -46,6 +72,9 @@ Stage 4 is complete when:
 4. deterministic tie-breaking is stable under fixed inputs.
 5. `retrieval_hit_features` can log all learned features.
 6. training can distinguish explicit labels from passive derived labels.
+
+All done for the local-linear Stage 4 path. DL reranking remains the separate
+north-star path in the overall retrieval roadmap.
 
 ---
 

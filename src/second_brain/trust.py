@@ -37,6 +37,8 @@ DEFAULT_RERANK_WEIGHTS = {
     "type_prior_weight": 0.15,
     "freshness_weight": 0.10,
     "trust_weight": 0.15,
+    "importance_weight": 0.10,
+    "quality_weight": 0.08,
 }
 
 
@@ -245,10 +247,68 @@ def load_rerank_model(connection: sqlite3.Connection) -> RerankModel:
     return RerankModel(sample_count=int(row["sample_count"] or 0), weights=merged, fallback=False)
 
 
+PASSIVE_RERANK_PRIORITY = {
+    "passive_used_likely": 1,
+    "passive_useful_likely": 2,
+    "passive_misleading_likely": 3,
+}
+
+
+def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
+    row = connection.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def _passive_training_labels(connection: sqlite3.Connection) -> dict[str, tuple[bool, float]]:
+    if not _table_exists(connection, "note_passive_feedback"):
+        return {}
+    rows = connection.execute(
+        """
+        SELECT note_id, feedback_state, confidence, method
+        FROM note_passive_feedback
+        """
+    ).fetchall()
+    selected: dict[str, tuple[str, float, str]] = {}
+    for row in rows:
+        state = str(row["feedback_state"] or "")
+        if state not in PASSIVE_RERANK_PRIORITY:
+            continue
+        try:
+            confidence = max(0.0, min(float(row["confidence"] or 0.0), 1.0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        method = str(row["method"] or "")
+        if state in {"passive_useful_likely", "passive_misleading_likely"} and method != "maintenance_post_hoc":
+            continue
+        note_id = str(row["note_id"])
+        current = selected.get(note_id)
+        candidate_key = (confidence, PASSIVE_RERANK_PRIORITY[state])
+        current_key = (
+            current[1],
+            PASSIVE_RERANK_PRIORITY[current[0]],
+        ) if current is not None else None
+        if current is None or candidate_key > current_key:
+            selected[note_id] = (state, confidence, method)
+
+    labels: dict[str, tuple[bool, float]] = {}
+    for note_id, (state, confidence, _method) in selected.items():
+        if state == "passive_used_likely":
+            labels[note_id] = (True, 0.30 * confidence)
+        elif state == "passive_useful_likely":
+            labels[note_id] = (True, 0.60 * confidence)
+        elif state == "passive_misleading_likely":
+            labels[note_id] = (False, 0.60 * confidence)
+    return labels
+
+
 def train_rerank_model(connection: sqlite3.Connection, config: AppConfig) -> RerankModel:
     rows = connection.execute(
         """
         SELECT
+            rhf.note_id,
             rhf.exact_hit,
             rhf.bm25_score,
             rhf.semantic_score,
@@ -256,18 +316,17 @@ def train_rerank_model(connection: sqlite3.Connection, config: AppConfig) -> Rer
             rhf.freshness_score,
             rhf.type_prior_score,
             rhf.trust_score,
+            rhf.importance_score,
+            rhf.quality_score,
             COALESCE(rh.useful, rq.useful) AS useful_label,
             rq.top1_correct,
             rh.rank
         FROM retrieval_hit_features rhf
         JOIN retrieval_hits rh ON rh.query_id = rhf.query_id AND rh.note_id = rhf.note_id
         JOIN retrieval_queries rq ON rq.id = rhf.query_id
-        WHERE COALESCE(rh.useful, rq.useful) IS NOT NULL OR rq.top1_correct IS NOT NULL
         """
     ).fetchall()
-
-    if len(rows) < config.trust.min_training_samples:
-        return RerankModel(sample_count=len(rows), weights=dict(DEFAULT_RERANK_WEIGHTS), fallback=True)
+    passive_labels = _passive_training_labels(connection)
 
     feature_totals = {
         "bm25_weight": [0.0, 0.0],
@@ -276,29 +335,52 @@ def train_rerank_model(connection: sqlite3.Connection, config: AppConfig) -> Rer
         "freshness_weight": [0.0, 0.0],
         "type_prior_weight": [0.0, 0.0],
         "trust_weight": [0.0, 0.0],
+        "importance_weight": [0.0, 0.0],
+        "quality_weight": [0.0, 0.0],
     }
-    counts = {"positive": 0, "negative": 0}
+    counts = {"positive": 0.0, "negative": 0.0}
+    labeled_count = 0
 
     for row in rows:
-        positive = False
         useful_label = row["useful_label"]
         if useful_label is not None and int(useful_label) == 1:
             positive = True
+            label_weight = 1.0
+        elif useful_label is not None and int(useful_label) == 0:
+            positive = False
+            label_weight = 1.0
         elif row["top1_correct"] is not None and int(row["top1_correct"]) == 1 and int(row["rank"] or 99) == 1:
             positive = True
+            label_weight = 1.0
+        elif row["top1_correct"] is not None and int(row["top1_correct"]) == 0 and int(row["rank"] or 99) == 1:
+            positive = False
+            label_weight = 1.0
+        elif str(row["note_id"]) in passive_labels:
+            positive, label_weight = passive_labels[str(row["note_id"])]
+        else:
+            continue
+
+        if label_weight <= 0.0:
+            continue
 
         bucket = 0 if positive else 1
-        counts["positive" if positive else "negative"] += 1
-        feature_totals["bm25_weight"][bucket] += max(float(row["bm25_score"] or 0.0), 0.0)
-        feature_totals["semantic_weight"][bucket] += max(float(row["semantic_score"] or 0.0), 0.0)
-        feature_totals["graph_weight"][bucket] += max(float(row["graph_score"] or 0.0), 0.0)
-        feature_totals["freshness_weight"][bucket] += max(float(row["freshness_score"] or 0.0), 0.0)
-        feature_totals["type_prior_weight"][bucket] += max(float(row["type_prior_score"] or 0.0), 0.0)
-        feature_totals["trust_weight"][bucket] += max(float(row["trust_score"] or 0.0), 0.0)
+        counts["positive" if positive else "negative"] += label_weight
+        labeled_count += 1
+        feature_totals["bm25_weight"][bucket] += label_weight * max(float(row["bm25_score"] or 0.0), 0.0)
+        feature_totals["semantic_weight"][bucket] += label_weight * max(float(row["semantic_score"] or 0.0), 0.0)
+        feature_totals["graph_weight"][bucket] += label_weight * max(float(row["graph_score"] or 0.0), 0.0)
+        feature_totals["freshness_weight"][bucket] += label_weight * max(float(row["freshness_score"] or 0.0), 0.0)
+        feature_totals["type_prior_weight"][bucket] += label_weight * max(float(row["type_prior_score"] or 0.0), 0.0)
+        feature_totals["trust_weight"][bucket] += label_weight * max(float(row["trust_score"] or 0.0), 0.0)
+        feature_totals["importance_weight"][bucket] += label_weight * max(float(row["importance_score"] or 0.0), 0.0)
+        feature_totals["quality_weight"][bucket] += label_weight * max(float(row["quality_score"] or 0.0), 0.0)
+
+    if labeled_count < config.trust.min_training_samples:
+        return RerankModel(sample_count=labeled_count, weights=dict(DEFAULT_RERANK_WEIGHTS), fallback=True)
 
     weights = dict(DEFAULT_RERANK_WEIGHTS)
-    positive_count = max(counts["positive"], 1)
-    negative_count = max(counts["negative"], 1)
+    positive_count = max(counts["positive"], 1.0)
+    negative_count = max(counts["negative"], 1.0)
     for key, (pos_total, neg_total) in feature_totals.items():
         delta = (pos_total / positive_count) - (neg_total / negative_count)
         weights[key] = max(0.02, min(0.60, DEFAULT_RERANK_WEIGHTS[key] + delta * 0.25))
@@ -313,9 +395,9 @@ def train_rerank_model(connection: sqlite3.Connection, config: AppConfig) -> Rer
                 weights_json = excluded.weights_json,
                 updated_at = excluded.updated_at
             """,
-            (len(rows), json.dumps(weights, sort_keys=True)),
+            (labeled_count, json.dumps(weights, sort_keys=True)),
         )
-    return RerankModel(sample_count=len(rows), weights=weights, fallback=False)
+    return RerankModel(sample_count=labeled_count, weights=weights, fallback=False)
 
 
 def _days_since(raw_date: str | None) -> int:

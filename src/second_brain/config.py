@@ -83,10 +83,10 @@ class ExtractionConfig:
     llm_base_url: str = ""
     llm_api_key_env: str = ""
     llm_command: str = ""
-    llm_timeout_seconds: int = 180
+    llm_timeout_seconds: int | None = None
     vlm_base_url: str = ""
     vlm_api_key_env: str = ""
-    vlm_timeout_seconds: int = 180
+    vlm_timeout_seconds: int | None = None
     max_queue_batch: int = 10
 
 
@@ -158,6 +158,13 @@ class AppConfig:
     daemon: DaemonConfig | None = None
     bridges: dict[str, BridgeConfig] = field(default_factory=dict)
     config_path: Path | None = None
+
+
+def _parse_timeout(value: object) -> int | None:
+    if value is None:
+        return None
+    as_int = int(value)
+    return None if as_int <= 0 else as_int
 
 
 def _resolve_path(base_dir: Path, raw_value: str) -> Path:
@@ -303,10 +310,10 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
         llm_base_url=str(llm_data.get("base_url", extraction_data.get("llm_base_url", default_ollama_base_url))),
         llm_api_key_env=str(llm_data.get("api_key_env", extraction_data.get("llm_api_key_env", ""))),
         llm_command=str(llm_data.get("command", extraction_data.get("llm_command", ""))),
-        llm_timeout_seconds=int(llm_data.get("timeout_seconds", extraction_data.get("llm_timeout_seconds", 180))),
+        llm_timeout_seconds=_parse_timeout(llm_data.get("timeout_seconds", extraction_data.get("llm_timeout_seconds"))),
         vlm_base_url=str(vlm_data.get("base_url", extraction_data.get("vlm_base_url", default_ollama_base_url))),
         vlm_api_key_env=str(vlm_data.get("api_key_env", extraction_data.get("vlm_api_key_env", ""))),
-        vlm_timeout_seconds=int(vlm_data.get("timeout_seconds", extraction_data.get("vlm_timeout_seconds", 180))),
+        vlm_timeout_seconds=_parse_timeout(vlm_data.get("timeout_seconds", extraction_data.get("vlm_timeout_seconds"))),
         max_queue_batch=int(extraction_data.get("max_queue_batch", 10)),
     )
 
