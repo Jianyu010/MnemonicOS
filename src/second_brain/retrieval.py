@@ -173,6 +173,8 @@ def retrieve(
         persona=parsed_query.persona,
         back_feed_hook=parsed_query.back_feed_hook,
         archive_hits=archive_hits,
+        suppressed_by_gate_count=ranked.suppressed_by_gate_count,
+        passed_gate_count=ranked.passed_gate_count,
     )
 
 
@@ -187,5 +189,7 @@ def result_to_json(result: RetrieveResult) -> str:
         "pinned_paths": result.pinned_paths,
         "hits": [asdict(hit) for hit in result.hits],
         "archive_hits": [asdict(hit) for hit in result.archive_hits],
+        "suppressed_by_gate_count": result.suppressed_by_gate_count,
+        "passed_gate_count": result.passed_gate_count,
     }
     return json.dumps(payload, indent=2)

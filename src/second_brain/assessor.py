@@ -198,7 +198,9 @@ def _retrieval_state_for_packet(packet: MemoryPacket, *, temporality: str | None
     if packet.contradictions:
         return "insufficient_contested", ["primary_contradiction"]
     if not primary and not packet.archive_context:
-        return "insufficient_no_hit", ["no_primary_or_archive"]
+        suppressed = int(packet.assembly_notes.get("suppressed_by_gate_count", 0))
+        reason = "relevance_gate_suppressed_all" if suppressed > 0 else "no_primary_or_archive"
+        return "insufficient_no_hit", [reason]
     if not primary and packet.archive_context:
         return "partial", ["archive_only"]
     if temporality == "historical":

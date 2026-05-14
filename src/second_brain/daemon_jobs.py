@@ -24,6 +24,7 @@ _DEFAULT_SCHEDULES = {
     "wiki_health_report": "50 * * * *",
     "wiki_raw_revisitation": "0 2 * * *",
     "wiki_derive_passive_feedback": "*/30 * * * *",
+    "retry_failed_extractions": "55 * * * *",
 }
 
 

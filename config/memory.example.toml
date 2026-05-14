@@ -6,6 +6,8 @@ graph_dir = "brain/data/graph"
 eval_queries = "evals/queries.jsonl"
 
 [retrieval]
+# top_k is deprecated; use min_hits/max_hits/pool_fraction instead.
+# When set, it acts only as an explicit caller override cap.
 top_k = 5
 include_archive_fallback = true
 pinned_token_budget = 2000
@@ -18,6 +20,14 @@ memory_strength_weight = 0.10
 importance_weight = 0.10
 quality_weight = 0.08
 exact_alias_weight = 0.10
+# Phase 6: multiplicative scoring + relevance gate
+min_relevance_score = 0.25
+bm25_saturation = 15.0
+# Phase 4 (updated): dynamic top-k
+min_hits = 3
+max_hits = 15
+pool_fraction = 0.10
+tokens_per_hit_estimate = 120
 
 [ingest]
 chunk_tokens = 400

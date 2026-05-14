@@ -98,6 +98,11 @@ if pinned:
         lines.append(f"- {path}")
     lines.append("")
 
+suppressed_by_gate = int(payload.get("suppressed_by_gate_count", 0))
+passed_gate = int(payload.get("passed_gate_count", 0))
+suppression_rate = suppressed_by_gate / (suppressed_by_gate + passed_gate) if (suppressed_by_gate + passed_gate) > 0 else 0.0
+min_relevance = 0.25
+
 if hits:
     lines.append("### Relevant Notes")
     lines.append("")
@@ -108,6 +113,8 @@ if hits:
         freshness = hit.get("freshness_state") or ""
         summary = (hit.get("summary") or hit.get("excerpt") or "").replace("\n", " ")
         channels = ", ".join(hit.get("channels", []))
+        relevance_score = hit.get("relevance_score")
+        quality_score = hit.get("quality_score")
         flags = []
         if freshness in {"stale", "suspect", "contested"}:
             flags.append(freshness)
@@ -119,11 +126,23 @@ if hits:
             lines.append(f"  {summary[:220]}")
         if channels:
             lines.append(f"  _via {channels}_")
+        if relevance_score is not None and quality_score is not None:
+            lines.append(f"  relevance={relevance_score:.2f} quality={quality_score:.2f}")
+        lines.append("")
+    if suppression_rate > 0.50 and suppressed_by_gate > 0:
+        lines.append(f"<!-- retrieval note: >50% of candidates were gate-suppressed; consider broadening query terms if context seems thin -->")
         lines.append("")
 else:
     lines.append("### Relevant Notes")
     lines.append("")
-    lines.append("- No relevant MnemonicOS notes found.")
+    if suppressed_by_gate > 0:
+        lines.append(
+            f"- No notes met the relevance threshold. {suppressed_by_gate} candidate{'s' if suppressed_by_gate != 1 else ''} were recalled but"
+            f" suppressed (relevance_score < {min_relevance}). Query likely outside MnemonicOS corpus."
+            f" Proceed with own reasoning; do not treat prior hits as authoritative."
+        )
+    else:
+        lines.append("- No relevant MnemonicOS notes found.")
     lines.append("")
 
 lines.append("<!-- end MnemonicOS context -->")

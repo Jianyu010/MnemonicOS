@@ -71,6 +71,8 @@ class RetrieveHit:
     final_score: float
     excerpt: str
     relation_types: list[str] = field(default_factory=list)
+    relevance_score: float = 0.0
+    quality_score: float = 0.0
 
 
 @dataclass(slots=True)
@@ -84,6 +86,8 @@ class RetrieveResult:
     persona: str | None = None
     back_feed_hook: str | None = None
     archive_hits: list[RetrieveHit] = field(default_factory=list)
+    suppressed_by_gate_count: int = 0
+    passed_gate_count: int = 0
 
 
 @dataclass(slots=True)
@@ -243,6 +247,8 @@ class ScoredArchiveCandidate:
 class RankedHits:
     wiki_hits: list[ScoredCandidate] = field(default_factory=list)
     archive_hits: list[ScoredArchiveCandidate] = field(default_factory=list)
+    suppressed_by_gate_count: int = 0
+    passed_gate_count: int = 0
 
     @property
     def hits(self) -> list[RetrieveHit]:

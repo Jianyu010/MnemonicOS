@@ -104,6 +104,12 @@ class RerankerStageTest(unittest.TestCase):
             importance_weight = 0.60
             quality_weight = 0.40
             exact_alias_weight = 0.10
+            min_relevance_score = 0.0
+            bm25_saturation = 15.0
+            min_hits = 3
+            max_hits = 15
+            pool_fraction = 0.10
+            tokens_per_hit_estimate = 120
 
             [ingest]
             auto_trigger_pipeline = {str(auto_trigger_pipeline).lower()}
@@ -382,6 +388,239 @@ class RerankerStageTest(unittest.TestCase):
             assert archive_row is not None
             self.assertEqual(str(archive_row["channel"]), "archive_bm25")
             self.assertEqual(int(feature_rows["count"]), 0)
+
+    def _prepare_workspace_with_gate(self, workspace: Path, *, min_relevance_score: float = 0.25) -> object:
+        _write(workspace / "brain/system/MEMORY.md", "# MEMORY\n")
+        _write(workspace / "brain/system/USER.md", "# USER\n")
+        _write(workspace / "brain/system/ACTIVE.md", "# ACTIVE\n")
+        _write(workspace / "brain/system/AGENTS.md", "bridges: {}\n")
+        config_path = workspace / "config.toml"
+        _write(
+            config_path,
+            f"""
+            [paths]
+            vault_root = "{(workspace / 'brain').as_posix()}"
+            db_path = "{(workspace / 'brain/data/archive.db').as_posix()}"
+            vectors_dir = "{(workspace / 'brain/data/vectors').as_posix()}"
+            graph_dir = "{(workspace / 'brain/data/graph').as_posix()}"
+            eval_queries = "{(workspace / 'evals/queries.jsonl').as_posix()}"
+
+            [retrieval]
+            bm25_weight = 0.75
+            semantic_weight = 0.25
+            type_prior_weight = 0.0
+            freshness_weight = 0.0
+            memory_strength_weight = 0.0
+            importance_weight = 0.0
+            quality_weight = 0.0
+            exact_alias_weight = 0.0
+            min_relevance_score = {min_relevance_score}
+            bm25_saturation = 1.0
+            min_hits = 2
+            max_hits = 10
+            pool_fraction = 0.50
+            tokens_per_hit_estimate = 120
+
+            [ingest]
+            auto_trigger_pipeline = false
+
+            [embeddings]
+            enabled = false
+            provider = "hash"
+            model = "hash-256-v1"
+            dimensions = 256
+
+            [graph]
+            enabled = false
+
+            [trust]
+            min_training_samples = 2
+            """,
+        )
+        config = load_config(config_path, workspace)
+        connection = connect_db(config.paths.db_path)
+        run_migrations(connection, ROOT / "migrations")
+        connection.close()
+        return config
+
+    def test_relevance_gate_suppresses_low_bm25_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = self._prepare_workspace_with_gate(Path(tmp_dir), min_relevance_score=0.25)
+            # bm25_saturation=1.0, so bm25_abs = bm25_score/1.0
+            # relevance_score = bm25_abs (since semantic=0.25 weight but no semantic score)
+            # candidate with bm25_score=0.10 → relevance≈0.75*0.10=0.075 < 0.25 → suppressed
+            low = SignalEnrichedCandidate(
+                candidate=RecallCandidate(
+                    id="procedure/low-relevance",
+                    title="Low Relevance",
+                    type="procedure",
+                    status="active",
+                    chain_id=None,
+                    lifecycle_state="verified",
+                    body_path="/tmp/low.md",
+                    summary="Low relevance note",
+                    body="Low relevance note",
+                    channels={"bm25"},
+                    bm25_rank=1,
+                    bm25_score=0.10,
+                ),
+                signals=NoteSignals(quality_pass=True, importance_score=1.0),
+            )
+            # bm25_score=0.80 → relevance≈0.60 > 0.25 → passes
+            high = SignalEnrichedCandidate(
+                candidate=RecallCandidate(
+                    id="procedure/high-relevance",
+                    title="High Relevance",
+                    type="procedure",
+                    status="active",
+                    chain_id=None,
+                    lifecycle_state="verified",
+                    body_path="/tmp/high.md",
+                    summary="High relevance note",
+                    body="High relevance note",
+                    channels={"bm25"},
+                    bm25_rank=2,
+                    bm25_score=0.80,
+                ),
+                signals=NoteSignals(quality_pass=True, importance_score=1.0),
+            )
+            connection = connect_db(config.paths.db_path)
+            try:
+                ranked = rerank(config, self._pool(low, high), connection=connection)
+            finally:
+                connection.close()
+
+            hit_ids = [item.hit.id for item in ranked.wiki_hits]
+            self.assertIn("procedure/high-relevance", hit_ids)
+            self.assertNotIn("procedure/low-relevance", hit_ids)
+            self.assertEqual(ranked.suppressed_by_gate_count, 1)
+            self.assertEqual(ranked.passed_gate_count, 1)
+
+    def test_relevance_gate_suppresses_all_emits_suppression_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = self._prepare_workspace_with_gate(Path(tmp_dir), min_relevance_score=0.90)
+            # bm25_saturation=1.0; bm25_score=0.50 → relevance≈0.375 < 0.90 → suppressed
+            candidate = SignalEnrichedCandidate(
+                candidate=RecallCandidate(
+                    id="procedure/some-note",
+                    title="Some Note",
+                    type="procedure",
+                    status="active",
+                    chain_id=None,
+                    lifecycle_state="verified",
+                    body_path="/tmp/some.md",
+                    summary="Some note",
+                    body="Some note",
+                    channels={"bm25"},
+                    bm25_rank=1,
+                    bm25_score=0.50,
+                ),
+                signals=NoteSignals(quality_pass=True),
+            )
+            connection = connect_db(config.paths.db_path)
+            try:
+                ranked = rerank(config, self._pool(candidate), connection=connection)
+            finally:
+                connection.close()
+
+            self.assertEqual(ranked.wiki_hits, [])
+            self.assertEqual(ranked.suppressed_by_gate_count, 1)
+            self.assertEqual(ranked.passed_gate_count, 0)
+
+    def test_exact_match_bypasses_relevance_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = self._prepare_workspace_with_gate(Path(tmp_dir), min_relevance_score=0.99)
+            exact = SignalEnrichedCandidate(
+                candidate=RecallCandidate(
+                    id="procedure/exact",
+                    title="Exact Hit",
+                    type="procedure",
+                    status="active",
+                    chain_id=None,
+                    lifecycle_state="verified",
+                    body_path="/tmp/exact.md",
+                    summary="Exact match",
+                    body="Exact match",
+                    channels={"exact"},
+                    exact_rank=1,
+                    bm25_score=0.01,
+                ),
+                signals=NoteSignals(quality_pass=False),
+            )
+            connection = connect_db(config.paths.db_path)
+            try:
+                ranked = rerank(config, self._pool(exact), connection=connection)
+            finally:
+                connection.close()
+
+            self.assertEqual(len(ranked.wiki_hits), 1)
+            self.assertEqual(ranked.wiki_hits[0].hit.id, "procedure/exact")
+            self.assertEqual(ranked.suppressed_by_gate_count, 0)
+
+    def test_hit_carries_relevance_and_quality_scores(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = self._prepare_workspace_with_gate(Path(tmp_dir), min_relevance_score=0.0)
+            candidate = SignalEnrichedCandidate(
+                candidate=RecallCandidate(
+                    id="procedure/scored",
+                    title="Scored Note",
+                    type="procedure",
+                    status="active",
+                    chain_id=None,
+                    lifecycle_state="verified",
+                    body_path="/tmp/scored.md",
+                    summary="Scored note",
+                    body="Scored note",
+                    channels={"bm25"},
+                    bm25_rank=1,
+                    bm25_score=0.60,
+                ),
+                signals=NoteSignals(quality_pass=True),
+            )
+            connection = connect_db(config.paths.db_path)
+            try:
+                ranked = rerank(config, self._pool(candidate), connection=connection)
+            finally:
+                connection.close()
+
+            self.assertEqual(len(ranked.wiki_hits), 1)
+            hit = ranked.wiki_hits[0].hit
+            self.assertGreater(hit.relevance_score, 0.0)
+            self.assertGreaterEqual(hit.quality_score, 0.0)
+            self.assertAlmostEqual(hit.final_score, hit.relevance_score * hit.quality_score, places=6)
+
+    def test_dynamic_top_k_respects_pool_fraction(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = self._prepare_workspace_with_gate(Path(tmp_dir), min_relevance_score=0.0)
+            # pool_fraction=0.50, min_hits=2, max_hits=10
+            # pool of 6 → ceil(6 * 0.50) = 3
+            candidates = [
+                SignalEnrichedCandidate(
+                    candidate=RecallCandidate(
+                        id=f"procedure/note-{i}",
+                        title=f"Note {i}",
+                        type="procedure",
+                        status="active",
+                        chain_id=None,
+                        lifecycle_state="verified",
+                        body_path=f"/tmp/note{i}.md",
+                        summary=f"Note {i}",
+                        body=f"Note {i}",
+                        channels={"bm25"},
+                        bm25_rank=i + 1,
+                        bm25_score=0.9 - i * 0.1,
+                    ),
+                    signals=NoteSignals(quality_pass=True),
+                )
+                for i in range(6)
+            ]
+            connection = connect_db(config.paths.db_path)
+            try:
+                ranked = rerank(config, self._pool(*candidates), connection=connection)
+            finally:
+                connection.close()
+
+            self.assertEqual(len(ranked.wiki_hits), 3)
 
 
 if __name__ == "__main__":

@@ -21,7 +21,7 @@ class PathsConfig:
 
 @dataclass(slots=True)
 class RetrievalConfig:
-    top_k: int = 5
+    top_k: int = 5  # deprecated: treated as explicit caller override cap only
     include_archive_fallback: bool = True
     pinned_token_budget: int = 2000
     total_context_budget: int = 6000
@@ -33,6 +33,14 @@ class RetrievalConfig:
     importance_weight: float = 0.10
     quality_weight: float = 0.08
     exact_alias_weight: float = 0.10
+    # Phase 6: multiplicative scoring + relevance gate
+    min_relevance_score: float = 0.25
+    bm25_saturation: float = 15.0
+    # Phase 4 (updated): dynamic top-k
+    min_hits: int = 3
+    max_hits: int = 15
+    pool_fraction: float = 0.10
+    tokens_per_hit_estimate: int = 120
 
 
 @dataclass(slots=True)
@@ -253,6 +261,12 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
         importance_weight=float(retrieval_data.get("importance_weight", 0.10)),
         quality_weight=float(retrieval_data.get("quality_weight", 0.08)),
         exact_alias_weight=float(retrieval_data.get("exact_alias_weight", 0.10)),
+        min_relevance_score=float(retrieval_data.get("min_relevance_score", 0.25)),
+        bm25_saturation=float(retrieval_data.get("bm25_saturation", 15.0)),
+        min_hits=int(retrieval_data.get("min_hits", 3)),
+        max_hits=int(retrieval_data.get("max_hits", 15)),
+        pool_fraction=float(retrieval_data.get("pool_fraction", 0.10)),
+        tokens_per_hit_estimate=int(retrieval_data.get("tokens_per_hit_estimate", 120)),
     )
 
     ingest_data = data.get("ingest", {})

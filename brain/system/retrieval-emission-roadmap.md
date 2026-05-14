@@ -23,6 +23,30 @@
 
 ---
 
+## Implementation Mark
+
+**2026-05-14 (Phase 8 — pre-Stage 7 polish):** 2D score triple, gate-suppressed
+messages, and confidence band labels implemented as retrieval-polish cross-cuts
+outside the formal Stage 7 render model. Covered by Phase 8 plan:
+[retrieval-emission-plan-phase8.md](retrieval-emission-plan-phase8.md).
+
+Implemented:
+- `retrieval.py` JSON: every hit object gains `relevance_score` and `quality_score`
+- `retrieval.py` JSON: `suppressed_by_gate_count` and `passed_gate_count` in result
+- `mnemonic_context.sh` Markdown: gate-suppressed message ("N candidates recalled
+  but suppressed (relevance_score < 0.25)") vs corpus-miss message; `relevance=`
+  `quality=` per hit line; `>50%` suppression rate advisory as HTML comment
+- `cli.py` text: `[HIGH/MEDIUM/LOW]` confidence band per hit; `relevance=`
+  `quality=` fields in output; gate suppression summary line
+- `assessor.py`: `insufficient_no_hit` reason code `relevance_gate_suppressed_all`
+  propagated from `assembly_notes.suppressed_by_gate_count`
+
+These are additive changes — no existing JSON fields renamed or removed. The
+formal Stage 7 render model (S7-P1 through S7-P7) remains "not started" and
+will supersede these ad-hoc outputs when implemented.
+
+---
+
 ## Design Mark
 
 **2026-05-14:** Stage 7 planned after Stage 6 produced

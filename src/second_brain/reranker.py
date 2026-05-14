@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 from .config import AppConfig
 from .models import (
     RankedHits,
@@ -11,15 +13,15 @@ from .models import (
 )
 from .trust import RerankModel, load_rerank_model
 
+# Maximum historical bonus a note can receive (used for quality normalization).
+_HISTORICAL_BONUS_MAX = 0.20
 
-def _normalize_bm25(rank: int | None, max_rank: int) -> float:
-    if rank is None:
+
+def _bm25_abs(bm25_score: float | None, saturation: float) -> float:
+    """Absolute BM25 relevance, normalized to [0, 1] via saturation point."""
+    if bm25_score is None:
         return 0.0
-    return max(0.0, 1.0 - ((rank - 1) / max(max_rank, 1)))
-
-
-def _quality_score(quality_pass: bool) -> float:
-    return 1.0 if quality_pass else 0.0
+    return min(abs(bm25_score) / max(saturation, 1e-6), 1.0)
 
 
 def _raw_score(candidate) -> float | None:
@@ -76,6 +78,63 @@ def _weights(config: AppConfig, model: RerankModel) -> dict[str, float]:
     return weights
 
 
+def _compute_relevance_score(
+    candidate,
+    *,
+    weights: dict[str, float],
+    graph_max_score: float,
+    bm25_saturation: float,
+) -> float:
+    """Query-dependent sub-score [0, 1]. Uses absolute (not rank-based) BM25."""
+    bm25_abs = _bm25_abs(candidate.bm25_score, bm25_saturation)
+    semantic_abs = max(
+        candidate.learned_score if candidate.learned_score is not None else (candidate.semantic_score or 0.0),
+        0.0,
+    )
+    graph_abs = max(candidate.graph_score or 0.0, 0.0) / graph_max_score
+
+    relevance_weight_sum = weights["bm25_weight"] + weights["semantic_weight"] + weights["graph_weight"]
+    if relevance_weight_sum < 1e-6:
+        return 0.0
+
+    relevance_raw = (
+        weights["bm25_weight"] * bm25_abs
+        + weights["semantic_weight"] * semantic_abs
+        + weights["graph_weight"] * graph_abs
+    )
+    return relevance_raw / relevance_weight_sum
+
+
+def _compute_quality_score(
+    signals,
+    *,
+    weights: dict[str, float],
+    importance_norm: float,
+    hist_bonus: float,
+) -> float:
+    """Node-intrinsic sub-score [0, 1]. Independent of the query."""
+    quality_weight_sum_max = (
+        weights["type_prior_weight"]
+        + weights["freshness_weight"]
+        + weights["trust_weight"]
+        + weights["importance_weight"]
+        + weights["quality_weight"]
+        + _HISTORICAL_BONUS_MAX
+    )
+    if quality_weight_sum_max < 1e-6:
+        return 0.0
+
+    quality_raw = (
+        weights["type_prior_weight"] * signals.type_prior_score
+        + weights["freshness_weight"] * signals.freshness_score
+        + weights["trust_weight"] * signals.trust_score
+        + weights["importance_weight"] * importance_norm
+        + weights["quality_weight"] * (1.0 if signals.quality_pass else 0.0)
+        + hist_bonus
+    )
+    return quality_raw / quality_weight_sum_max
+
+
 def _score_wiki_candidates(
     config: AppConfig,
     enriched_pool: SignalEnrichedCandidatePool,
@@ -87,48 +146,54 @@ def _score_wiki_candidates(
     classifier_confidence = parsed_query.classifier_confidence
     temporality = parsed_query.temporality
     wiki_items = enriched_pool.wiki_candidates
-    bm25_max_rank = max(((item.candidate.bm25_rank or 0) for item in wiki_items), default=0) or 1
     graph_max_score = max(((item.candidate.graph_score or 0.0) for item in wiki_items), default=0.0) or 1.0
     importance_max = max(((item.signals.importance_score or 0.0) for item in wiki_items), default=0.0) or 1.0
     weights = _weights(config, rerank_model)
+
+    # Adjust policy-driven weight overrides.
+    freshness_weight = weights["freshness_weight"]
+    type_prior_weight = weights["type_prior_weight"]
+    if query_type is not None and (classifier_confidence or 0.0) >= 1.0:
+        type_prior_weight = max(type_prior_weight, 0.25)
+    if query_type == "what_changed":
+        freshness_weight = max(freshness_weight, 0.25)
+    weights = dict(weights, freshness_weight=freshness_weight, type_prior_weight=type_prior_weight)
+
     scored: list[ScoredCandidate] = []
 
     for item in wiki_items:
         candidate = item.candidate
         signals = item.signals
         freshness_state = signals.freshness_state
-        quality_score = _quality_score(signals.quality_pass)
         importance_norm = max(signals.importance_score or 0.0, 0.0) / importance_max
+        hist_bonus = _historical_bonus(temporality=temporality, freshness_state=freshness_state)
 
         if candidate.exact_rank is not None:
-            final_score = 1_000_000.0 - candidate.exact_rank
-            raw_score = 1.0
-        else:
-            bm25_norm = _normalize_bm25(candidate.bm25_rank, bm25_max_rank)
-            semantic_norm = max(
-                candidate.learned_score if candidate.learned_score is not None else (candidate.semantic_score or 0.0),
-                0.0,
+            # Exact matches bypass composite scoring for rank column but still
+            # emit a 2D vector for observability.
+            relevance_score = 1.0
+            quality_score = _compute_quality_score(
+                signals,
+                weights=weights,
+                importance_norm=importance_norm,
+                hist_bonus=hist_bonus,
             )
-            graph_norm = max(candidate.graph_score or 0.0, 0.0) / graph_max_score
-            freshness_weight = weights["freshness_weight"]
-            type_prior_weight = weights["type_prior_weight"]
-            if query_type is not None and (classifier_confidence or 0.0) >= 1.0:
-                type_prior_weight = max(type_prior_weight, 0.25)
-            if query_type == "what_changed":
-                freshness_weight = max(freshness_weight, 0.25)
-
-            final_score = (
-                weights["bm25_weight"] * bm25_norm
-                + weights["semantic_weight"] * semantic_norm
-                + weights["graph_weight"] * graph_norm
-                + type_prior_weight * signals.type_prior_score
-                + freshness_weight * signals.freshness_score
-                + weights["trust_weight"] * signals.trust_score
-                + weights["importance_weight"] * importance_norm
-                + weights["quality_weight"] * quality_score
-                + config.retrieval.exact_alias_weight * (1.0 if "exact" in candidate.channels else 0.0)
-                + _historical_bonus(temporality=temporality, freshness_state=freshness_state)
-            ) * signals.freshness_multiplier
+            final_score = 1_000_000.0 - candidate.exact_rank
+            raw_score: float | None = 1.0
+        else:
+            relevance_score = _compute_relevance_score(
+                candidate,
+                weights=weights,
+                graph_max_score=graph_max_score,
+                bm25_saturation=config.retrieval.bm25_saturation,
+            )
+            quality_score = _compute_quality_score(
+                signals,
+                weights=weights,
+                importance_norm=importance_norm,
+                hist_bonus=hist_bonus,
+            )
+            final_score = relevance_score * quality_score
             raw_score = _raw_score(candidate)
 
         hit = RetrieveHit(
@@ -146,6 +211,8 @@ def _score_wiki_candidates(
             final_score=final_score,
             excerpt=_excerpt(candidate, freshness_state),
             relation_types=list(candidate.relation_types or []),
+            relevance_score=relevance_score,
+            quality_score=quality_score,
         )
         feature_row = RerankFeatureRow(
             note_id=candidate.id,
@@ -166,6 +233,24 @@ def _score_wiki_candidates(
         scored.append(ScoredCandidate(candidate=candidate, signals=signals, hit=hit, feature_row=feature_row))
 
     return sorted(scored, key=lambda item: (-item.hit.final_score, item.hit.title.casefold(), item.hit.id))
+
+
+def _apply_relevance_gate(
+    scored: list[ScoredCandidate],
+    min_relevance_score: float,
+) -> tuple[list[ScoredCandidate], int]:
+    """Filter candidates below relevance threshold. Exact matches always pass.
+    Returns (passing, suppressed_count)."""
+    if min_relevance_score <= 0.0:
+        return scored, 0
+    passing: list[ScoredCandidate] = []
+    suppressed = 0
+    for item in scored:
+        if item.candidate.exact_rank is not None or item.hit.relevance_score >= min_relevance_score:
+            passing.append(item)
+        else:
+            suppressed += 1
+    return passing, suppressed
 
 
 def _score_archive_candidates(
@@ -208,7 +293,7 @@ def _apply_top_k_with_chain_diversity(scored: list[ScoredCandidate], top_k: int)
     selected: list[ScoredCandidate] = []
     deferred: list[ScoredCandidate] = []
     chain_counts: dict[str, int] = {}
-    chain_cap = 2
+    chain_cap = max(2, math.ceil(top_k / 3))
 
     for item in scored:
         chain_id = item.candidate.chain_id
@@ -226,6 +311,27 @@ def _apply_top_k_with_chain_diversity(scored: list[ScoredCandidate], top_k: int)
     return selected[:top_k]
 
 
+def _dynamic_top_k(
+    config: AppConfig,
+    pool_size: int,
+    caller_top_k: int | None,
+) -> int:
+    """Compute emission count from pool size. caller_top_k acts as an upper cap."""
+    target = max(config.retrieval.min_hits, math.ceil(pool_size * config.retrieval.pool_fraction))
+    target = min(target, config.retrieval.max_hits)
+
+    # Token budget backstop (rarely binding vs max_hits, but enforced).
+    available_tokens = config.retrieval.total_context_budget - config.retrieval.pinned_token_budget
+    budget_k = max(1, available_tokens // max(config.retrieval.tokens_per_hit_estimate, 1))
+    target = min(target, budget_k)
+
+    # Explicit caller override is a hard cap.
+    if caller_top_k is not None and caller_top_k > 0:
+        target = min(target, caller_top_k)
+
+    return max(target, 1)
+
+
 def rerank(
     config: AppConfig,
     enriched_pool: SignalEnrichedCandidatePool,
@@ -233,9 +339,25 @@ def rerank(
     connection,
     top_k: int | None = None,
 ) -> RankedHits:
-    requested_top_k = top_k or enriched_pool.parsed_query.top_k
+    # Resolve caller top_k: explicit arg overrides parsed_query default.
+    explicit_top_k = top_k if top_k is not None else enriched_pool.parsed_query.top_k
+
     rerank_model = load_rerank_model(connection)
     scored_wiki = _score_wiki_candidates(config, enriched_pool, rerank_model=rerank_model)
-    wiki_hits = _apply_top_k_with_chain_diversity(scored_wiki, requested_top_k)
-    archive_hits = _score_archive_candidates(enriched_pool, top_k=requested_top_k)
-    return RankedHits(wiki_hits=wiki_hits, archive_hits=archive_hits)
+
+    # Apply relevance gate (exact matches are exempt).
+    passing, suppressed_count = _apply_relevance_gate(scored_wiki, config.retrieval.min_relevance_score)
+    passed_count = len(passing)
+
+    # Dynamic top-k from passing pool.
+    final_k = _dynamic_top_k(config, passed_count, explicit_top_k)
+
+    wiki_hits = _apply_top_k_with_chain_diversity(passing, final_k)
+    archive_hits = _score_archive_candidates(enriched_pool, top_k=max(final_k, 3))
+
+    return RankedHits(
+        wiki_hits=wiki_hits,
+        archive_hits=archive_hits,
+        suppressed_by_gate_count=suppressed_count,
+        passed_gate_count=passed_count,
+    )

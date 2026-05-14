@@ -61,6 +61,15 @@ Remaining:
 - Stage 7 has not yet consumed the directive because Stage 7 implementation is
   not started.
 
+**2026-05-14 (Phase 8 cross-cut):** Gate-aware assessment added as part of
+retrieval-polish. `_retrieval_state_for_packet` now reads
+`assembly_notes.suppressed_by_gate_count` (populated by Stage 4 relevance gate
+via `runtime._build_memory_packet`) and emits reason code
+`relevance_gate_suppressed_all` instead of `no_primary_or_archive` when the
+gate is the cause of no hits — letting agents distinguish a true corpus miss
+from a relevance-filtered query. No new `AssessmentDirective` field added; the
+reason code travels in the existing `retrieval_state` + assessment path.
+
 ---
 
 ## Implementation Notes

@@ -581,5 +581,54 @@ def run_job(config: AppConfig, *, job_name: str, dry_run: bool = False) -> JobRu
         connection.close()
         return JobRunResult(job_name=job_name, status="ok", stats=stats, review_items_created=[])
 
+    if job_name == "retry_failed_extractions":
+        connection.close()
+        return _retry_failed_extractions_job(config, dry_run=dry_run)
+
     connection.close()
     raise ValueError(f"unsupported job: {job_name}")
+
+
+def _retry_failed_extractions_job(config: AppConfig, *, dry_run: bool = False) -> JobRunResult:
+    connection = connect_db(config.paths.db_path)
+    run_migrations(connection, config.paths.workspace_root / "migrations")
+    stats: dict[str, int] = {"retried": 0, "skipped_tombstoned": 0}
+    job_id: int | None = None
+    try:
+        with connection:
+            job_id = _open_job_run(connection, "retry_failed_extractions", "dry-run" if dry_run else "live")
+        rows = connection.execute(
+            """
+            SELECT id
+            FROM extraction_queue
+            WHERE status = 'error'
+              AND (last_error IS NULL OR last_error NOT LIKE 'tombstoned:%')
+            ORDER BY finished_at ASC NULLS LAST, id ASC
+            """
+        ).fetchall()
+        tombstoned_count = int(
+            (connection.execute(
+                "SELECT COUNT(*) FROM extraction_queue WHERE status='error' AND last_error LIKE 'tombstoned:%'"
+            ).fetchone() or [0])[0]
+        )
+        stats["skipped_tombstoned"] = tombstoned_count
+        if not dry_run:
+            with connection:
+                for row in rows:
+                    connection.execute(
+                        "UPDATE extraction_queue SET status='pending', last_error=NULL, started_at=NULL, finished_at=NULL WHERE id=?",
+                        (int(row["id"]),),
+                    )
+                    stats["retried"] += 1
+        else:
+            stats["retried"] = len(rows)
+        with connection:
+            _close_job_run(connection, job_id, status="ok", stats=stats)
+        return JobRunResult(job_name="retry_failed_extractions", status="ok", stats=stats, review_items_created=[])
+    except Exception as exc:
+        if job_id is not None:
+            with connection:
+                _close_job_run(connection, job_id, status="error", stats=stats, error_text=str(exc))
+        raise
+    finally:
+        connection.close()
