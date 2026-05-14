@@ -225,7 +225,7 @@ class Daemon:
                 self.shutdown_event.wait(1.0)
         finally:
             self.shutdown_event.set()
-            self.scheduler_thread.join()
+            self.scheduler_thread.join(timeout=60.0)
             self.socket_server.close()
             self.socket_thread.join(timeout=2.0)
             self._remove_pid()

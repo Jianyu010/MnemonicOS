@@ -55,8 +55,11 @@ def process_extraction_queue(config: AppConfig, *, dry_run: bool = False, limit:
             except Exception as exc:
                 stats.errors += 1
                 if not dry_run:
+                    error_text = str(exc)
+                    if item.attempt_count >= 1:
+                        error_text = f"tombstoned: failed after retry (attempt {item.attempt_count + 1}): {error_text}"
                     with connection:
-                        mark_error(connection, queue_id=item.id, error=str(exc))
+                        mark_error(connection, queue_id=item.id, error=error_text)
     finally:
         connection.close()
     return stats

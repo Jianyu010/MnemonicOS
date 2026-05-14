@@ -1247,7 +1247,13 @@ def _daemon_stop(config_path: str) -> int:
         print("daemon_not_running")
         return 0
     os.kill(pid, signal.SIGTERM)
-    for _ in range(30):
+    for _ in range(700):
+        time.sleep(0.1)
+        if not _daemon_is_alive(config.daemon.pid_path):
+            print("daemon_stopped")
+            return 0
+    os.kill(pid, signal.SIGKILL)
+    for _ in range(20):
         time.sleep(0.1)
         if not _daemon_is_alive(config.daemon.pid_path):
             print("daemon_stopped")
