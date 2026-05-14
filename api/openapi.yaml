@@ -203,6 +203,36 @@ paths:
               schema:
                 $ref: '#/components/schemas/SyncVaultResponse'
 
+  /v1/promotion/process:
+    post:
+      operationId: processPromotion
+      summary: Process promotion-ready extraction candidates.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PromotionProcessRequest'
+      responses:
+        '200':
+          description: Promotion processing stats
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromotionProcessResponse'
+
+  /v1/promotion/status:
+    get:
+      operationId: promotionStatus
+      summary: Inspect promotion queue status.
+      responses:
+        '200':
+          description: Promotion status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromotionStatusResponse'
+
   /v1/retrieve:
     post:
       operationId: retrieve
@@ -359,9 +389,11 @@ components:
           type: array
           items:
             type: string
-        sync_mode:
+        raw_path:
           type: string
-      required: [archive_id, promoted_notes, review_items, sync_mode]
+        chunk_count:
+          type: integer
+      required: [archive_id, raw_path, chunk_count, promoted_notes, review_items]
 
     IngestArtifactRequest:
       type: object
@@ -656,7 +688,7 @@ components:
       properties:
         job_name:
           type: string
-          enum: [sync_vault_incremental, process_extraction_queue, process_promotion_queue, expire_stale_episodes, embed_backfill, status_report]
+          enum: [sync_vault_incremental, process_extraction_queue, process_promotion_queue, expire_stale_episodes, embed_backfill, status_report, wiki_graph_rebuild, wiki_lifecycle_audit, wiki_importance_scoring, wiki_health_report, wiki_embedding_neighbor_backfill, wiki_cluster_validation, wiki_pattern_discovery, wiki_raw_revisitation]
         dry_run:
           type: boolean
           default: false
@@ -730,6 +762,47 @@ components:
         promotion_ready:
           type: integer
       required: [processed, skipped, errors, windows, artifacts, visual_snippets, candidates, promotion_ready]
+
+    PromotionProcessRequest:
+      type: object
+      properties:
+        dry_run:
+          type: boolean
+          default: false
+
+    PromotionProcessResponse:
+      type: object
+      properties:
+        promoted:
+          type: integer
+        review_routed:
+          type: integer
+        rejected:
+          type: integer
+        requeued:
+          type: integer
+        skipped:
+          type: integer
+        relations_applied:
+          type: integer
+        errors:
+          type: integer
+      required: [promoted, review_routed, rejected, requeued, skipped, relations_applied, errors]
+
+    PromotionStatusResponse:
+      type: object
+      properties:
+        promotion_ready:
+          type: integer
+        promoted:
+          type: integer
+        review_routed:
+          type: integer
+        rejected:
+          type: integer
+        last_run_at:
+          type: [string, "null"]
+      required: [promotion_ready, promoted, review_routed, rejected]
 
     RunJobResponse:
       type: object

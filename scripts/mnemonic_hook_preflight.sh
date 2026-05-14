@@ -20,6 +20,8 @@ STATE_FILE="${STATE_FILE:-/tmp/mnemo_hook_state}"
 
 # --- MnemonicOS enable/disable switch ---
 MNEMO_ENABLED="${MNEMO_ENABLED:-1}"
+MNEMO_AUTO_RETRY="${MNEMO_AUTO_RETRY:-1}"
+MNEMO_MAX_FOCUSED_RETRIES="${MNEMO_MAX_FOCUSED_RETRIES:-1}"
 DISABLE_FLAG="$REPO_ROOT/config/mnemo_disabled"
 if [[ "$MNEMO_ENABLED" == "0" || -f "$DISABLE_FLAG" ]]; then
   exit 0  # no-op — MnemonicOS disabled
@@ -72,8 +74,14 @@ if [[ -n "$CONVERSATION_ID" && -n "$EPISODE_ID" ]]; then
     --json >/dev/null 2>&1 || true
 fi
 
-RESULT=$("${CLI[@]}" orchestrator begin-task "$PROMPT" \
-  --bridge-id claude --session-id "$SESSION_ID" --json 2>/dev/null) || RESULT=""
+BEGIN_ARGS=(orchestrator begin-task "$PROMPT" \
+  --bridge-id claude --session-id "$SESSION_ID" \
+  --max-focused-retries "$MNEMO_MAX_FOCUSED_RETRIES" \
+  --json)
+if [[ "$MNEMO_AUTO_RETRY" != "0" ]]; then
+  BEGIN_ARGS+=(--auto-retry)
+fi
+RESULT=$("${CLI[@]}" "${BEGIN_ARGS[@]}" 2>/dev/null) || RESULT=""
 
 TASK_ID=$(echo "$RESULT" | python3 -c \
   "import sys,json; d=json.load(sys.stdin); print(d.get('task_id',''))" 2>/dev/null) \
@@ -110,8 +118,8 @@ fi
 
 # Emit retrieval_packet event when a retrieval result exists (even if empty/no-hit).
 if [[ -n "$CONVERSATION_ID" && -n "$EPISODE_ID" && -n "$STATE" ]]; then
-  RETRIEVAL_PAYLOAD=$(CONTEXT="$CONTEXT" STATE="$STATE" python3 -c \
-    "import json,os; print(json.dumps({'state': os.environ.get('STATE',''), 'context_markdown': os.environ.get('CONTEXT','')}))" \
+  RETRIEVAL_PAYLOAD=$(CONTEXT="$CONTEXT" STATE="$STATE" RESULT="$RESULT" python3 -c \
+    "import json,os; d=json.loads(os.environ.get('RESULT') or '{}'); print(json.dumps({'state': os.environ.get('STATE',''), 'context_markdown': os.environ.get('CONTEXT',''), 'final_pass_index': d.get('final_pass_index'), 'auto_retry_summary': d.get('auto_retry_summary'), 'retrieval_pass_count': len(d.get('retrieval_passes') or []), 'followup_query': (d.get('emission') or {}).get('followup_query')}))" \
     2>/dev/null) || RETRIEVAL_PAYLOAD="{}"
   "${CLI[@]}" capture append-event \
     --bridge-id claude \
