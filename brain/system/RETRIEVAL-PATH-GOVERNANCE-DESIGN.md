@@ -81,10 +81,14 @@ Natural Language Query  +  QueryHints (type hint, temporality, budget, scope)
                      ▼
 ┌─────────────────────────────────────────────────────┐
 │  STAGE 7 · Emission                                 │
-│  retrieval-emission-plan.md  (not yet written)      │
-│  Formats AssessedPacket as JSON or Markdown.        │
-│  Surfaces archive_context separately. Logs          │
-│  runtime_packet_metrics. Never raises.              │
+│  retrieval-emission-plan.md                         │
+│  retrieval-emission-roadmap.md                      │
+│  Formats AssessedPacket as JSON or Markdown from    │
+│  one render model. Surfaces archive_context         │
+│  separately. Emits focused requery instructions     │
+│  when requested. Logs directive metrics. Never      │
+│  raises. Automatic retry is orchestrator-owned,     │
+│  budgeted, and cutoff on no-new results.            │
 └─────────────────────────────────────────────────────┘
                      │
                      ▼

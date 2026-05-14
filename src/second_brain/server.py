@@ -277,6 +277,8 @@ def _handle_orchestrator_begin_task(config: AppConfig, body: dict[str, Any]) -> 
         project=body.get("project"),
         repo=body.get("repo"),
         tags=body.get("tags") or [],
+        auto_retry=bool(body.get("auto_retry", False)),
+        max_focused_retries=int(body.get("max_focused_retries") or 1),
     )
     result = begin_task(config, req)
     return result.to_dict()

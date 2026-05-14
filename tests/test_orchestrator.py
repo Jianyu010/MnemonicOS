@@ -931,6 +931,77 @@ class TestFullOrchestrationLoop(unittest.TestCase):
             self.assertIsNotNone(row)
             self.assertEqual(str(row["status"]), "failure")
 
+    def test_auto_retry_runs_focused_second_pass_and_returns_both_emissions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            _, config = _prepare_workspace(workspace)
+            _write(
+                workspace / "brain/wiki/incidents/auth-rollout-failure.md",
+                """
+                ---
+                id: incident/auth-rollout-failure
+                type: incident
+                title: Auth Rollout Failure
+                aliases: ["Auth Rollout Failure"]
+                status: open
+                tags: [test]
+                updated_at: 2026-04-15
+                created_at: 2026-04-15
+                source_refs: [session/test]
+                confidence: high
+                chain_id: trace/auth-rollout-recovery
+                ---
+
+                The auth rollout failed with TokenRefreshError. The successful
+                recovery role is missing from this incident.
+                """,
+            )
+            _write(
+                workspace / "brain/wiki/concepts/auth-rollout-diagnosis.md",
+                """
+                ---
+                id: concept/auth-rollout-diagnosis
+                type: concept
+                title: Auth Rollout Diagnosis
+                aliases: ["Auth Rollout Diagnosis"]
+                status: active
+                tags: [test]
+                updated_at: 2026-04-15
+                created_at: 2026-04-15
+                source_refs: [session/test]
+                confidence: high
+                chain_id: trace/auth-rollout-recovery
+                ---
+
+                Diagnosis: TokenRefreshError was caused by a stale auth token
+                cache during the rollout.
+                """,
+            )
+            sync_vault(config, mode="full")
+
+            result = begin_task(
+                config,
+                OrchestratorTaskRequest(
+                    bridge_id="test",
+                    task_text="debug TokenRefreshError auth rollout failure",
+                    task_kind="debugging",
+                    temporality="current",
+                    auto_retry=True,
+                    max_focused_retries=1,
+                    session_id="retry-session",
+                    task_id="retry-task",
+                ),
+            )
+
+            self.assertTrue(result.auto_retry_summary["attempted"])
+            self.assertEqual(len(result.retrieval_passes), 2)
+            self.assertEqual(result.final_pass_index, 2)
+            self.assertIn("retrieval_passes", result.to_dict())
+            self.assertIn("### Retry Trace", result.context_markdown)
+            self.assertEqual(result.auto_retry_summary["cutoff_reason"], "no_new_ids")
+            self.assertEqual(result.retrieval_passes[0]["pass_index"], 1)
+            self.assertEqual(result.retrieval_passes[1]["pass_index"], 2)
+
 
 # ---------------------------------------------------------------------------
 # 7. TestCLIOrchestrator

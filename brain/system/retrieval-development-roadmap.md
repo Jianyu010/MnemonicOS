@@ -145,13 +145,26 @@ directive-specific metrics remain as follow-up work.
 
 ## Stage 7 — Emission
 
-**Plan:** retrieval-emission-plan.md (not yet written)
+**Plan:** [retrieval-emission-plan.md](retrieval-emission-plan.md)
+**Roadmap:** [retrieval-emission-roadmap.md](retrieval-emission-roadmap.md)
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| S7-P1 | `archive_context` slot in JSON + Markdown outputs | not started |
-| S7-P2 | Assessment fields (`retrieval_state`, `recommendation`) in direct `retrieve()` path | not started |
-| S7-P3 | `runtime_packet_metrics` logging separated from instrumentation | not started |
+| S7-P1 | Emission contract, render model, and output profiles | not started |
+| S7-P2 | Canonical JSON renderer and direct/runtime parity | not started |
+| S7-P3 | Markdown renderer and full selected-packet presentation | not started |
+| S7-P4 | Archive, warning, contradiction, and missing-role presentation | not started |
+| S7-P5 | Directive-guided branch filtering, deferred context, and focused requery handoff | not started |
+| S7-P6 | Directive-specific metrics and retrieval trace emission | not started |
+| S7-P7 | Shell/API consolidation and no-raise degraded output | not started |
+
+**Gate:** Stage 7 formats from `AssessmentDirective + MemoryPacket` without
+reassessment, keeps JSON/Markdown semantically equivalent, surfaces
+`archive_context` separately, emits focused requery instructions as
+caller-mediated handoffs with stable anchors for the next pass, supports
+orchestrator-owned automatic focused retry with hard cutoffs, returns composed
+multi-pass output when retry runs, and records directive metrics as
+instrumentation.
 
 ---
 
