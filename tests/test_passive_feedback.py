@@ -400,6 +400,49 @@ class TestDerivePostHocPath(unittest.TestCase):
             assert rows[0]["method"] == "maintenance_post_hoc"
             assert result.post_hoc_processed >= 1
 
+    def test_post_hoc_handles_null_retrieval_hit_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp)
+            config, conn = _setup_db(ws)
+            with conn:
+                _insert_extraction_queue(conn, 1, "arc-010-null-hit")
+                _insert_note(conn, "concept/retrieved-null-hit")
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO retrieval_queries
+                        (id, query, query_type, archive_id)
+                    VALUES (10, 'test query', 'semantic', 'arc-010-null-hit')
+                    """,
+                )
+                conn.execute(
+                    """
+                    INSERT INTO retrieval_hits
+                        (query_id, note_id, rank, channel, final_score)
+                    VALUES (10, 'concept/retrieved-null-hit', 1, 'semantic', 0.9)
+                    """,
+                )
+                _insert_promotion_decision(
+                    conn, 10, archive_id="arc-010-null-hit", retrieval_attribution_json=None
+                )
+
+            result = derive_passive_feedback(conn, config, dry_run=False)
+            conn.close()
+
+            conn2 = connect_db(config.paths.db_path)
+            row = conn2.execute(
+                """
+                SELECT retrieval_hit_id, feedback_state
+                FROM note_passive_feedback
+                WHERE note_id = 'concept/retrieved-null-hit'
+                """
+            ).fetchone()
+            conn2.close()
+
+            assert row is not None
+            assert row["retrieval_hit_id"] is None
+            assert row["feedback_state"] == "passive_used_likely"
+            assert result.post_hoc_processed >= 1
+
     def test_post_hoc_skipped_when_inline_covered(self) -> None:
         """When inline path already wrote a row for (note_id, session, state, method),
         post-hoc UNIQUE conflict causes INSERT OR IGNORE to skip — idempotent."""
