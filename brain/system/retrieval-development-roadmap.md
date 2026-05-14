@@ -89,15 +89,19 @@ feedback defaults.
 | S4-P1 | `RankedHits` contract and wiki/archive lane separation | done |
 | S4-P2 | Heuristic scoring formula with importance and quality | done |
 | S4-P3 | Exact bypass and archive scoring rules | done |
-| S4-P4 | Caps, diversification, deterministic stability | done |
+| S4-P4 | Caps, diversification, deterministic stability, dynamic top-k | done |
 | S4-P5 | Training labels, weights, and feedback integration | done |
+| S4-P6 | Multiplicative scoring, absolute BM25, relevance gate, 2D score vector | done |
 
 **Gate:** v1 complete for the local-linear reranking path. `rerank()` owns final
 scoring, `retrieval.py` no longer carries the scoring formula, importance and
 quality participate in final scores, archive candidates remain in their own
 lane, feature logging includes passive/quality metadata, and `rerank_training`
-is available as a daemon job for scalar weight calibration. This is distinct
-from the future DL retrieval north star.
+is available as a daemon job for scalar weight calibration. Phase 6 adds a
+multiplicative score model (`final_score = relevance × quality`) with an
+absolute relevance gate that suppresses irrelevant candidates before emission,
+plus dynamic top-k replacing the fixed `top_k=5` cap. This is distinct from
+the future DL retrieval north star.
 
 ---
 
