@@ -140,6 +140,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     extraction_status_parser = subparsers.add_parser("extraction-status", help="Inspect extraction queue status.")
     extraction_status_parser.add_argument("--queue-id", type=int, default=None)
+    extraction_status_parser.add_argument("--errors-only", action="store_true", help="Show only error items.")
+    extraction_status_parser.add_argument("--limit", type=int, default=20, help="Max items to show (default: 20).")
     extraction_status_parser.add_argument("--json", action="store_true", help="Emit JSON output.")
 
     promote_status_parser = subparsers.add_parser("promote-status", help="Show promotion queue health (pending/promoted/review/rejected counts).")
@@ -802,10 +804,94 @@ def _queue_extraction(
     return _print_or_json(item.to_dict(), emit_json)
 
 
-def _extraction_status(config_path: str, queue_id: int | None, emit_json: bool) -> int:
+def _format_queue_item(item: dict) -> str:
+    lines = []
+    item_id = item.get("id", "?")
+    status = item.get("status", "?")
+    source = f"{item.get('source_kind', '?')}  ({item.get('bridge_id', '?')})"
+    lines.append(f"── #{item_id}  {status.upper()}  {source}")
+
+    if item.get("archive_id"):
+        lines.append(f"  archive:    {item['archive_id']}")
+    else:
+        conv = item.get("conversation_id") or ""
+        ep = item.get("episode_id") or ""
+        if conv:
+            lines.append(f"  conv:       {conv}")
+        if ep:
+            lines.append(f"  episode:    {ep}")
+
+    lines.append(f"  queued:     {item.get('queued_at', '?')}")
+    if item.get("started_at"):
+        lines.append(f"  started:    {item['started_at']}")
+    if item.get("finished_at"):
+        lines.append(f"  finished:   {item['finished_at']}")
+
+    attempts = item.get("attempt_count", 0)
+    windows = item.get("window_count", 0)
+    artifacts = item.get("artifact_count", 0)
+    candidates = item.get("candidate_count", 0)
+    lines.append(f"  attempts:   {attempts}   windows: {windows}   artifacts: {artifacts}   candidates: {candidates}")
+
+    if item.get("last_error"):
+        lines.append(f"  error:      {item['last_error']}")
+
+    return "\n".join(lines)
+
+
+def _extraction_status(config_path: str, queue_id: int | None, errors_only: bool, limit: int, emit_json: bool) -> int:
     config = load_config(config_path)
-    payload = extraction_status(config, queue_id=queue_id)
-    return _print_or_json(payload, emit_json)
+    payload = extraction_status(config, queue_id=queue_id, errors_only=errors_only, limit=limit)
+    if emit_json:
+        print(json.dumps(payload, sort_keys=True, default=str))
+        return 0
+
+    if queue_id is not None:
+        item = payload.get("item", {})
+        print(_format_queue_item(item))
+        return 0
+
+    counts = payload.get("queue_counts", {})
+    pending = counts.get("pending", 0)
+    error = counts.get("error", 0)
+    processed = counts.get("processed", 0)
+    processing = counts.get("processing", 0)
+    oldest = payload.get("oldest_pending_queued_at") or "none"
+
+    print("Extraction Queue")
+    print(f"  pending:    {pending:>6}   processed:  {processed:>6}")
+    print(f"  error:      {error:>6}   processing: {processing:>6}")
+    print(f"  oldest pending: {oldest}")
+
+    if errors_only:
+        errors = payload.get("errors", [])
+        real_errors = [e for e in errors if "tombstoned" not in (e.get("last_error") or "")]
+        tombstoned = [e for e in errors if "tombstoned" in (e.get("last_error") or "")]
+        print(f"\nErrors ({error} total, showing {len(errors)})")
+        if real_errors:
+            print(f"\n── Active errors ({len(real_errors)}) " + "─" * 40)
+            for item in real_errors:
+                print()
+                print(_format_queue_item(item))
+        if tombstoned:
+            print(f"\n── Tombstoned ({len(tombstoned)}) " + "─" * 40)
+            for item in tombstoned:
+                ref = item.get("conversation_id") or item.get("archive_id") or ""
+                reason = (item.get("last_error") or "").replace("tombstoned: ", "")
+                print(f"  #{item.get('id')}  {item.get('bridge_id')}/{item.get('source_kind')}  {ref}")
+                print(f"    reason: {reason}")
+    else:
+        recent = payload.get("recent", [])
+        print(f"\nRecent ({len(recent)} shown, newest first)")
+        for item in recent:
+            item_id = item.get("id", "?")
+            status = item.get("status", "?")
+            bridge = item.get("bridge_id", "?")
+            kind = item.get("source_kind", "?")
+            queued = item.get("queued_at", "?")
+            err = f"  !! {item['last_error'][:60]}" if item.get("last_error") else ""
+            print(f"  [{item_id:>5}] {status:<10} {bridge:<8} {kind:<8} queued={queued}{err}")
+    return 0
 
 
 def _promote_status(config_path: str, emit_json: bool) -> int:
@@ -1218,7 +1304,7 @@ def main(argv: list[str] | None = None) -> int:
             args.json,
         )
     if args.command == "extraction-status":
-        return _extraction_status(args.config, args.queue_id, args.json)
+        return _extraction_status(args.config, args.queue_id, args.errors_only, args.limit, args.json)
     if args.command == "promote-status":
         return _promote_status(args.config, args.json)
     if args.command == "review":

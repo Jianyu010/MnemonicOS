@@ -15,6 +15,8 @@ semantic_weight = 0.25
 type_prior_weight = 0.15
 freshness_weight = 0.10
 memory_strength_weight = 0.10
+importance_weight = 0.10
+quality_weight = 0.08
 exact_alias_weight = 0.10
 
 [ingest]

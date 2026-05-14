@@ -83,6 +83,7 @@ class RetrieveResult:
     temporality: str | None = None
     persona: str | None = None
     back_feed_hook: str | None = None
+    archive_hits: list[RetrieveHit] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -372,6 +373,38 @@ class RetrievalAssessment:
 
 
 @dataclass(slots=True)
+class AssessmentDirective:
+    retrieval_state: str
+    completion_state: str
+    reuse_mode: str
+    recommendation: str
+    verification_action: str
+    emission_profile: str
+    hydration_policy: str
+    selected_branch_ids: list[str] = field(default_factory=list)
+    deferred_branch_ids: list[str] = field(default_factory=list)
+    missing_roles: list[str] = field(default_factory=list)
+    followup_query_policy: str = "none"
+    fresh_pipeline_threshold: str = "none"
+    assessment_reasons: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class AssessedPacket:
+    packet: "MemoryPacket"
+    directive: AssessmentDirective
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "packet": self.packet.to_dict(),
+            "directive": self.directive.to_dict(),
+        }
+
+
+@dataclass(slots=True)
 class SummaryEnvelope:
     metadata: dict[str, str]
     sections: dict[str, str]
@@ -409,6 +442,14 @@ class RuntimeMemory:
     final_score: float
     relation_types: list[str] = field(default_factory=list)
     provenance: list[str] = field(default_factory=list)
+    rank_order: int | None = None
+    assembly_role: str | None = None
+    assembly_order: int | None = None
+    trace_source: str | None = None
+    trace_depth: int | None = None
+    edge_path: list[str] = field(default_factory=list)
+    branch_id: str | None = None
+    defer_reason: str | None = None
 
 
 @dataclass(slots=True)
@@ -419,6 +460,11 @@ class MemoryPacket:
     related_by_timeline: list[RuntimeMemory] = field(default_factory=list)
     related_by_similarity: list[RuntimeMemory] = field(default_factory=list)
     related_by_contrast: list[RuntimeMemory] = field(default_factory=list)
+    archive_context: list[RuntimeMemory] = field(default_factory=list)
+    contradictions: list[dict[str, object]] = field(default_factory=list)
+    functional_path: list[dict[str, object]] = field(default_factory=list)
+    assessment_reservoir: list[dict[str, object]] = field(default_factory=list)
+    assembly_notes: dict[str, object] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     verification_needed: list[str] = field(default_factory=list)
 
@@ -430,6 +476,11 @@ class MemoryPacket:
             "related_by_timeline": [asdict(item) for item in self.related_by_timeline],
             "related_by_similarity": [asdict(item) for item in self.related_by_similarity],
             "related_by_contrast": [asdict(item) for item in self.related_by_contrast],
+            "archive_context": [asdict(item) for item in self.archive_context],
+            "contradictions": list(self.contradictions),
+            "functional_path": list(self.functional_path),
+            "assessment_reservoir": list(self.assessment_reservoir),
+            "assembly_notes": dict(self.assembly_notes),
             "warnings": list(self.warnings),
             "verification_needed": list(self.verification_needed),
         }
@@ -470,6 +521,7 @@ class ResolveTaskContextResult:
     query_id: int
     query_type: str | None
     classifier_confidence: float | None
+    assessment_directive: AssessmentDirective | None = None
     persona: str | None = None
     back_feed_hook: str | None = None
 
@@ -483,6 +535,7 @@ class ResolveTaskContextResult:
             "retrieval_state": self.retrieval_state,
             "recommendation": self.recommendation,
             "verification_action": self.verification_action,
+            "assessment_directive": self.assessment_directive.to_dict() if self.assessment_directive else None,
             "memory_packet": self.memory_packet.to_dict(),
             "related_memories": [asdict(item) for item in self.related_memories],
             "provenance_summary": list(self.provenance_summary),

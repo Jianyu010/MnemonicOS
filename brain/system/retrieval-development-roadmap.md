@@ -86,45 +86,60 @@ feedback defaults.
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| S4-P1 | `RankedHits` contract and wiki/archive lane separation | not started |
-| S4-P2 | Heuristic scoring formula with importance and quality | not started |
-| S4-P3 | Exact bypass and archive scoring rules | not started |
-| S4-P4 | Caps, diversification, deterministic stability | not started |
-| S4-P5 | Training labels, weights, and feedback integration | not started |
+| S4-P1 | `RankedHits` contract and wiki/archive lane separation | done |
+| S4-P2 | Heuristic scoring formula with importance and quality | done |
+| S4-P3 | Exact bypass and archive scoring rules | done |
+| S4-P4 | Caps, diversification, deterministic stability | done |
+| S4-P5 | Training labels, weights, and feedback integration | done |
 
-**Gate:** `train_rerank_model()` triggered by daemon; weights confirmed in
-`rerank_weights` table. This fixes the second critical bug from the audit.
+**Gate:** v1 complete for the local-linear reranking path. `rerank()` owns final
+scoring, `retrieval.py` no longer carries the scoring formula, importance and
+quality participate in final scores, archive candidates remain in their own
+lane, feature logging includes passive/quality metadata, and `rerank_training`
+is available as a daemon job for scalar weight calibration. This is distinct
+from the future DL retrieval north star.
 
 ---
 
 ## Stage 5 — Assembly
 
-**Plan:** retrieval-assembly-plan.md (not yet written)
+**Plan:** retrieval-assembly-plan.md
+**Roadmap:** retrieval-assembly-roadmap.md
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| S5-P1 | `RawPacket` typed contract with `archive_context` slot | not started |
-| S5-P2 | Primary slot fill with quality gate routing | not started |
-| S5-P3 | `same_episode_context` via `chain_id` | not started |
-| S5-P4 | Related slots (topic / timeline / similarity / contrast) | not started |
-| S5-P5 | Cross-slot deduplication | not started |
-| S5-P6 | Context budget enforcement (token cap + body truncation) | not started |
-| S5-P7 | Contradiction detection and coherence annotation | not started |
+| S5-P1 | Packet contract and explicit `archive_context` slot | done |
+| S5-P2 | Primary readout selection and quality/warning routing | done |
+| S5-P3 | Same-episode context and chain path roles via `chain_id` / session lineage | done |
+| S5-P4 | Related slots, functional path reconstruction, bounded trace completion, and assessment reservoir | done |
+| S5-P5 | Cross-slot deduplication, stable slot ordering, and score-vs-functional order preservation | done |
+| S5-P6 | Context budget enforcement and body references | done |
+| S5-P7 | Contradictions, warnings, trace metadata, and Stage 6 handoff notes | done |
 
-**Gate:** archive hits appear only in `archive_context[]`.
+**Gate:** archive hits appear only in `archive_context[]`; bounded trace
+completion is relation-only, purpose-aware, and emits assessment reservoir
+metadata for Stage 6.
 
 ---
 
 ## Stage 6 — Assessment
 
-**Plan:** retrieval-assessment-plan.md (not yet written)
+**Plan:** [retrieval-assessment-plan.md](retrieval-assessment-plan.md)
+**Roadmap:** [retrieval-assessment-roadmap.md](retrieval-assessment-roadmap.md)
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| S6-P1 | `AssessedPacket` contract + state classifier | not started |
-| S6-P2 | Quality gate across ALL primary hits (not just top hit) | not started |
-| S6-P3 | Historical recommendation → `reuse_with_verification` (not `reuse`) | not started |
-| S6-P4 | Deduplication of assess paths (runtime vs. shell) | not started |
+| S6-P1 | `AssessedPacket` and `AssessmentDirective` contract | done |
+| S6-P2 | Trustworthiness classifier and compatibility `retrieval_state` | done |
+| S6-P3 | Functional completeness classifier over path/reservoir metadata | done |
+| S6-P4 | Progressive disclosure branch selection and hydration policy | done |
+| S6-P5 | Fresh Stage 2-5 threshold policy | done |
+| S6-P6 | Runtime/shell/API assessment path consolidation | done |
+| S6-P7 | Metrics, degradation behavior, and Stage 7 handoff fixtures | partial |
+
+**Gate:** Stage 6 emits `AssessmentDirective` from a pure assessor module;
+runtime compatibility fields are driven by the directive. HTTP parity passes;
+directive-specific metrics remain as follow-up work.
 
 ---
 

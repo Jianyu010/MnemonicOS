@@ -1292,6 +1292,49 @@ class TestHTTPServer(unittest.TestCase):
             finally:
                 _stop_server(server)
 
+    def test_http_ingest_session_then_begin_task_surfaces_archive_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            _, config = _prepare_workspace(workspace)
+            config.ingest.auto_trigger_pipeline = False
+            server, port = _start_server(config)
+            try:
+                ingest = _http_post(
+                    port,
+                    "/v1/ingest/session",
+                    {
+                        "bridge_id": "codex",
+                        "session_id": "http-archive-session",
+                        "content": """
+                        # Runtime Session
+
+                        The cobalt deploy timeout was fixed by clearing the
+                        staged release lock and rerunning the deploy.
+                        """,
+                    },
+                )
+                self.assertGreater(ingest["chunk_count"], 0)
+
+                context = _http_post(
+                    port,
+                    "/v1/orchestrator/begin-task",
+                    {
+                        "bridge_id": "test",
+                        "task_text": "cobalt deploy timeout staged release lock",
+                        "session_id": "http-archive-context",
+                        "task_id": "http-archive-task",
+                        "task_kind": "debugging",
+                    },
+                )
+            finally:
+                _stop_server(server)
+
+            packet = context["memory_packet"]
+            self.assertEqual(packet["primary_memories"], [])
+            self.assertEqual(len(packet["archive_context"]), 1)
+            self.assertTrue(packet["assembly_notes"]["archive_only"])
+            self.assertIn("source:raw_session", packet["archive_context"][0]["provenance"])
+
     def test_http_sync_vault_endpoint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)

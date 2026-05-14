@@ -423,6 +423,29 @@ def run_job(config: AppConfig, *, job_name: str, dry_run: bool = False) -> JobRu
         connection.close()
         return JobRunResult(job_name=job_name, status="ok", stats=stats, review_items_created=[])
 
+    if job_name == "rerank_training":
+        from .trust import train_rerank_model
+        job_id = _open_job_run(connection, job_name, "dry-run" if dry_run else "live")
+        try:
+            if dry_run:
+                model = None
+                stats["sample_count"] = 0
+                stats["fallback"] = True
+            else:
+                model = train_rerank_model(connection, config)
+                stats["sample_count"] = model.sample_count
+                stats["fallback"] = model.fallback
+                stats["weight_count"] = len(model.weights)
+            with connection:
+                _close_job_run(connection, job_id, status="ok", stats=stats)
+        except Exception as exc:
+            with connection:
+                _close_job_run(connection, job_id, status="error", stats=stats, error_text=str(exc))
+            connection.close()
+            raise
+        connection.close()
+        return JobRunResult(job_name=job_name, status="ok", stats=stats, review_items_created=[])
+
     if job_name == "wiki_lifecycle_audit":
         from .maintenance import audit_lifecycle_states
         job_id = _open_job_run(connection, job_name, "dry-run" if dry_run else "live")

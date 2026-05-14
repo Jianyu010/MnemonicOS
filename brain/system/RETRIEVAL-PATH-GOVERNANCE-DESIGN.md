@@ -62,17 +62,17 @@ Natural Language Query  +  QueryHints (type hint, temporality, budget, scope)
                      ▼
 ┌─────────────────────────────────────────────────────┐
 │  STAGE 5 · Assembly                                 │
-│  retrieval-assembly-plan.md  (not yet written)      │
+│  retrieval-assembly-plan.md                         │
 │  Composes bounded packet slots: primary_memories,   │
 │  same_episode_context, related_*, archive_context,  │
-│  contradictions, warnings. Cross-slot dedup.        │
-│  Context budget enforcement. Coherence annotation.  │
+│  contradictions, warnings, assembly_notes.          │
+│  Cross-slot dedup. Context budget enforcement.      │
 └────────────────────┬────────────────────────────────┘
                      │ RawPacket
                      ▼
 ┌─────────────────────────────────────────────────────┐
 │  STAGE 6 · Assessment                               │
-│  retrieval-assessment-plan.md  (not yet written)    │
+│  retrieval-assessment-plan.md                       │
 │  Classifies retrieval_state. Derives recommendation │
 │  and verification_action. Quality gate across all   │
 │  primary hits. Pure computation, no side-effects.   │
@@ -230,9 +230,13 @@ training labels derived from those maintenance-owned rows.
 ---
 
 ### Stage 5 — Assembly
-**Plan:** retrieval-assembly-plan.md (not yet written)
+**Plan:** retrieval-assembly-plan.md
+**Roadmap:** retrieval-assembly-roadmap.md
 
-Composes the `RawPacket` from ranked hits and episode context. Slots:
+Composes the `RawPacket` from ranked hits and episode context. Stage 5 is the
+readout layer: it forms a coherent assembled note-like packet for the query
+party while preserving enough machine-readable structure for Stage 6 assessment.
+Slots:
 
 | Slot | Contents |
 |------|---------|
@@ -243,19 +247,56 @@ Composes the `RawPacket` from ranked hits and episode context. Slots:
 | `related_by_similarity` | semantic neighbors from `note_embedding_scans` |
 | `related_by_contrast` | `contrasts_with`-related notes |
 | `archive_context` | archive fallback hits (always separate, labeled `source: raw_session`) |
-| `contradictions` | supersedes/superseded_by pairs among assembled notes |
+| `contradictions` | supersedes/superseded_by, contested, or conflict evidence among assembled notes |
 | `warnings` | quality-failed, stale, contested notes |
+| `assembly_notes` | structured budget, archive-only, dedupe, body-reference, and handoff facts for Stage 6 |
+| `functional_path` | reconstructed success/failure path when chain or relation evidence supports it |
 
-Cross-slot deduplication enforced. Context budget: token cap with body truncation
-on lowest-ranked notes (title/type/summary never truncated). Archive hits must not
-appear in any slot except `archive_context`.
+Cross-slot deduplication enforced. Context budget applies to packet slots,
+summaries, excerpts, metadata, and body references; full body hydration and
+final truncation are Stage 7 responsibilities. Archive hits must not appear in
+any slot except `archive_context`.
+
+Stage 4 rank order is evidence priority, not necessarily readout order. Stage 5
+must preserve rank metadata while arranging selected entries by explanatory
+priority when maintenance links show a functional path: failures, diagnoses,
+pivots, successful resolution, current reusable procedure, and cautions.
+
+Stage 5 also owns bounded trace completion when the initially assembled path is
+structurally incomplete. This is not a fresh recall loop. It is a deterministic
+extension over explicit maintenance relations already reachable from assembled
+notes: `chain_id`, `before`, `after`, `supersedes`, `failed_due_to`,
+`attempts_to_solve`, `supports_solution`, `derived_from`, and direct
+incident/decision/procedure links. Trace completion may add missing functional
+roles such as goal, failed attempt, diagnosis, pivot, success, or caution, but
+it must obey hard caps on relation families, depth, and total added nodes. It
+must not run semantic expansion, archive search, or another Stage 2-4 pass.
+
+The output of this pass is an in-memory assessment reservoir inside `RawPacket`.
+The reservoir may be larger than the eventual user-facing message, but it stays
+bounded and structured. Stage 6 can then choose which branch to emit without
+rerunning Stages 2-5. Reservoir entries keep full provenance, slot assignment,
+functional role, body reference, score metadata, and warnings; Stage 7 decides
+final body hydration and truncation from Stage 6 instructions.
 
 ---
 
 ### Stage 6 — Assessment
-**Plan:** retrieval-assessment-plan.md (not yet written)
+**Plan:** [retrieval-assessment-plan.md](retrieval-assessment-plan.md)
+**Roadmap:** [retrieval-assessment-roadmap.md](retrieval-assessment-roadmap.md)
 
 Pure computation — no DB access, no side-effects.
+
+Stage 6 evaluates the assembled packet along two axes:
+
+1. **Trustworthiness:** whether the memory is safe to use. This covers freshness,
+   quality gate, contradiction status, authority tier, archive-only status, and
+   whether the primary memories actually match the query anchors and query type.
+2. **Completeness for the caller's immediate intent:** whether the packet
+   contains enough of the functional path to help the current task. For build and
+   debug work, this usually means the reusable success path, prerequisites,
+   major failure/caution branches, and enough causal or timeline context to avoid
+   repeating known mistakes.
 
 Retrieval states (precedence: most severe first):
 
@@ -271,6 +312,58 @@ Retrieval states (precedence: most severe first):
 Quality gate applies to all primary hits (not just top hit).
 Historical recommendation: `reuse_with_verification` (not `reuse`).
 
+Stage 6 must also classify functional completeness. This classification is
+separate from `retrieval_state`; a packet can be trustworthy but incomplete, or
+complete but too large to emit in full.
+
+| Completion state | Meaning |
+|------------------|---------|
+| `complete_path` | Required functional roles are present for the caller intent. |
+| `success_only` | A reusable success path exists, but failure/caution context is thin. |
+| `partial_chain` | Some causal/timeline links are present, but important roles are missing. |
+| `fragmentary` | Isolated hits exist but do not form an actionable path. |
+| `overabundant` | The reservoir contains multiple branches or full history beyond first-response needs. |
+
+Stage 6 emits an `AssessmentDirective` for Stage 7. At minimum it should carry:
+
+| Field | Purpose |
+|-------|---------|
+| `retrieval_state` | Trust/freshness/quality sufficiency state. |
+| `completion_state` | Functional path completeness. |
+| `reuse_mode` | `direct_reuse`, `reuse_with_verification`, `scaffold_only`, `diagnose_on_failure`, or `fresh_research_required`. |
+| `emission_profile` | `concise_success_path`, `success_plus_major_failures`, `full_chain`, `warning_only`, or `no_memory`. |
+| `hydration_policy` | `hydrate_primary_only`, `hydrate_primary_and_failure_branches`, `hydrate_full_functional_path`, or `summaries_only`. |
+| `missing_roles` | Functional roles absent from the reservoir. |
+| `deferred_branches` | Reservoir branches intentionally withheld from first emission. |
+| `followup_query_policy` | `none`, `on_first_failure`, or `immediate_focused_requery`. |
+| `fresh_pipeline_threshold` | Reason code for when a new Stage 2-5 run is justified. |
+
+The default for overabundant build/debug packets is progressive disclosure:
+emit the current success path, prerequisites, and major cautions first; defer
+deep historical branches until the agent reports a concrete failure. Stage 6
+should prefer `followup_query_policy = on_first_failure` over immediate rerun
+when the reservoir already contains plausible branches but the caller has not
+yet produced an error signature.
+
+A fresh Stage 2-5 pipeline run is justified only when one of these thresholds is
+met:
+
+- `no_anchor`: no primary or reservoir entry matches the query anchors.
+- `missing_required_role`: the caller intent requires a role that trace
+  completion could not fill, such as success resolution for an implementation
+  task or diagnosis for a failure task.
+- `new_error_signature`: the caller provides a concrete error, stack trace, log,
+  test failure, or changed constraint not represented in the reservoir.
+- `contradiction_blocks_use`: primary contradictions prevent selecting a safe
+  branch.
+- `archive_only_actionable`: only raw archive evidence is available for an
+  action that needs canonical or verified guidance.
+- `budget_trimmed_primary`: budget pressure removed summaries or references
+  needed to assess the primary path.
+
+Otherwise, Stage 6 should instruct Stage 7 to emit selectively from the
+assessment reservoir rather than asking the pipeline to recall again.
+
 ---
 
 ### Stage 7 — Emission
@@ -280,6 +373,9 @@ Serializes `AssessedPacket` to JSON (API callers) or Markdown (agent hooks).
 All note content verbatim — no paraphrasing. `archive_context` slot always
 labeled. `retrieval_state`, `recommendation`, `verification_action` in header.
 Logs `runtime_packet_metrics`. Never raises: errors degrade to minimal packet.
+Stage 7 follows the `AssessmentDirective`: it hydrates only the requested
+branches, labels deferred reservoir branches, surfaces missing roles and
+follow-up query policy, and keeps archive material structurally separate.
 
 ---
 
@@ -415,6 +511,10 @@ as its retrieval substrate.
 - [retrieval-signal-integration-roadmap.md](retrieval-signal-integration-roadmap.md) — Stage 3 phase status
 - [retrieval-reranking-plan.md](retrieval-reranking-plan.md) — Stage 4 detailed plan
 - [retrieval-reranking-roadmap.md](retrieval-reranking-roadmap.md) — Stage 4 phase status
+- [retrieval-assembly-plan.md](retrieval-assembly-plan.md) — Stage 5 detailed plan
+- [retrieval-assembly-roadmap.md](retrieval-assembly-roadmap.md) — Stage 5 phase status
+- [retrieval-assessment-plan.md](retrieval-assessment-plan.md) — Stage 6 detailed plan
+- [retrieval-assessment-roadmap.md](retrieval-assessment-roadmap.md) — Stage 6 phase status
 - [retrieval-development-roadmap.md](retrieval-development-roadmap.md) — all 7 stages + DL north star status
 - [retrieval-control-signal-quality-roadmap.md](retrieval-control-signal-quality-roadmap.md) — cross-cutting signal quality
 

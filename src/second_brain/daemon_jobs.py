@@ -20,6 +20,7 @@ _DEFAULT_SCHEDULES = {
     "wiki_graph_rebuild": "35 * * * *",
     "wiki_lifecycle_audit": "40 * * * *",
     "wiki_importance_scoring": "45 * * * *",
+    "rerank_training": "47 * * * *",
     "wiki_health_report": "50 * * * *",
     "wiki_raw_revisitation": "0 2 * * *",
     "wiki_derive_passive_feedback": "*/30 * * * *",
