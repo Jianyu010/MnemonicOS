@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -81,6 +82,22 @@ def _build_parser() -> argparse.ArgumentParser:
     artifact_parser.add_argument("--attachment", action="append", default=[], metavar="PATH_OR_DIR", help="Source-provided companion file or directory of companion files to archive with the artifact. Directories are expanded to their immediate children; use --attachment-recursive to expand recursively.")
     artifact_parser.add_argument("--attachment-recursive", action="store_true", default=False, help="When an --attachment path is a directory, expand it recursively instead of only immediate children.")
     artifact_parser.add_argument("--json", action="store_true", help="Emit JSON output.")
+
+    ingest_dir_parser = subparsers.add_parser("ingest-dir", help="Bulk-ingest files under a directory as artifacts, sessions, or auto-detected.")
+    ingest_dir_parser.add_argument("dir", help="Directory to scan.")
+    ingest_dir_parser.add_argument("--mode", choices=("artifact", "session", "auto"), default="auto",
+        help="How to route files: artifact=all via ingest-artifact, session=all via ingest-session, auto=detect by extension (default: auto).")
+    ingest_dir_parser.add_argument("--recursive", action="store_true", default=False, help="Recurse into subdirectories.")
+    ingest_dir_parser.add_argument("--ext", action="append", default=[], metavar="EXT", help="File extension filter (e.g. pdf). Repeatable. Default: all files.")
+    ingest_dir_parser.add_argument("--bridge-id", default="cli-call", help="bridge-id for session-routed files (default: cli-call).")
+    ingest_dir_parser.add_argument("--tag", action="append", default=[])
+    ingest_dir_parser.add_argument("--dry-run", action="store_true", default=False, help="Print files that would be ingested without ingesting.")
+    ingest_dir_parser.add_argument("--json", action="store_true", help="Emit JSON output.")
+
+    migrate_raws_parser = subparsers.add_parser("migrate-raws", help="Register a MnemonicOS raw directory into this instance's DB and queue for extraction.")
+    migrate_raws_parser.add_argument("source", help="Path to a brain/raw/ directory (or a sessions/ or artifacts/ subdirectory).")
+    migrate_raws_parser.add_argument("--dry-run", action="store_true", default=False, help="Print what would be registered without writing.")
+    migrate_raws_parser.add_argument("--json", action="store_true", help="Emit JSON output.")
 
     reprocess_parser = subparsers.add_parser("reprocess-artifact", help="Rerun artifact extraction against preserved true raw.")
     reprocess_group = reprocess_parser.add_mutually_exclusive_group(required=True)
@@ -546,10 +563,8 @@ def _ingest_session(
 ) -> int:
     if bool(file_path) == bool(content):
         raise SystemExit("provide exactly one of --file or --content")
-    resolved_bridge_id = bridge_id or agent
-    resolved_session_id = session_id or slug
-    if not resolved_bridge_id or not resolved_session_id:
-        raise SystemExit("provide bridge identity via --bridge-id/--session-id or legacy --agent/--slug")
+    resolved_bridge_id = bridge_id or agent or "cli-call"
+    resolved_session_id = session_id or slug or datetime.now().strftime("%Y-%m-%d-%H%M%S")
     payload = content
     if file_path is not None:
         payload = open(file_path, encoding="utf-8").read()
@@ -624,6 +639,304 @@ def _ingest_artifact(config_path: str, file_path: str, tags: list[str], attachme
         else:
             print(f"{key}={value}")
     return 0
+
+
+_SESSION_EXTENSIONS = frozenset({"md", "txt", "rst", "org", "markdown"})
+
+
+def _route_for_file(path: Path, mode: str) -> str:
+    if mode == "artifact":
+        return "artifact"
+    if mode == "session":
+        return "session"
+    ext = path.suffix.casefold().lstrip(".")
+    return "session" if ext in _SESSION_EXTENSIONS else "artifact"
+
+
+def _ingest_dir(
+    config_path: str,
+    directory: str,
+    mode: str,
+    recursive: bool,
+    extensions: list[str],
+    bridge_id: str,
+    tags: list[str],
+    dry_run: bool,
+    emit_json: bool,
+) -> int:
+    root = Path(directory).expanduser().resolve()
+    if not root.is_dir():
+        raise SystemExit(f"not a directory: {root}")
+
+    exts = {e.lstrip(".").casefold() for e in extensions}
+    glob = root.rglob("*") if recursive else root.iterdir()
+    files = sorted(
+        p for p in glob
+        if p.is_file() and (not exts or p.suffix.casefold().lstrip(".") in exts)
+    )
+
+    if dry_run:
+        if emit_json:
+            print(json.dumps(
+                {"files": [{"path": str(f), "route": _route_for_file(f, mode)} for f in files]},
+                sort_keys=True,
+            ))
+        else:
+            for f in files:
+                print(f"{_route_for_file(f, mode):8s}  {f}")
+        return 0
+
+    config = load_config(config_path)
+    results = []
+    for path in files:
+        route = _route_for_file(path, mode)
+        try:
+            if route == "session":
+                content = path.read_text(encoding="utf-8", errors="replace")
+                session_id = datetime.now().strftime("%Y-%m-%d-%H%M%S-") + path.stem[:32]
+                result = ingest_session(config, bridge_id=bridge_id, session_id=session_id, content=content, tags=tags)
+                entry: dict[str, object] = {
+                    "file": str(path),
+                    "route": "session",
+                    "archive_id": result.archive_id,
+                    "chunk_count": result.chunk_count,
+                }
+                if not emit_json:
+                    print(f"ok  session  {path}  archive_id={result.archive_id}")
+            else:
+                result_a = ingest_artifact(config, path=path, tags=tags)
+                entry = _artifact_payload(result_a)
+                entry["file"] = str(path)
+                entry["route"] = "artifact"
+                if not emit_json:
+                    print(f"ok  artifact {path}  archive_id={result_a.archive_id}  status={result_a.ingest_status}")
+            results.append(entry)
+        except Exception as exc:
+            entry = {"file": str(path), "route": route, "error": str(exc)}
+            results.append(entry)
+            if not emit_json:
+                print(f"err {route:8s} {path}  {exc}", file=sys.stderr)
+
+    if emit_json:
+        print(json.dumps(results, sort_keys=True))
+    return 0
+
+
+def _migrate_raws(config_path: str, source: str, dry_run: bool, emit_json: bool) -> int:
+    from .session_capture import _upsert_raw_episode_index  # type: ignore[attr-defined]
+    from .extraction.queue import enqueue_extraction as _enqueue_extraction
+
+    source_root = Path(source).expanduser().resolve()
+    if not source_root.is_dir():
+        raise SystemExit(f"not a directory: {source_root}")
+
+    config = load_config(config_path)
+
+    sessions_root = source_root / "sessions" if (source_root / "sessions").is_dir() else source_root
+    artifacts_root = source_root / "artifacts" if (source_root / "artifacts").is_dir() else None
+
+    results: list[dict[str, object]] = []
+
+    for conv_dir in sorted(sessions_root.iterdir()):
+        if not conv_dir.is_dir() or conv_dir.name.startswith("."):
+            continue
+        conv_manifest_path = conv_dir / "manifest.json"
+        if not conv_manifest_path.exists():
+            continue
+        try:
+            conv_manifest = json.loads(conv_manifest_path.read_text())
+        except Exception:
+            continue
+        conversation_id = str(conv_manifest.get("conversation_id") or conv_dir.name)
+        bridge_id_val = str(conv_manifest.get("bridge_id") or "unknown")
+        episodes_dir = conv_dir / "episodes"
+        if not episodes_dir.is_dir():
+            continue
+        for ep_dir in sorted(episodes_dir.iterdir()):
+            if not ep_dir.is_dir():
+                continue
+            episode_id = ep_dir.name
+            events_path = ep_dir / "events.jsonl"
+            if not events_path.exists():
+                continue
+            entry: dict[str, object] = {
+                "kind": "episode",
+                "conversation_id": conversation_id,
+                "episode_id": episode_id,
+                "bridge_id": bridge_id_val,
+                "events_path": str(events_path),
+            }
+            if not dry_run:
+                try:
+                    _upsert_raw_episode_index_external(
+                        config, conv_dir, ep_dir,
+                        conversation_id=conversation_id,
+                        episode_id=episode_id,
+                        bridge_id=bridge_id_val,
+                    )
+                    _enqueue_extraction(
+                        config,
+                        source_kind="episode",
+                        conversation_id=conversation_id,
+                        episode_id=episode_id,
+                        bridge_id=bridge_id_val,
+                    )
+                    entry["status"] = "queued"
+                except Exception as exc:
+                    entry["status"] = "error"
+                    entry["error"] = str(exc)
+                    if not emit_json:
+                        print(f"err episode {conversation_id}/{episode_id}  {exc}", file=sys.stderr)
+            results.append(entry)
+            if not emit_json:
+                status = entry.get("status", "dry-run")
+                print(f"{status:8s}  episode  {conversation_id}/{episode_id}")
+
+    if artifacts_root and artifacts_root.is_dir():
+        for artifact_dir in sorted(artifacts_root.iterdir()):
+            if not artifact_dir.is_dir():
+                continue
+            manifest_path = artifact_dir / "manifest.json"
+            if not manifest_path.exists():
+                continue
+            try:
+                manifest = json.loads(manifest_path.read_text())
+            except Exception:
+                continue
+            archive_id = str(manifest.get("archive_id") or f"artifact/{artifact_dir.name}")
+            artifact_path_str = str(manifest.get("artifact_path") or "")
+            entry = {
+                "kind": "artifact",
+                "archive_id": archive_id,
+                "manifest_path": str(manifest_path),
+            }
+            if not dry_run:
+                try:
+                    _register_migrated_artifact(config, archive_id, manifest_path, manifest)
+                    _enqueue_extraction(
+                        config,
+                        source_kind="artifact",
+                        archive_id=archive_id,
+                    )
+                    entry["status"] = "queued"
+                except Exception as exc:
+                    entry["status"] = "error"
+                    entry["error"] = str(exc)
+                    if not emit_json:
+                        print(f"err artifact {archive_id}  {exc}", file=sys.stderr)
+            results.append(entry)
+            if not emit_json:
+                status = entry.get("status", "dry-run")
+                print(f"{status:8s}  artifact  {archive_id}")
+
+    if emit_json:
+        print(json.dumps(results, sort_keys=True))
+    return 0
+
+
+def _migrations_dir_cli() -> Path:
+    return Path(__file__).resolve().parent / "migrations"
+
+
+def _upsert_raw_episode_index_external(
+    config: Any,
+    conv_dir: Path,
+    ep_dir: Path,
+    *,
+    conversation_id: str,
+    episode_id: str,
+    bridge_id: str,
+) -> None:
+    from .session_capture import _upsert_raw_episode_index_with_connection, _count_events, _count_artifacts  # type: ignore[attr-defined]
+
+    manifest_path = ep_dir / "manifest.json"
+    manifest: dict = {}
+    if manifest_path.exists():
+        try:
+            manifest = json.loads(manifest_path.read_text())
+        except Exception:
+            pass
+
+    events_path = ep_dir / "events.jsonl"
+    transcript_path = ep_dir / "transcript.md"
+    artifacts_path = ep_dir / "artifacts"
+
+    connection = connect_db(config.paths.db_path)
+    run_migrations(connection, _migrations_dir_cli())
+    try:
+        with connection:
+            _upsert_raw_episode_index_with_connection(
+                connection,
+                conversation_id=conversation_id,
+                episode_id=episode_id,
+                bridge_id=bridge_id,
+                task_id=manifest.get("task_id"),
+                status=str(manifest.get("status") or "active"),
+                conversation_path=str(conv_dir.resolve()),
+                episode_path=str(ep_dir.resolve()),
+                events_path=str(events_path.resolve()),
+                transcript_path=str(transcript_path.resolve()),
+                artifacts_path=str(artifacts_path.resolve()),
+                event_count=_count_events(events_path),
+                artifact_count=_count_artifacts(artifacts_path),
+                content_hash=manifest.get("content_hash"),
+                started_at=manifest.get("started_at"),
+                ended_at=manifest.get("ended_at"),
+            )
+    finally:
+        connection.close()
+
+
+def _register_migrated_artifact(config: Any, archive_id: str, manifest_path: Path, manifest: dict) -> None:
+    connection = connect_db(config.paths.db_path)
+    run_migrations(connection, _migrations_dir_cli())
+    try:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO archive(
+                    id, type, path, ingested_at, agent, tags, chunk_count,
+                    artifact_path, source_format, original_filename, raw_sha256, byte_size,
+                    connector_name, connector_version, ingest_status, page_count, slide_count,
+                    figure_count, table_count, warnings_json, failure_reason,
+                    needs_visual_pass, needs_manual_projection, image_only_pdf,
+                    duplicate_state, canonical_archive_id, duplicate_confidence, overlap_summary_json
+                )
+                VALUES (
+                    ?, ?, ?, datetime('now'), NULL, ?, 0,
+                    ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?,
+                    ?, ?, ?, NULL,
+                    ?, ?, ?,
+                    'unique', NULL, NULL, '{}'
+                )
+                ON CONFLICT(id) DO NOTHING
+                """,
+                (
+                    archive_id,
+                    "artifact/" + str(manifest.get("source_format") or "unknown"),
+                    str(manifest_path.resolve()),
+                    json.dumps(manifest.get("tags") or []),
+                    str(manifest.get("artifact_path") or ""),
+                    str(manifest.get("source_format") or "unknown"),
+                    str(manifest.get("original_filename") or ""),
+                    manifest.get("raw_sha256"),
+                    manifest.get("byte_size"),
+                    str(manifest.get("connector_name") or ""),
+                    str(manifest.get("connector_version") or ""),
+                    str(manifest.get("ingest_status") or "accepted"),
+                    int(manifest.get("page_count") or 0),
+                    int(manifest.get("slide_count") or 0),
+                    int(manifest.get("figure_count") or 0),
+                    int(manifest.get("table_count") or 0),
+                    json.dumps(manifest.get("warnings") or []),
+                    bool(manifest.get("needs_visual_pass")),
+                    bool(manifest.get("needs_manual_projection")),
+                    bool(manifest.get("image_only_pdf")),
+                ),
+            )
+    finally:
+        connection.close()
 
 
 def _artifact_payload(result: Any) -> dict[str, object]:
@@ -1331,6 +1644,10 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.command == "ingest-artifact":
         return _ingest_artifact(args.config, args.file, args.tag, args.attachment, args.attachment_recursive, args.json)
+    if args.command == "ingest-dir":
+        return _ingest_dir(args.config, args.dir, args.mode, args.recursive, args.ext, args.bridge_id, args.tag, args.dry_run, args.json)
+    if args.command == "migrate-raws":
+        return _migrate_raws(args.config, args.source, args.dry_run, args.json)
     if args.command == "reprocess-artifact":
         return _reprocess_artifact(args.config, args.archive_id, args.failed, args.json)
     if args.command == "capture":
