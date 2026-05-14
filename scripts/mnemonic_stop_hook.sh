@@ -153,12 +153,6 @@ PY
     --status success \
     --json >/dev/null 2>&1 || true
 
-  if [[ -f "$PENDING" && -s "$PENDING" ]]; then
-    "${CLI[@]}" capture project-episode \
-      --conversation-id "$CONVERSATION_ID" \
-      --episode-id "$EPISODE_ID" \
-      --json >/dev/null 2>&1 || true
-  fi
 fi
 
 # No summary prepared — raw capture has already been finalized if available.
@@ -167,7 +161,7 @@ if [[ ! -f "$PENDING" || ! -s "$PENDING" ]]; then
   exit 0
 fi
 
-if [[ -z "$CONVERSATION_ID" && -n "$TASK_ID" && -n "$SESSION_ID" ]]; then
+if [[ -n "$TASK_ID" && -n "$SESSION_ID" ]]; then
   # Orchestrator path: per-turn finish_task
   echo "MnemonicOS: finish-task task_id=$TASK_ID session=$SESSION_ID" >&2
   "${CLI[@]}" orchestrator finish-task \

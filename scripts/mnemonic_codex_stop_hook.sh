@@ -119,12 +119,18 @@ PY
     --metadata-json "$(TURN_ID="$TURN_ID" python3 -c 'import json,os; print(json.dumps({"turn_id": os.environ.get("TURN_ID") or None, "hook_event": "Stop"}))' 2>/dev/null || printf '{}')" \
     --json >/dev/null 2>&1 || true
 
-  if [[ -f "$PENDING" && -s "$PENDING" ]]; then
-    "${CLI[@]}" capture project-episode \
-      --conversation-id "$CONVERSATION_ID" \
-      --episode-id "$EPISODE_ID" \
-      --json >/dev/null 2>&1 || true
-  fi
+fi
+
+if [[ -f "$PENDING" && -s "$PENDING" && -n "$TASK_ID" && -n "$SESSION_ID" ]]; then
+  "${CLI[@]}" orchestrator finish-task \
+    --bridge-id codex \
+    --session-id "$SESSION_ID" \
+    --task-id "$TASK_ID" \
+    --status success \
+    --outcome-type general \
+    --summary-file "$PENDING" \
+    >/dev/null 2>&1 || true
+  rm -f "$PENDING"
 fi
 
 rm -f "$STATE_FILE"

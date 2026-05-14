@@ -148,6 +148,13 @@ class TestPreflightHook(unittest.TestCase):
             self.assertIn("context", parsed)
             self.assertIsInstance(parsed["context"], str)
 
+    def test_preflight_enables_stage7_auto_retry_by_default(self) -> None:
+        content = Path(PREFLIGHT).read_text(encoding="utf-8")
+        self.assertIn("MNEMO_AUTO_RETRY", content)
+        self.assertIn("--auto-retry", content)
+        self.assertIn("--max-focused-retries", content)
+        self.assertIn("auto_retry_summary", content)
+
     def test_uses_session_id_from_hook_json(self) -> None:
         """session_id from stdin JSON is passed through (verified via state model)."""
         # Run twice with different session IDs and verify neither crashes
@@ -172,6 +179,15 @@ class TestCodexNotifyBridge(unittest.TestCase):
         content = CODEX_NOTIFY_BRIDGE.read_text(encoding="utf-8")
         self.assertNotIn("computer-use/1.0.758", content)
         self.assertIn("MNEMO_CODEX_NOTIFY_RUN_ORIGINAL", content)
+
+
+class TestCodexPreflightHook(unittest.TestCase):
+    def test_codex_preflight_enables_stage7_auto_retry_by_default(self) -> None:
+        content = Path(CODEX_PREFLIGHT).read_text(encoding="utf-8")
+        self.assertIn("MNEMO_AUTO_RETRY", content)
+        self.assertIn("--auto-retry", content)
+        self.assertIn("--max-focused-retries", content)
+        self.assertIn("auto_retry_summary", content)
 
 
 class TestStopHook(unittest.TestCase):
@@ -278,6 +294,49 @@ class TestStopHook(unittest.TestCase):
             task_id=None,  # no state file
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_pending_summary_finishes_task_when_capture_exists(self) -> None:
+        """A captured turn with a pending summary must still run orchestrator finish-task."""
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            log_path = Path(tmp) / "mnemonicos.log"
+            fake = bin_dir / "mnemonicos"
+            fake.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/usr/bin/env bash
+                    printf '%s\\n' "$*" >> {str(log_path)!r}
+                    case "$*" in
+                      *"capture end-episode"*) printf '{{"ok": true}}\\n' ;;
+                      *"orchestrator finish-task"*) printf '{{"decision": "skip"}}\\n' ;;
+                      *) printf '{{"ok": true}}\\n' ;;
+                    esac
+                    exit 0
+                    """
+                )
+            )
+            fake.chmod(0o755)
+            Path(self._state_file).write_text(
+                json.dumps(
+                    {
+                        "task_id": "task-finish-with-capture",
+                        "session_id": "session-finish-with-capture",
+                        "conversation_id": "conversation-finish-with-capture",
+                        "episode_id": "episode-finish-with-capture",
+                    }
+                )
+            )
+            result = self._run_stop(
+                session_id="session-finish-with-capture",
+                pending_content=_pending_summary(),
+                env_extra={"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            calls = log_path.read_text()
+            self.assertIn("capture end-episode", calls)
+            self.assertIn("orchestrator finish-task", calls)
+            self.assertNotIn("capture project-episode", calls)
 
 
 class TestHookRoundTrip(unittest.TestCase):
@@ -510,6 +569,67 @@ class TestCodexHookAdapter(unittest.TestCase):
             "episode_ended",
         ])
         self.assertTrue(all(event["bridge_id"] == "codex" for event in events))
+
+    def test_codex_stop_finishes_pending_summary(self) -> None:
+        """Codex stop hook consumes pending summaries through orchestrator finish-task."""
+        fixed_pending = Path("/tmp/mnemo_pending_summary.md")
+        original = fixed_pending.read_text() if fixed_pending.exists() else None
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            log_path = Path(tmp) / "mnemonicos.log"
+            fake = bin_dir / "mnemonicos"
+            fake.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/usr/bin/env bash
+                    printf '%s\\n' "$*" >> {str(log_path)!r}
+                    case "$*" in
+                      *"capture end-episode"*) printf '{{"ok": true}}\\n' ;;
+                      *"orchestrator finish-task"*) printf '{{"decision": "skip"}}\\n' ;;
+                      *) printf '{{"ok": true}}\\n' ;;
+                    esac
+                    exit 0
+                    """
+                )
+            )
+            fake.chmod(0o755)
+            try:
+                fixed_pending.write_text(_pending_summary(agent="codex"))
+                Path(self._state_file).write_text(
+                    json.dumps(
+                        {
+                            "task_id": "task-codex-finish",
+                            "session_id": self._session_id,
+                            "conversation_id": self._session_id,
+                            "episode_id": "episode-codex-finish",
+                            "turn_id": "turn-codex-finish",
+                        }
+                    )
+                )
+                env = _make_env(
+                    state_file=self._state_file,
+                    extra={"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"},
+                )
+                result = subprocess.run(
+                    ["bash", CODEX_STOP_HOOK],
+                    input=json.dumps({"session_id": self._session_id, "turn_id": "turn-codex-finish"}),
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                    timeout=30,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                calls = log_path.read_text()
+                self.assertIn("capture end-episode", calls)
+                self.assertIn("orchestrator finish-task", calls)
+                self.assertNotIn("capture project-episode", calls)
+                self.assertFalse(fixed_pending.exists())
+            finally:
+                if original is not None:
+                    fixed_pending.write_text(original)
+                elif fixed_pending.exists():
+                    fixed_pending.unlink()
 
     def test_codex_notify_payload_captures_one_complete_turn(self) -> None:
         """Codex notify payloads should become one readable turn episode."""

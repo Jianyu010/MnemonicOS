@@ -14,7 +14,8 @@ integration.
 │  Claude Code (your IDE / CLI)                                       │
 │                                                                     │
 │  UserPromptSubmit hook ──┐                                          │
-│  PostToolUse hook        ├──► YOUR BRIDGE SCRIPTS (scripts/)        │
+│  PostToolUse hook        │                                          │
+│  PreCompact hook         ├──► YOUR BRIDGE SCRIPTS (scripts/)        │
 │  Stop hook ──────────────┘         │         │                      │
 │                                    │         │                      │
 │ ════════════════════════ BOUNDARY ═╪═════════╪════════════════════ │
@@ -37,7 +38,7 @@ state file management, transcript scraping.
 externalization, retrieval, extraction queue, promotion pipeline, writeback
 decisions. You call its CLI — you do not touch its internals.
 
-The bridge API surface is exactly four CLI subcommands:
+The bridge API surface is exactly five CLI subcommands:
 
 | Command | When to call |
 |---|---|
@@ -105,7 +106,7 @@ MnemonicOS instance without collision.
 
 ## Hook Architecture
 
-Four hooks cover the full turn lifecycle:
+Five hooks cover the full turn lifecycle:
 
 | Hook event | Trigger | Script | What it captures |
 |---|---|---|---|
@@ -113,6 +114,7 @@ Four hooks cover the full turn lifecycle:
 | `PostToolUse` (all) | Any tool completes | `mnemonic_hook_post_tool.sh` | `tool_call`, `tool_result`, `failure` |
 | `PostToolUse` (Write/Edit) | Write or Edit tool completes | `mnemonic_hook_file_artifact.sh` | `file_changed`, `artifact_created` |
 | `Stop` | Claude finishes responding | `mnemonic_stop_hook.sh` | `assistant_message` (scraped from transcript), episode end, writeback |
+| `PreCompact` | Context window near limit | `mnemonic_precompact_dump.sh` | Copies pending summary to `brain/raw/sessions/` before compaction discards conversation context |
 
 ---
 
@@ -150,6 +152,17 @@ Add to `~/.claude/settings.json` (global) or `.claude/settings.json` (project):
           {
             "type": "command",
             "command": "cd /path/to/mnemonicos && scripts/mnemonic_hook_file_artifact.sh"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd /path/to/mnemonicos && scripts/mnemonic_precompact_dump.sh"
           }
         ]
       }
@@ -228,7 +241,10 @@ Claude Code passes JSON on **stdin** to each hook. The fields vary by hook type:
    this turn. Returns `conversation_id` and `episode_id`.
 2. **Emit `user_message`** — appends the prompt text as the first event.
 3. **Run orchestrator** — calls `orchestrator begin-task` with the prompt text.
-   Returns `context_markdown` (retrieved memory) and `retrieval_state`.
+   Agent hooks pass `--auto-retry --max-focused-retries 1` by default, so Stage
+   7 may emit a focused follow-up query and the hook-side orchestrator may run
+   one bounded second retrieval pass. Returns `context_markdown` (retrieved
+   memory), `retrieval_state`, and retry trace fields when a focused pass ran.
 4. **Emit `retrieval_packet`** — records which retrieval state and context were
    injected, so future analysis can correlate retrieval quality with outcomes.
 5. **Return context to Claude** — if context is non-empty and state is not
@@ -263,7 +279,8 @@ mnemonicos capture append-event \
 
 # 3. Run orchestrator (retrieval)
 RESULT=$(mnemonicos orchestrator begin-task "$PROMPT" \
-  --bridge-id claude --session-id "$SESSION_ID" --json)
+  --bridge-id claude --session-id "$SESSION_ID" \
+  --auto-retry --max-focused-retries 1 --json)
 TASK_ID=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('task_id',''))")
 CONTEXT=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('context_markdown',''))")
 STATE=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('retrieval_state',''))")
@@ -304,9 +321,11 @@ the state file, builds payloads, and emits up to three events:
 Key design decisions:
 
 **Payload truncation.** Tool results (especially Bash) can be arbitrarily large.
-The hook truncates string values above 128 KB before sending. MnemonicOS then
-externalizes payloads above its own 32 KB threshold to artifact files. The
-inline event record contains only a hash and path reference for large payloads.
+The hook truncates string values above 256 KB before sending (dict values above
+128 KB are truncated individually). MnemonicOS then externalizes payloads above
+its own 32 KB threshold to artifact files. The inline event record contains only
+a hash and path reference for large payloads. Truncated results carry
+`"_truncated": true` in the result payload.
 
 **No stdin re-read after cat.** The hook reads stdin into `HOOK_JSON` once at
 the top, then passes it via environment variable to the Python subprocess.
@@ -382,7 +401,10 @@ It emits:
 - `file_changed` — when tool is `Edit` (modification)
 
 Both events include `file_path`, `tool`, `size_bytes`, and inline `content` for
-text files below ~32 KB (larger files are externalized by MnemonicOS).
+recognized text extensions (`.md`, `.txt`, `.py`, `.js`, `.ts`, `.json`, `.yaml`,
+`.yml`, `.toml`, `.sh`, `.sql`, `.csv`, `.html`, `.css`). Binary files and
+unrecognized extensions omit `content`. MnemonicOS externalizes payloads above
+32 KB to artifact files.
 
 This hook fires **in addition to** the tool capture hook for Write/Edit, so the
 episode record contains both the artifact content and the tool invocation
@@ -526,6 +548,40 @@ exit 0
 
 ---
 
+## Step 7 — PreCompact Hook
+
+`scripts/mnemonic_precompact_dump.sh` fires when Claude Code is about to compact
+the conversation context (context window near limit). It does **not** open or
+close episodes — it only safeguards the pending summary.
+
+What it does:
+- If `/tmp/mnemo_pending_summary.md` exists and is non-empty, copies it to
+  `brain/raw/sessions/<timestamp>-claude-precompact-<trigger>.md`
+- If no pending summary exists, exits silently
+
+The `trigger` field comes from the PreCompact hook's stdin JSON (`"trigger":
+"auto"` when Claude Code initiates compaction automatically). This lets you
+distinguish manual vs automatic compaction in the archive.
+
+The copy is a safety net: if compaction discards context that Claude used to
+decide what to write, the summary is preserved for manual review and reingestion
+via `mnemonic_postflight.sh`.
+
+Skeleton:
+
+```bash
+HOOK_JSON=$(cat)
+TRIGGER=$(echo "$HOOK_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('trigger','auto'))")
+TIMESTAMP=$(date +%Y-%m-%d-%H%M%S)
+OUTFILE="brain/raw/sessions/${TIMESTAMP}-claude-precompact-${TRIGGER}.md"
+mkdir -p brain/raw/sessions
+[[ -f /tmp/mnemo_pending_summary.md && -s /tmp/mnemo_pending_summary.md ]] && \
+  cp /tmp/mnemo_pending_summary.md "$OUTFILE"
+exit 0
+```
+
+---
+
 ## Event Types Reference
 
 All events land in:
@@ -554,7 +610,7 @@ Each line:
 |---|---|---|
 | `episode_started` | `begin-episode` (automatic) | `cwd`, `repo`, `branch`, `model`, `agent_runtime` |
 | `user_message` | preflight hook | `content` (string) |
-| `retrieval_packet` | preflight hook | `state` (retrieval_state string), `context_markdown` |
+| `retrieval_packet` | preflight hook | `state` (retrieval_state string), `context_markdown`, optional Stage 7 retry trace (`final_pass_index`, `auto_retry_summary`, `retrieval_pass_count`, `followup_query`) |
 | `tool_call` | post-tool hook | `tool_name`, `tool_input` |
 | `tool_result` | post-tool hook | `tool_name`, `is_error`, `tool_response` |
 | `failure` | post-tool hook | `tool_name`, `error_message`, `source` |
@@ -683,15 +739,16 @@ PY
 ```
 
 **Large tool results.** Bash output can be megabytes. The tool hook truncates
-strings above 128 KB. MnemonicOS externalizes above 32 KB. If you see
-`externalized_payload: true` in an event, the artifact file holds the real
-content.
+at 256 KB total (128 KB per dict value). MnemonicOS externalizes above 32 KB.
+If you see `externalized_payload: true` in an event, the artifact file holds
+the real content. Truncated events carry `"_truncated": true`.
 
 **Transcript timestamp filtering.** Without filtering by `started_at`, the Stop
 hook would re-emit all prior turns as assistant messages. Always compare
 `timestamp >= episode.started_at`.
 
-**`project-episode` vs `finish-task`.** The stop hook calls
-`capture project-episode` only when a pending summary exists AND
-`CONVERSATION_ID` is set. `orchestrator finish-task` is the preferred path as
-it runs writeback logic. `project-episode` is a lower-level fallback.
+**Legacy postflight fallback.** When `TASK_ID` and `SESSION_ID` are both set,
+the stop hook uses `orchestrator finish-task` (preferred — runs full writeback
+logic). When `CONVERSATION_ID` is missing (preflight failed entirely), it falls
+back to `scripts/mnemonic_postflight.sh` directly. `capture project-episode`
+is not used by the stop hook.

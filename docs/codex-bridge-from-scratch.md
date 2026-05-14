@@ -145,6 +145,11 @@ when the retrieval result is empty:
 ```
 
 This is the provenance needed for passive feedback and retrieval quality audits.
+Codex preflight hooks should call `orchestrator begin-task` with
+`--auto-retry --max-focused-retries 1` unless the deployment explicitly disables
+retry with `MNEMO_AUTO_RETRY=0`. This exposes the full Stage 7 emission path:
+focused follow-up query handoff, one bounded re-retrieval pass, retry cutoff,
+and composed pass trace.
 
 ## Step 3: Capture Skill Use
 
@@ -324,4 +329,3 @@ under `artifacts/`.
 - Prefer append-only event capture. Do not edit previous event rows.
 - When Codex changes payload shapes, add normalizers that preserve `raw_payload`
   before adding refined fields.
-
