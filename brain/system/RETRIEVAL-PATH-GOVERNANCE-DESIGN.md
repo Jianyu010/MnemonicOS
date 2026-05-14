@@ -185,23 +185,41 @@ attribution.
 **Plan:** [retrieval-reranking-plan.md](retrieval-reranking-plan.md)
 **Roadmap:** [retrieval-reranking-roadmap.md](retrieval-reranking-roadmap.md)
 
-Scores candidates using all signals. Formula:
+Scores candidates using a two-layer multiplicative model (Phase 6):
+
 ```
-final_score = (
-  bm25_weight        * normalize_bm25(rank, pool_max)
-  + semantic_weight  * semantic_score
-  + graph_weight     * normalize_graph(graph_score, pool_max)
-  + type_prior_weight* type_prior(query_type, note_type)
-  + freshness_weight * (1.0 − staleness_score)
+# Relevance sub-score [0, 1] — query-dependent
+relevance_score = (
+  bm25_weight          * bm25_abs              # absolute BM25, not rank-normalized
+  + semantic_weight    * semantic_score
+  + graph_weight       * normalize_graph(graph_score, pool_max)
+  + exact_alias_weight * exact_bonus
+) / relevance_weight_sum
+
+# Quality sub-score [0, 1] — node-intrinsic
+quality_score = (
+  type_prior_weight  * type_prior(query_type, note_type)
+  + freshness_weight * freshness_score
   + trust_weight     * trust_score
   + importance_weight* normalize_importance(importance_score, pool_max)
   + quality_weight   * quality_pass
-  + exact_alias_weight * exact_bonus
   + historical_bonus(temporality, freshness_state)
-) * freshness_multiplier
+) / quality_weight_sum_max
+
+# Composite used for ranking
+composite_score = relevance_score × quality_score
+final_score = composite_score    # backward-compatible alias
 ```
 
-Exact candidates bypass formula: `final_score = 1_000_000 − exact_rank`.
+**Relevance gate**: candidates with `relevance_score < min_relevance_score`
+(default 0.25) are suppressed before Stage 5. Exact matches are exempt
+(`relevance_score = 1.0` set explicitly).
+
+**Dynamic top-k** (Phase 4 updated): fixed `top_k = 5` replaced by pool-fraction
+strategy — `max(min_hits, ceil(pool * pool_fraction))` capped at `max_hits = 15`
+and a token budget backstop. See [retrieval-reranking-plan-phase4.md].
+
+`bm25_abs = min(bm25_score / bm25_saturation, 1.0)` using the raw FTS5 score.
 Weights loaded from `rerank_weights` (model `east-flange-v1`); config defaults
 are the cold-start fallback. Archive candidates scored separately (BM25 rank only).
 Training triggered by `scripts/mnemonic_eval_train.sh` (daily daemon job) when
@@ -290,6 +308,12 @@ final body hydration and truncation from Stage 6 instructions.
 **Roadmap:** [retrieval-assessment-roadmap.md](retrieval-assessment-roadmap.md)
 
 Pure computation — no DB access, no side-effects.
+
+**Phase 8 addition**: Stage 6 reads `assembly_notes.suppressed_by_gate_count`
+forwarded from Stage 4. When all candidates were suppressed by the relevance
+gate, `insufficient_no_hit` is classified with reason
+`relevance_gate_suppressed_all` (distinct from `no_primary_or_archive` for true
+corpus misses). Suppression rate and counts surface in `AssessmentDirective`.
 
 Stage 6 evaluates the assembled packet along two axes:
 
@@ -380,6 +404,13 @@ Logs `runtime_packet_metrics`. Never raises: errors degrade to minimal packet.
 Stage 7 follows the `AssessmentDirective`: it hydrates only the requested
 branches, labels deferred reservoir branches, surfaces missing roles and
 follow-up query policy, and keeps archive material structurally separate.
+
+**Phase 8 additions**: each emitted hit carries a 2D score triple
+(`relevance_score`, `quality_score`, `composite_score` = `final_score`).
+When `insufficient_no_hit` is caused by relevance gate suppression, a
+human-readable message distinguishes it from a true corpus miss and surfaces
+the suppressed candidate count. CLI text output includes a confidence band
+label (HIGH/MEDIUM/LOW) per hit; agent hook Markdown does not.
 
 ---
 

@@ -86,6 +86,9 @@ class Phase4Test(unittest.TestCase):
                 graph_dir = "{(workspace / 'brain/data/graph').as_posix()}"
                 eval_queries = "{(workspace / 'evals/queries.jsonl').as_posix()}"
 
+                [retrieval]
+                min_relevance_score = 0.0
+
                 [embeddings]
                 enabled = false
 

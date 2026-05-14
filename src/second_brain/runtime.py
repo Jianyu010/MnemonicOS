@@ -357,6 +357,10 @@ def _build_memory_packet(
         contradictions=_dedupe_dicts(contradictions),
         warnings=_dedupe_ordered(warnings),
         verification_needed=_dedupe_ordered(verification_needed),
+        assembly_notes={
+            "suppressed_by_gate_count": retrieval_result.suppressed_by_gate_count,
+            "passed_gate_count": retrieval_result.passed_gate_count,
+        },
     )
 
 

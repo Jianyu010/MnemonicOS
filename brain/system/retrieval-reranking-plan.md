@@ -17,6 +17,7 @@ Implementation details live in the phase files:
 3. [Phase 3: Exact and Archive Ranking Rules](retrieval-reranking-plan-phase3.md)
 4. [Phase 4: Caps, Diversification, and Stability](retrieval-reranking-plan-phase4.md)
 5. [Phase 5: Training Labels, Weights, and Feedback Integration](retrieval-reranking-plan-phase5.md)
+6. [Phase 6: Multiplicative Scoring and Absolute Relevance Gate](retrieval-reranking-plan-phase6.md)
 
 ---
 
@@ -66,31 +67,55 @@ Stage 4 does not own:
 
 ## Scoring Formula
 
-Cold-start scoring uses the weighted formula:
+**Phase 6 revised model** (supersedes prior additive formula):
+
+Scoring is split into two independent normalized sub-scores that are multiplied
+into a composite. This prevents node quality from inflating scores for
+irrelevant queries.
 
 ```text
-final_score = (
-  bm25_weight          * normalize_bm25(rank, pool_max)
+# Relevance sub-score (query-dependent) — [0, 1]
+relevance_score = (
+  bm25_weight          * bm25_abs              # absolute BM25, not rank-based
   + semantic_weight    * semantic_score
   + graph_weight       * normalize_graph(graph_score, pool_max)
-  + type_prior_weight  * type_prior_score
-  + freshness_weight   * freshness_score
-  + trust_weight       * trust_score
-  + importance_weight  * normalize_importance(importance_score, pool_max)
-  + quality_weight     * quality_pass
   + exact_alias_weight * exact_bonus
+) / relevance_weight_sum
+
+# Quality sub-score (node-intrinsic) — [0, 1]
+quality_score = (
+  type_prior_weight   * type_prior_score
+  + freshness_weight  * freshness_score
+  + trust_weight      * trust_score
+  + importance_weight * importance_norm
+  + quality_weight    * quality_pass
   + historical_bonus
-) * freshness_multiplier
+) / quality_weight_sum_max
+
+# Composite (used for ranking and threshold suppression)
+composite_score = relevance_score * quality_score
+final_score = composite_score    # backward-compatible alias
 ```
 
-Exact alias/title candidates bypass ordinary scoring:
+`bm25_abs = min(bm25_score / bm25_saturation, 1.0)` using the raw FTS5 score,
+not rank normalization. Default `bm25_saturation = 15.0`.
+
+**Relevance gate**: candidates with `relevance_score < min_relevance_score`
+(default 0.25) are suppressed before Stage 5. Exact matches are exempt.
+
+Exact alias/title candidates bypass composite scoring for the ranking column:
 
 ```text
-final_score = 1_000_000 - exact_rank
+composite_score (ranking) = 1_000_000 - exact_rank
+relevance_score = 1.0     # set explicitly for gate bypass + 2D vector
+quality_score   = computed normally
 ```
 
 Archive candidates are ranked separately using archive-channel evidence and
 never merged into the wiki primary lane.
+
+See [Phase 6](retrieval-reranking-plan-phase6.md) for full rationale, threshold
+derivation, and verification requirements.
 
 ---
 

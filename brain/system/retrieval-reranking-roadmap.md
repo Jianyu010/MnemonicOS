@@ -16,8 +16,9 @@
 | S4-P1 | `RankedHits` contract and wiki/archive lane separation | done |
 | S4-P2 | Heuristic scoring formula with importance and quality | done |
 | S4-P3 | Exact bypass and archive scoring rules | done |
-| S4-P4 | Caps, diversification, deterministic stability | done |
+| S4-P4 | Caps, diversification, deterministic stability — **updated: dynamic top-k** | done / planned |
 | S4-P5 | Training labels, weights, and feedback integration | done |
+| S4-P6 | Multiplicative scoring, absolute relevance gate, dynamic top-k, 2D score vector | not started |
 
 ---
 
@@ -82,7 +83,7 @@ north-star path in the overall retrieval roadmap.
 
 **Detailed phase plans:**  
 - [Phase 1](retrieval-reranking-plan-phase1.md) · [Phase 2](retrieval-reranking-plan-phase2.md) · [Phase 3](retrieval-reranking-plan-phase3.md)
-- [Phase 4](retrieval-reranking-plan-phase4.md) · [Phase 5](retrieval-reranking-plan-phase5.md)
+- [Phase 4](retrieval-reranking-plan-phase4.md) · [Phase 5](retrieval-reranking-plan-phase5.md) · [Phase 6](retrieval-reranking-plan-phase6.md)
 
 **Governing plan:** [retrieval-reranking-plan.md](retrieval-reranking-plan.md)  
 **Overall roadmap:** [retrieval-development-roadmap.md](retrieval-development-roadmap.md)  

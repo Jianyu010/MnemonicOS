@@ -419,6 +419,80 @@ schema for tooling and tests.
 
 ---
 
+## Deep Research Mode (Future — Design Placeholder)
+
+> **Status:** Not implemented. This section captures design intent for when
+> full-body hydration and deep research emission become active. Do not implement
+> until the deep research phase is formally planned. Reference
+> `hydration_policy = hydrate_full_functional_path` and the `full_chain`
+> emission profile, which are currently unreachable dead code.
+
+### What the Mode Is
+
+Deep research is a distinct emission mode, not a condition silently triggered by
+the normal Stage 6 assessment path. It is characterized by:
+
+- Full note body hydration (reading `body_path` files, not just summaries)
+- No binding top-k cap — output is unbounded or operates under a very
+  permissive threshold
+- `emission_profile = full_chain` and `hydration_policy = hydrate_full_functional_path`
+  become live paths
+
+### How It Is Activated
+
+Two entry points, both explicit:
+
+**1. Manual — CLI flag (user-initiated):**
+```bash
+mnemonicos retrieve "query" --mode deep-research
+```
+The caller explicitly opts into expensive, unbounded output. No automatic
+activation from assessment signals alone.
+
+**2. Self-triggered — pipeline condition (system-initiated):**
+Specific Stage 6 conditions may recommend deep research mode when the caller
+has signaled willingness (e.g., a bridge setting `allow_deep_research = true`).
+Candidate trigger conditions (exact list deferred to implementation phase):
+- `completion_state = fragmentary` AND task_kind = `debugging` AND caller allows
+- explicit `--deep-research` hint passed as `QueryHints` from the bridge
+- multi-pass retry exhausted normal budget and a deep pass is permitted
+
+Self-triggering must never happen without caller consent. Stage 7 in normal mode
+emits a recommendation to retry with `--mode deep-research` rather than
+silently escalating cost.
+
+### Emission Behavior When Active
+
+When deep research mode is active:
+
+- Token cap is removed or raised to a caller-specified limit. Default threshold
+  TBD at implementation time — should be very accepting, not the compact-mode
+  6000-token limit.
+- All selected packet branches are hydrated from `body_path` files (read-only,
+  wiki files only).
+- `max_hits` cap from Phase 4 dynamic top-k does not apply; instead, a
+  separate `deep_research_max_hits` config param governs the ceiling.
+- Archive context may be included alongside wiki memory in the full text view,
+  still labeled separately.
+- `full_chain` profile presents the full functional path in explanatory order
+  including all failure, pivot, and caution branches.
+
+### Exact Design Is Deferred
+
+The specific token ceiling, `deep_research_max_hits` value, body resolver
+implementation, self-trigger conditions, and CLI surface (flags, config keys,
+bridge protocol fields) are to be designed when this mode is planned. Do not
+guess or hardcode values here.
+
+What is fixed by this placeholder:
+1. Deep research is a **named mode**, not an implicit escalation.
+2. Manual activation via CLI flag is a first-class requirement.
+3. Self-triggering requires explicit caller consent, not just pipeline state.
+4. Output under deep research is unbounded or permissively capped — the normal
+   `max_hits = 15` and 6000-token limit do not apply.
+
+---
+
 ## Completion Gate
 
 Stage 7 is complete when:

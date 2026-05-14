@@ -126,6 +126,7 @@ class Phase2Test(unittest.TestCase):
                 eval_queries = "{(workspace / 'evals/queries.jsonl').as_posix()}"
 
                 [retrieval]
+            min_relevance_score = 0.0
                 top_k = 5
                 include_archive_fallback = true
 

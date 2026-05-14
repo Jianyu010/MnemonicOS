@@ -243,6 +243,9 @@ def _build_parser() -> argparse.ArgumentParser:
             "wiki_cluster_validation",
             "wiki_pattern_discovery",
             "wiki_raw_revisitation",
+            "rerank_training",
+            "wiki_derive_passive_feedback",
+            "retry_failed_extractions",
         ),
     )
     jobs_parser.add_argument("--dry-run", action="store_true")
@@ -347,13 +350,24 @@ def _retrieve(config_path: str, query: str, top_k: int | None, query_type_hint: 
         print("pinned_paths:")
         for path in result.pinned_paths:
             print(f"  - {path}")
+    if result.suppressed_by_gate_count:
+        print(f"gate_suppressed={result.suppressed_by_gate_count} passed_gate={result.passed_gate_count}")
     if not result.hits:
-        print("no hits")
+        if result.suppressed_by_gate_count:
+            print(f"no hits (all {result.suppressed_by_gate_count} candidates suppressed by relevance gate)")
+        else:
+            print("no hits")
         return 0
 
     for index, hit in enumerate(result.hits, start=1):
         channels = ",".join(hit.channels)
-        print(f"{index}. {hit.id} [{hit.type}] channels={channels} score={hit.final_score:.3f}")
+        if hit.final_score >= 0.50:
+            band = "HIGH"
+        elif hit.final_score >= 0.30:
+            band = "MEDIUM"
+        else:
+            band = "LOW"
+        print(f"{index}. [{band}] {hit.id} [{hit.type}] channels={channels} score={hit.final_score:.3f} relevance={hit.relevance_score:.2f} quality={hit.quality_score:.2f}")
         print(f"   title: {hit.title}")
         print(f"   path: {hit.body_path}")
         if hit.summary:
@@ -833,7 +847,7 @@ def _retry_extraction(config_path: str, queue_id: int | None, all_errors: bool, 
                 return 0
             with connection:
                 connection.execute(
-                    "UPDATE extraction_queue SET status='pending', last_error=NULL, attempt_count=0, started_at=NULL, finished_at=NULL WHERE id=?",
+                    "UPDATE extraction_queue SET status='pending', last_error=NULL, started_at=NULL, finished_at=NULL WHERE id=?",
                     (queue_id,),
                 )
             print(f"retried #{queue_id}")
@@ -853,7 +867,7 @@ def _retry_extraction(config_path: str, queue_id: int | None, all_errors: bool, 
         ids = [r["id"] for r in rows]
         with connection:
             connection.executemany(
-                "UPDATE extraction_queue SET status='pending', last_error=NULL, attempt_count=0, started_at=NULL, finished_at=NULL WHERE id=?",
+                "UPDATE extraction_queue SET status='pending', last_error=NULL, started_at=NULL, finished_at=NULL WHERE id=?",
                 [(i,) for i in ids],
             )
         print(f"retried {len(ids)} item(s)")
