@@ -72,6 +72,16 @@ mnemonicos orchestrator finish-task \
 - Stop fires once per user turn (not once at session end). The natural ingestion
   unit is a single user-prompt turn.
 
+**`mnemonic_hook_post_tool.sh`** (PostToolUse, all tools):
+
+Appends `tool_call` and `tool_result` events to the active episode via
+`capture append-event`. Emits a `failure` event when `is_error` is true.
+
+**`mnemonic_hook_file_artifact.sh`** (PostToolUse, Write/Edit only):
+
+Appends `file_changed` or `artifact_created` events to the active episode,
+tracking which files Claude modified during the turn.
+
 **`mark_failure`** (manual, per CLAUDE.md):
 
 No mid-session hook exists. Failure re-retrieval is triggered manually by Claude

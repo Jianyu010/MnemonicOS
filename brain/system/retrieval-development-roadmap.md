@@ -15,9 +15,9 @@
 **Verdict:** extend — algorithms sound, 2 critical bugs, missing stage boundaries
 **Date:** 2026-05-11
 
-Critical bugs found:
-- `importance_score` loaded per-query but not in scoring formula (dead code)
-- `train_rerank_model()` exists but never called (training unreachable)
+Critical bugs found and subsequently fixed:
+- `importance_score` loaded per-query but not in scoring formula (dead code) — **fixed**: `signal_integration.py` + `reranker.py` now carry and use it
+- `train_rerank_model()` exists but never called (training unreachable) — **fixed**: `rerank_training` daemon job added to `jobs.py` + `daemon_jobs.py` schedule (`47 * * * *`)
 
 ---
 
@@ -28,14 +28,14 @@ Critical bugs found:
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| S1-P1 | `ParsedQuery` contract + tokenizer (+ `caller_type`, `persona`, `back_feed_hook`) | not started |
-| S1-P2 | Caller identity detection (`detect_caller()`, `AGENT_BRIDGE_IDS`) | not started |
-| S1-P3 | Persona classifier (`knowledge` · `skill` · `rag`, `BACK_FEED_HOOKS`) | not started |
-| S1-P4 | Semantic type classifier (6 types, `TYPE_PRIORS`, `QUERY_KEYWORD_SIGNATURES`) | not started |
-| S1-P5 | Temporality inference (4 states, `"unknown"` default) | not started |
-| S1-P6 | Anchor term extraction (alias table + note ID prefix) | not started |
-| S1-P7 | Term expansion (`SYNONYM_MAP` + alias title tokens, cap 3) | not started |
-| S1-INT | `parse_query()` assembly + legacy migration + integration test | not started |
+| S1-P1 | `ParsedQuery` contract + tokenizer (+ `caller_type`, `persona`, `back_feed_hook`) | done |
+| S1-P2 | Caller identity detection (`detect_caller()`, `AGENT_BRIDGE_IDS`) | done |
+| S1-P3 | Persona classifier (`knowledge` · `skill` · `rag`, `BACK_FEED_HOOKS`) | done |
+| S1-P4 | Semantic type classifier (6 types, `TYPE_PRIORS`, `QUERY_KEYWORD_SIGNATURES`) | done |
+| S1-P5 | Temporality inference (4 states, `"unknown"` default) | done |
+| S1-P6 | Anchor term extraction (alias table + note ID prefix) | done |
+| S1-P7 | Term expansion (`SYNONYM_MAP` + alias title tokens, cap 3) | done |
+| S1-INT | `parse_query()` assembly + legacy migration + integration test | done |
 
 ---
 

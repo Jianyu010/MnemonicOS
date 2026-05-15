@@ -96,10 +96,10 @@ contracts. Stage boundaries do not exist as code boundaries.
 - Freshness state available from maintenance-computed `note_freshness` table
 
 **Bugs / gaps:**
-- **`importance_score` loaded but never used in scoring formula** — lines 413–420 perform
-  a DB query and populate `importance_map`, line 627 logs it to `retrieval_hit_features`,
-  but lines 473–482 (the scoring formula) do not include any `importance_weight` term.
-  Importance is dead code in the retrieval path.
+- ~~**`importance_score` loaded but never used in scoring formula**~~ — **FIXED** (post-audit):
+  `signal_integration.py` now loads importance via `_importance_scores()` and propagates
+  it as `SignalEnrichedCandidate.importance_score`; `reranker.py` normalizes and applies
+  it in the final scoring formula. The dead-code path in the legacy monolith no longer exists.
 - Signal loading is **not a discrete stage** — it is interleaved with scoring loop
 - No typed `NoteSignals` struct — trust and freshness are separate dicts, importance is
   a third dict, all merged ad-hoc
@@ -125,10 +125,10 @@ module placement, no typed contract
 - `train_rerank_model()` function exists and produces weight updates
 
 **Bugs / gaps:**
-- **`importance_score` absent from formula** (see Stage 3 — same root cause)
-- **`train_rerank_model()` is never called** — no daemon job, no script, no trigger. The
-  function exists but is unreachable from any production code path. Training requires
-  manual Python invocation.
+- ~~**`importance_score` absent from formula**~~ — **FIXED** (see Stage 3 fix above)
+- ~~**`train_rerank_model()` is never called**~~ — **FIXED** (post-audit): `rerank_training`
+  job added to `jobs.py` (imports and calls `trust.train_rerank_model()`) and scheduled
+  in `daemon_jobs.py` at `47 * * * *`.
 - Training algorithm is crude: per-feature mean delta × 0.25 scale, not gradient descent.
   Cannot overfit but also cannot learn non-linear patterns.
 - `DEFAULT_RERANK_WEIGHTS` in `trust.py` (line 33–40) has `"trust_weight": 0.15` but
@@ -262,10 +262,13 @@ distribution:
 
 ### Importance Score Dead Code
 
-The most impactful dead code: `importance_score` is computed by the maintenance layer
+~~The most impactful dead code: `importance_score` is computed by the maintenance layer
 (`wiki_importance_scoring` daemon job), stored in `note_importance`, loaded per-query
 (DB round-trip), logged to `retrieval_hit_features`, but **contributes zero to final_score**.
-Every query pays the load cost with no benefit.
+Every query pays the load cost with no benefit.~~
+
+**FIXED (post-audit):** `importance_score` is now carried through `signal_integration.py`
+as a typed field on `SignalEnrichedCandidate` and applied in `reranker.py` scoring.
 
 ---
 
@@ -274,7 +277,7 @@ Every query pays the load cost with no benefit.
 **EXTEND** the legacy implementation. The core algorithms are sound and the DB schema
 is well-designed. The problems are fixable without architectural replacement:
 
-1. Two critical bugs: importance dead code, training never triggered
+1. ~~Two critical bugs: importance dead code, training never triggered~~ — **both fixed post-audit**
 2. Missing stage boundaries (monolithic `retrieve()`)
 3. Missing features: archive_context slot, expansion, dedup, budget, full quality gate
 4. Naming inconsistency between `trust.py` weight keys and config keys
