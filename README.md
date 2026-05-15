@@ -30,20 +30,39 @@ flowchart TD
     A["North callers<br/>Agents, CLI, hooks, HTTP, humans"] --> B["Adapter layer<br/>scripts, orchestrator.py, server.py"]
     B --> C["Runtime protocol<br/>resolve context, record outcome, decide writeback"]
 
-    C --> W["West ingestion path"]
-    W --> X["LLM/VLM extraction"]
-    X --> P["Promotion and review"]
-    P --> K["Canonical wiki<br/>brain/wiki + SQLite indexes"]
-    K --> M["Maintenance<br/>graph, lifecycle, importance, health, revisit"]
+    subgraph INGEST["🟧 Ingestion Path"]
+        W["West ingestion path"]
+        X["LLM/VLM extraction"]
+        P["Promotion and review"]
+        W --> X --> P
+    end
+
+    K["Canonical wiki<br/>brain/wiki + SQLite indexes"]
+
+    subgraph MAINT["🔧 Maintenance"]
+        M["graph, lifecycle, importance, health, revisit"]
+    end
+
+    subgraph RETRIEVAL["🟦 Retrieval Path"]
+        QP["Query parsing<br/>intent · terms · temporality"]
+        RC["Multi-channel recall<br/>exact · BM25 · semantic · graph · archive"]
+        SS["Signal scoring<br/>trust · freshness · importance"]
+        RR["Reranking<br/>relevance gate · dynamic top-k"]
+        E["Bounded memory packet<br/>recommendation, warnings, provenance"]
+        QP --> RC --> SS --> RR --> E
+    end
+
+    C --> W
+    P --> K
+    K --> M
     M --> K
-    K --> R["Retrieval path"]
-    R --> E["Bounded memory packet<br/>recommendation, warnings, provenance"]
+    K --> QP
     E --> A
 
     D["Daemon and jobs"] --> X
     D --> P
     D --> M
-    D --> R
+    D --> RC
 ```
 
 Core modules:
