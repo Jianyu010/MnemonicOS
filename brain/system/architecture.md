@@ -25,7 +25,7 @@ flowchart TD
     E --> R["Human review path<br/>promotion review CLI/TUI<br/><b>human governed + software-guarded</b>"]
     R --> F["Canonical memory store<br/>brain/wiki/* + SQLite/index substrate<br/><b>software/human governed + derived stores</b>"]
     E --> F
-    F --> M["Knowledge maintenance layer<br/>graph, lifecycle, importance, dedup, health<br/><b>software-driven; planned rollout</b>"]
+    F --> M["Knowledge maintenance layer<br/>graph, lifecycle, importance, dedup, health<br/><b>software-driven; active</b>"]
     M --> F
     F --> G["East retrieval layer<br/>retrieval.py + trust.py + graph.py<br/><b>software-driven today</b>"]
     G --> H["Bounded memory packet<br/>recommendation + warnings + provenance<br/><b>software-driven</b>"]
@@ -84,16 +84,21 @@ These are intentionally marked as guidance, not binding design. They identify
 where the current system should evolve next without freezing implementation
 details too early.
 
-- **Knowledge maintenance is planned, not active.** The next layer should treat
-  the full wiki as a living graph: bulk graph rebuild, lifecycle audit,
-  importance scoring, semantic duplicate routing, and health reporting. The
-  governing plan exists, but the roadmap marks all phases as not started.
-- **East retrieval pipeline design complete; implementation not started.** The
-  7-stage retrieval pipeline (east flange = Stage 1: Query Parsing, plus Stages
-  2–7) is fully specified in RETRIEVAL-PATH-GOVERNANCE-DESIGN.md. Two critical
-  bugs identified in Phase 0 audit: importance_score dead code (Stage 3/4) and
-  train_rerank_model() unreachable (Stage 4). The future DL north star (bi-encoder
-  + cross-encoder) is designed and deferred until ≥50 eval samples exist.
+- **Knowledge maintenance layer is active.** All 9 wiki maintenance jobs
+  (`wiki_importance_scoring`, `wiki_lifecycle_audit`, `wiki_graph_rebuild`,
+  `wiki_embedding_neighbor_backfill`, `wiki_cluster_validation`,
+  `wiki_pattern_discovery`, `wiki_raw_revisitation`, `wiki_derive_passive_feedback`,
+  `wiki_health_report`) are implemented in `jobs.py` and scheduled in
+  `daemon_jobs.py`. See [Knowledge Maintenance Layer Development Roadmap](ingestion-maintenance-roadmap.md)
+  for phase completion status.
+- **East retrieval pipeline (Stages 1–6) implemented; Stage 7 not started.** The
+  7-stage pipeline is implemented across `query_parser.py` (Stage 1),
+  `recall.py` (Stage 2), `signal_integration.py` (Stage 3), `reranker.py` (Stage 4),
+  assembly in `runtime.py` (Stage 5), `assessor.py` (Stage 6). Stage 7 (Emission)
+  phases remain not started — see [Retrieval Development Roadmap](retrieval-development-roadmap.md).
+  The two Phase 0 audit bugs (`importance_score` dead code, `train_rerank_model()`
+  unreachable) are fixed. The future DL north star (bi-encoder + cross-encoder)
+  is deferred until ≥50 eval samples exist.
 - **South boundary is unresolved.** SQLite, markdown, FTS, vectors, and graph
   tables are treated as replaceable substrate today. It is still undecided
   whether to formalize them as a south flange with explicit adapter contracts.
@@ -174,6 +179,7 @@ details too early.
   metadata on notes); Phases 2–6 deferred until evaluation data exists.
 - [East Flange Audit](../../docs/east-flange-audit.md): Phase 0 audit — module-to-stage
   map, 2 critical bugs (importance dead code, training never triggered), extend verdict.
+  **Both bugs subsequently fixed** (see retrieval-development-roadmap.md Phase 0 note).
 
 ### Interface and Positioning
 
