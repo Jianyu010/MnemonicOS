@@ -36,14 +36,17 @@ flowchart TD
     P --> K["Canonical wiki<br/>brain/wiki + SQLite indexes"]
     K --> M["Maintenance<br/>graph, lifecycle, importance, health, revisit"]
     M --> K
-    K --> R["Retrieval path"]
-    R --> E["Bounded memory packet<br/>recommendation, warnings, provenance"]
+    K --> QP["Query parsing<br/>intent · terms · temporality"]
+    QP --> RC["Multi-channel recall<br/>exact · BM25 · semantic · graph · archive"]
+    RC --> SS["Signal scoring<br/>trust · freshness · importance"]
+    SS --> RR["Reranking<br/>relevance gate · dynamic top-k"]
+    RR --> E["Bounded memory packet<br/>recommendation, warnings, provenance"]
     E --> A
 
     D["Daemon and jobs"] --> X
     D --> P
     D --> M
-    D --> R
+    D --> RC
 ```
 
 Core modules:
