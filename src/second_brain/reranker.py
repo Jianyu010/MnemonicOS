@@ -13,7 +13,8 @@ from .models import (
 )
 from .trust import RerankModel, load_rerank_model
 
-# Maximum historical bonus a note can receive (used for quality normalization).
+# _HISTORICAL_BONUS_MAX is now config.reranker.historical_bonus_max (default 0.20).
+# Kept here as a module-level alias for the rare call sites that don't have config.
 _HISTORICAL_BONUS_MAX = 0.20
 
 
@@ -39,15 +40,16 @@ def _raw_score(candidate) -> float | None:
     return candidate.bm25_score
 
 
-def _historical_bonus(*, temporality: str, freshness_state: str) -> float:
+def _historical_bonus(config: AppConfig, *, temporality: str, freshness_state: str) -> float:
     if temporality != "historical":
         return 0.0
+    r = config.reranker
     if freshness_state == "stale":
-        return 0.20
+        return r.historical_bonus_stale
     if freshness_state == "suspect":
-        return 0.12
+        return r.historical_bonus_suspect
     if freshness_state == "aging":
-        return 0.06
+        return r.historical_bonus_aging
     return 0.0
 
 
@@ -111,6 +113,7 @@ def _compute_quality_score(
     weights: dict[str, float],
     importance_norm: float,
     hist_bonus: float,
+    historical_bonus_max: float = _HISTORICAL_BONUS_MAX,
 ) -> float:
     """Node-intrinsic sub-score [0, 1]. Independent of the query."""
     quality_weight_sum_max = (
@@ -119,7 +122,7 @@ def _compute_quality_score(
         + weights["trust_weight"]
         + weights["importance_weight"]
         + weights["quality_weight"]
-        + _HISTORICAL_BONUS_MAX
+        + historical_bonus_max
     )
     if quality_weight_sum_max < 1e-6:
         return 0.0
@@ -150,15 +153,16 @@ def _score_wiki_candidates(
     importance_max = max(((item.signals.importance_score or 0.0) for item in wiki_items), default=0.0) or 1.0
     weights = _weights(config, rerank_model)
 
-    # Adjust policy-driven weight overrides.
+    # Adjust policy-driven weight overrides (floors from config.reranker).
     freshness_weight = weights["freshness_weight"]
     type_prior_weight = weights["type_prior_weight"]
     if query_type is not None and (classifier_confidence or 0.0) >= 1.0:
-        type_prior_weight = max(type_prior_weight, 0.25)
+        type_prior_weight = max(type_prior_weight, config.reranker.min_type_prior_weight)
     if query_type == "what_changed":
-        freshness_weight = max(freshness_weight, 0.25)
+        freshness_weight = max(freshness_weight, config.reranker.min_freshness_weight_what_changed)
     weights = dict(weights, freshness_weight=freshness_weight, type_prior_weight=type_prior_weight)
 
+    historical_bonus_max = config.reranker.historical_bonus_max
     scored: list[ScoredCandidate] = []
 
     for item in wiki_items:
@@ -166,7 +170,7 @@ def _score_wiki_candidates(
         signals = item.signals
         freshness_state = signals.freshness_state
         importance_norm = max(signals.importance_score or 0.0, 0.0) / importance_max
-        hist_bonus = _historical_bonus(temporality=temporality, freshness_state=freshness_state)
+        hist_bonus = _historical_bonus(config, temporality=temporality, freshness_state=freshness_state)
 
         if candidate.exact_rank is not None:
             # Exact matches bypass composite scoring for rank column but still
@@ -177,6 +181,7 @@ def _score_wiki_candidates(
                 weights=weights,
                 importance_norm=importance_norm,
                 hist_bonus=hist_bonus,
+                historical_bonus_max=historical_bonus_max,
             )
             final_score = 1_000_000.0 - candidate.exact_rank
             raw_score: float | None = 1.0
@@ -192,6 +197,7 @@ def _score_wiki_candidates(
                 weights=weights,
                 importance_norm=importance_norm,
                 hist_bonus=hist_bonus,
+                historical_bonus_max=historical_bonus_max,
             )
             final_score = relevance_score * quality_score
             raw_score = _raw_score(candidate)
@@ -287,13 +293,18 @@ def _score_archive_candidates(
     return sorted(scored, key=lambda item: (-item.hit.final_score, item.candidate.archive_id, item.candidate.chunk_index))[:top_k]
 
 
-def _apply_top_k_with_chain_diversity(scored: list[ScoredCandidate], top_k: int) -> list[ScoredCandidate]:
+def _apply_top_k_with_chain_diversity(
+    scored: list[ScoredCandidate],
+    top_k: int,
+    *,
+    chain_diversity_min: int = 2,
+) -> list[ScoredCandidate]:
     if top_k <= 0:
         return []
     selected: list[ScoredCandidate] = []
     deferred: list[ScoredCandidate] = []
     chain_counts: dict[str, int] = {}
-    chain_cap = max(2, math.ceil(top_k / 3))
+    chain_cap = max(chain_diversity_min, math.ceil(top_k / 3))
 
     for item in scored:
         chain_id = item.candidate.chain_id
@@ -352,8 +363,12 @@ def rerank(
     # Dynamic top-k from passing pool.
     final_k = _dynamic_top_k(config, passed_count, explicit_top_k)
 
-    wiki_hits = _apply_top_k_with_chain_diversity(passing, final_k)
-    archive_hits = _score_archive_candidates(enriched_pool, top_k=max(final_k, 3))
+    wiki_hits = _apply_top_k_with_chain_diversity(
+        passing, final_k, chain_diversity_min=config.reranker.chain_diversity_min
+    )
+    archive_hits = _score_archive_candidates(
+        enriched_pool, top_k=max(final_k, config.reranker.min_archive_hits)
+    )
 
     return RankedHits(
         wiki_hits=wiki_hits,

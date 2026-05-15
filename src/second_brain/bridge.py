@@ -246,7 +246,7 @@ def find_existing_candidates(
     note_type: str,
     title: str,
     summary: str = "",
-    limit: int = 5,
+    limit: int | None = None,
 ) -> list[CandidateMatch]:
     slug = slugify(title)
     query_text = summary or title
@@ -261,6 +261,8 @@ def find_existing_candidates(
         (note_type, note_type),
     ).fetchall()
 
+    bm = config.bridge_matching
+    _limit = limit if limit is not None else bm.candidate_limit
     title_tokens = _token_set(title)
     matches: list[CandidateMatch] = []
     for row in rows:
@@ -271,18 +273,18 @@ def find_existing_candidates(
         score = 0.0
         reason = "weak"
         if title.casefold() == note_title.casefold():
-            score = 1.0
+            score = bm.exact_title_score
             reason = "exact_title"
         elif note_id.casefold().endswith(f"/{slug}"):
-            score = 0.99
+            score = bm.id_slug_score
             reason = "id_slug"
         elif slug and slug == title_slug:
-            score = 0.98
+            score = bm.slug_score
             reason = "slug_match"
         else:
             alias_hit = next((alias for alias in aliases if alias.casefold() == title.casefold()), None)
             if alias_hit:
-                score = 0.96
+                score = bm.alias_exact_score
                 reason = "alias_exact"
             else:
                 note_tokens = _token_set(note_title)
@@ -296,7 +298,7 @@ def find_existing_candidates(
                 if semantic > score:
                     score = semantic
                     reason = "semantic"
-        if score >= 0.55:
+        if score >= bm.min_candidate_score:
             matches.append(
                 CandidateMatch(
                     note_id=note_id,
@@ -308,7 +310,7 @@ def find_existing_candidates(
             )
 
     matches.sort(key=lambda item: (-item.score, item.title.casefold()))
-    return matches[:limit]
+    return matches[:_limit]
 
 
 def decide_upsert(
@@ -350,7 +352,7 @@ def decide_upsert(
     if explicit_intent in {"update", "procedure_refinement", "incident_only"}:
         return UpsertDecision("update_existing", [top.note_id], candidate_ids, f"explicit writeback_intent={explicit_intent}")
 
-    if top.score >= 0.98:
+    if top.score >= config.bridge_matching.slug_score:
         if retrieval_state in {"sufficient_current", "sufficient_historical"}:
             return UpsertDecision("confirm_existing", [top.note_id], candidate_ids, f"strong match ({top.reason}) with sufficient retrieval state")
         return UpsertDecision("update_existing", [top.note_id], candidate_ids, f"strong match ({top.reason})")

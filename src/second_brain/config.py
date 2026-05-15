@@ -1,12 +1,44 @@
 from __future__ import annotations
 
+import dataclasses as _dc
 from dataclasses import dataclass, field
 import os
 from pathlib import Path
 import tomllib
+from typing import TypeVar
 
+_T = TypeVar("_T")
 
 _MODULE_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _apply_toml(instance: _T, toml_data: dict[str, object]) -> _T:
+    """Merge TOML values over a dataclass instance using its field defaults.
+
+    Only keys present in *toml_data* are overridden; absent keys keep the
+    dataclass default values.  Only plain scalar types (bool, int, float, str)
+    are handled here — complex types (Path, dict, int | None, …) are left to
+    the caller.
+    """
+    if not toml_data:
+        return instance
+    overrides: dict[str, object] = {}
+    for f in _dc.fields(instance):  # type: ignore[arg-type]
+        if f.name not in toml_data:
+            continue
+        raw = toml_data[f.name]
+        default_val = getattr(instance, f.name)
+        base_type = type(default_val)
+        if base_type is bool:
+            overrides[f.name] = bool(raw)
+        elif base_type is int:
+            overrides[f.name] = int(raw)
+        elif base_type is float:
+            overrides[f.name] = float(raw)
+        elif base_type is str:
+            overrides[f.name] = str(raw)
+        # else: skip complex types — handled separately by caller
+    return _dc.replace(instance, **overrides)  # type: ignore[return-value]
 
 
 @dataclass(slots=True)
@@ -30,11 +62,12 @@ class RetrievalConfig:
     type_prior_weight: float = 0.15
     freshness_weight: float = 0.10
     memory_strength_weight: float = 0.10
+    trust_weight: float = 0.15  # rerank-model fallback weight (DEFAULT_RERANK_WEIGHTS)
     importance_weight: float = 0.10
     quality_weight: float = 0.08
     exact_alias_weight: float = 0.10
     # Phase 6: multiplicative scoring + relevance gate
-    min_relevance_score: float = 0.25
+    min_relevance_score: float = 0.35
     bm25_saturation: float = 15.0
     # Phase 4 (updated): dynamic top-k
     min_hits: int = 3
@@ -80,6 +113,14 @@ class TrustConfig:
     current_query_contested_penalty: float = 0.65
     historical_query_relief: float = 0.20
     section_limit: int = 5
+    # freshness multipliers used in trust.freshness_multiplier()
+    historical_contested_multiplier: float = 0.75
+    historical_stale_min: float = 0.60
+    historical_suspect_multiplier: float = 0.75
+    current_contested_min: float = 0.05
+    current_stale_min: float = 0.10
+    current_suspect_multiplier: float = 0.70
+    current_aging_multiplier: float = 0.88
 
 
 @dataclass(slots=True)
@@ -151,6 +192,87 @@ class MaintenanceConfig:
     requeue_max_per_run: int = 20
     passive_feedback_enabled: bool = True
     passive_feedback_inline_only: bool = False
+    # passive feedback tuning
+    passive_inline_boost_threshold: float = 0.85
+    passive_weak_confidence_default: float = 0.20
+    passive_misleading_min_confidence: float = 0.50
+    passive_max_promoted_per_session: int = 10
+    passive_retrieval_hits_limit: int = 500
+    # pattern discovery tuning
+    pattern_role_similarity_threshold: float = 0.85
+    pattern_ch3_candidate_score: float = 0.70
+    pattern_ch2_max_pairs: int = 20
+    # importance scoring formula weights
+    importance_out_degree_weight: float = 0.40
+    importance_sigmoid_scale: float = 5.0
+    importance_sigmoid_amp: float = 2.0
+    importance_connectivity_weight: float = 0.35
+    importance_trust_weight: float = 0.25
+    importance_freshness_weight: float = 0.25
+    importance_lifecycle_weight: float = 0.15
+    # lifecycle weights used in importance scoring
+    lifecycle_weight_canonical: float = 1.00
+    lifecycle_weight_verified: float = 0.70
+    lifecycle_weight_draft: float = 0.40
+    lifecycle_weight_review: float = 0.30
+    lifecycle_weight_contested: float = 0.20
+    lifecycle_weight_archived: float = 0.05
+
+
+@dataclass(slots=True)
+class RerankerConfig:
+    """Tuning knobs for the reranker scoring and diversity logic."""
+    historical_bonus_max: float = 0.20
+    historical_bonus_stale: float = 0.20
+    historical_bonus_suspect: float = 0.12
+    historical_bonus_aging: float = 0.06
+    min_type_prior_weight: float = 0.25
+    min_freshness_weight_what_changed: float = 0.25
+    chain_diversity_min: int = 2
+    min_archive_hits: int = 3
+
+
+@dataclass(slots=True)
+class SignalConfig:
+    """Thresholds and constants for signal integration and quality scoring."""
+    default_freshness_score: float = 0.20
+    freshness_max_age_days: int = 365
+    min_summary_word_count: int = 8
+    min_excerpt_word_count: int = 20
+    excerpt_char_limit: int = 240
+    passive_used_weight: float = 0.30
+    passive_useful_weight: float = 0.60
+    passive_misleading_weight: float = 0.60
+
+
+@dataclass(slots=True)
+class QueryParserConfig:
+    """Constants for query classification and anchor term extraction."""
+    confidence_base: float = 0.45
+    confidence_primary_bonus: float = 0.20
+    confidence_secondary_bonus: float = 0.10
+    max_anchor_terms: int = 5
+    max_candidate_tokens: int = 5
+    max_expanded_terms: int = 3
+
+
+@dataclass(slots=True)
+class OrchestratorConfig:
+    """Token budgets and retry limits for the retrieval orchestrator."""
+    default_token_budget: int = 3000
+    research_token_budget: int = 5000
+    max_focused_retries: int = 1
+
+
+@dataclass(slots=True)
+class BridgeMatchingConfig:
+    """Score thresholds for the bridge candidate-matching logic."""
+    exact_title_score: float = 1.00
+    id_slug_score: float = 0.99
+    slug_score: float = 0.98
+    alias_exact_score: float = 0.96
+    min_candidate_score: float = 0.55
+    candidate_limit: int = 5
 
 
 @dataclass(slots=True)
@@ -164,6 +286,11 @@ class AppConfig:
     extraction: ExtractionConfig = field(default_factory=ExtractionConfig)
     promotion: PromotionConfig = field(default_factory=PromotionConfig)
     maintenance: MaintenanceConfig = field(default_factory=MaintenanceConfig)
+    reranker: RerankerConfig = field(default_factory=RerankerConfig)
+    signal: SignalConfig = field(default_factory=SignalConfig)
+    query_parser: QueryParserConfig = field(default_factory=QueryParserConfig)
+    orchestrator: OrchestratorConfig = field(default_factory=OrchestratorConfig)
+    bridge_matching: BridgeMatchingConfig = field(default_factory=BridgeMatchingConfig)
     daemon: DaemonConfig | None = None
     bridges: dict[str, BridgeConfig] = field(default_factory=dict)
     config_path: Path | None = None
@@ -238,111 +365,70 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
         root = Path(workspace_root).resolve() if workspace_root is not None else _workspace_root_from_config_path(resolved_config)
     data = tomllib.loads(resolved_config.read_text())
 
+    # --- paths (no defaults helper; Path construction requires special handling) ---
     paths_data = data.get("paths", {})
+    _pd = PathsConfig(
+        workspace_root=root,
+        vault_root=root / "brain",
+        db_path=root / "brain/data/archive.db",
+        vectors_dir=root / "brain/data/vectors",
+        graph_dir=root / "brain/data/graph",
+        eval_queries=root / "evals/queries.jsonl",
+    )
     paths = PathsConfig(
         workspace_root=root,
-        vault_root=_resolve_path(root, paths_data.get("vault_root", "brain")),
-        db_path=_resolve_path(root, paths_data.get("db_path", "brain/data/archive.db")),
-        vectors_dir=_resolve_path(root, paths_data.get("vectors_dir", "brain/data/vectors")),
-        graph_dir=_resolve_path(root, paths_data.get("graph_dir", "brain/data/graph")),
-        eval_queries=_resolve_path(root, paths_data.get("eval_queries", "evals/queries.jsonl")),
+        vault_root=_resolve_path(root, paths_data.get("vault_root", str(_pd.vault_root.relative_to(root)))),
+        db_path=_resolve_path(root, paths_data.get("db_path", str(_pd.db_path.relative_to(root)))),
+        vectors_dir=_resolve_path(root, paths_data.get("vectors_dir", str(_pd.vectors_dir.relative_to(root)))),
+        graph_dir=_resolve_path(root, paths_data.get("graph_dir", str(_pd.graph_dir.relative_to(root)))),
+        eval_queries=_resolve_path(root, paths_data.get("eval_queries", str(_pd.eval_queries.relative_to(root)))),
     )
 
-    retrieval_data = data.get("retrieval", {})
-    retrieval = RetrievalConfig(
-        top_k=int(retrieval_data.get("top_k", 5)),
-        include_archive_fallback=bool(retrieval_data.get("include_archive_fallback", True)),
-        pinned_token_budget=int(retrieval_data.get("pinned_token_budget", 2000)),
-        total_context_budget=int(retrieval_data.get("total_context_budget", 6000)),
-        bm25_weight=float(retrieval_data.get("bm25_weight", 0.30)),
-        semantic_weight=float(retrieval_data.get("semantic_weight", 0.25)),
-        type_prior_weight=float(retrieval_data.get("type_prior_weight", 0.15)),
-        freshness_weight=float(retrieval_data.get("freshness_weight", 0.10)),
-        memory_strength_weight=float(retrieval_data.get("memory_strength_weight", 0.10)),
-        importance_weight=float(retrieval_data.get("importance_weight", 0.10)),
-        quality_weight=float(retrieval_data.get("quality_weight", 0.08)),
-        exact_alias_weight=float(retrieval_data.get("exact_alias_weight", 0.10)),
-        min_relevance_score=float(retrieval_data.get("min_relevance_score", 0.25)),
-        bm25_saturation=float(retrieval_data.get("bm25_saturation", 15.0)),
-        min_hits=int(retrieval_data.get("min_hits", 3)),
-        max_hits=int(retrieval_data.get("max_hits", 15)),
-        pool_fraction=float(retrieval_data.get("pool_fraction", 0.10)),
-        tokens_per_hit_estimate=int(retrieval_data.get("tokens_per_hit_estimate", 120)),
-    )
+    # --- simple scalar sections: defaults from dataclass, overrides from TOML ---
+    retrieval = _apply_toml(RetrievalConfig(), data.get("retrieval", {}))
+    graph = _apply_toml(GraphConfig(), data.get("graph", {}))
+    trust = _apply_toml(TrustConfig(), data.get("trust", {}))
+    promotion = _apply_toml(PromotionConfig(), data.get("promotion", {}))
+    reranker = _apply_toml(RerankerConfig(), data.get("reranker", {}))
+    signal = _apply_toml(SignalConfig(), data.get("signal", {}))
+    query_parser_cfg = _apply_toml(QueryParserConfig(), data.get("query_parser", {}))
+    orchestrator = _apply_toml(OrchestratorConfig(), data.get("orchestrator", {}))
+    bridge_matching = _apply_toml(BridgeMatchingConfig(), data.get("bridge_matching", {}))
+    maintenance = _apply_toml(MaintenanceConfig(), data.get("maintenance", {}))
 
-    ingest_data = data.get("ingest", {})
+    # --- ingest: env-var override for auto_trigger_pipeline ---
     auto_trigger_override = _env_bool("MNEMOS_AUTO_TRIGGER_PIPELINE")
-    ingest = IngestConfig(
-        chunk_tokens=int(ingest_data.get("chunk_tokens", 400)),
-        chunk_overlap_tokens=int(ingest_data.get("chunk_overlap_tokens", 50)),
-        default_archive_type=str(ingest_data.get("default_archive_type", "session")),
-        explicit_markers_only=bool(ingest_data.get("explicit_markers_only", False)),
-        auto_trigger_pipeline=auto_trigger_override
-        if auto_trigger_override is not None
-        else bool(ingest_data.get("auto_trigger_pipeline", True)),
-        lazy_pdf_ingest=bool(ingest_data.get("lazy_pdf_ingest", True)),
-    )
+    ingest = _apply_toml(IngestConfig(), data.get("ingest", {}))
+    if auto_trigger_override is not None:
+        ingest = _dc.replace(ingest, auto_trigger_pipeline=auto_trigger_override)
 
-    embeddings_data = data.get("embeddings", {})
-    embeddings = EmbeddingsConfig(
-        enabled=bool(embeddings_data.get("enabled", True)),
-        provider=str(embeddings_data.get("provider", "hash")),
-        model=str(embeddings_data.get("model", "hash-256-v1")),
-        dimensions=int(embeddings_data.get("dimensions", 256)),
-        base_url=str(embeddings_data.get("base_url", "")),
-        api_key_env=str(embeddings_data.get("api_key_env", "")),
-        timeout_seconds=int(embeddings_data.get("timeout_seconds", 60)),
-        reembed_on_summary_change_only=bool(embeddings_data.get("reembed_on_summary_change_only", True)),
-    )
+    # --- embeddings: some fields default to "" so need explicit string coercion ---
+    embeddings = _apply_toml(EmbeddingsConfig(), data.get("embeddings", {}))
 
-    graph_data = data.get("graph", {})
-    graph = GraphConfig(
-        enabled=bool(graph_data.get("enabled", True)),
-        focal_limit=int(graph_data.get("focal_limit", 3)),
-        expand_limit=int(graph_data.get("expand_limit", 8)),
-        graph_weight=float(graph_data.get("graph_weight", 0.20)),
-    )
-
-    trust_data = data.get("trust", {})
-    trust = TrustConfig(
-        min_training_samples=int(trust_data.get("min_training_samples", 8)),
-        current_query_stale_penalty=float(trust_data.get("current_query_stale_penalty", 0.30)),
-        current_query_contested_penalty=float(trust_data.get("current_query_contested_penalty", 0.65)),
-        historical_query_relief=float(trust_data.get("historical_query_relief", 0.20)),
-        section_limit=int(trust_data.get("section_limit", 5)),
-    )
-
+    # --- extraction: complex multi-source fallback logic kept explicit ---
     extraction_data = data.get("extraction", {})
     models_data = data.get("models", {})
     llm_data = models_data.get("llm", {}) if isinstance(models_data.get("llm", {}), dict) else {}
     vlm_data = models_data.get("vlm", {}) if isinstance(models_data.get("vlm", {}), dict) else {}
-    default_ollama_base_url = str(extraction_data.get("ollama_base_url", "http://127.0.0.1:11434"))
+    _ed = ExtractionConfig()
+    default_ollama_base_url = str(extraction_data.get("ollama_base_url", _ed.ollama_base_url))
     extraction = ExtractionConfig(
-        vlm_provider=str(vlm_data.get("provider", extraction_data.get("vlm_provider", "fixture"))),
-        vlm_model=str(vlm_data.get("model", extraction_data.get("vlm_model", "llama3.2-vision:latest"))),
-        llm_provider=str(llm_data.get("provider", extraction_data.get("llm_provider", "fixture"))),
-        llm_model=str(llm_data.get("model", extraction_data.get("llm_model", "gemma4:e4b"))),
+        vlm_provider=str(vlm_data.get("provider", extraction_data.get("vlm_provider", _ed.vlm_provider))),
+        vlm_model=str(vlm_data.get("model", extraction_data.get("vlm_model", _ed.vlm_model))),
+        llm_provider=str(llm_data.get("provider", extraction_data.get("llm_provider", _ed.llm_provider))),
+        llm_model=str(llm_data.get("model", extraction_data.get("llm_model", _ed.llm_model))),
         ollama_base_url=default_ollama_base_url,
         llm_base_url=str(llm_data.get("base_url", extraction_data.get("llm_base_url", default_ollama_base_url))),
-        llm_api_key_env=str(llm_data.get("api_key_env", extraction_data.get("llm_api_key_env", ""))),
-        llm_command=str(llm_data.get("command", extraction_data.get("llm_command", ""))),
+        llm_api_key_env=str(llm_data.get("api_key_env", extraction_data.get("llm_api_key_env", _ed.llm_api_key_env))),
+        llm_command=str(llm_data.get("command", extraction_data.get("llm_command", _ed.llm_command))),
         llm_timeout_seconds=_parse_timeout(llm_data.get("timeout_seconds", extraction_data.get("llm_timeout_seconds"))),
         vlm_base_url=str(vlm_data.get("base_url", extraction_data.get("vlm_base_url", default_ollama_base_url))),
-        vlm_api_key_env=str(vlm_data.get("api_key_env", extraction_data.get("vlm_api_key_env", ""))),
+        vlm_api_key_env=str(vlm_data.get("api_key_env", extraction_data.get("vlm_api_key_env", _ed.vlm_api_key_env))),
         vlm_timeout_seconds=_parse_timeout(vlm_data.get("timeout_seconds", extraction_data.get("vlm_timeout_seconds"))),
-        max_queue_batch=int(extraction_data.get("max_queue_batch", 10)),
+        max_queue_batch=int(extraction_data.get("max_queue_batch", _ed.max_queue_batch)),
     )
 
-    promotion_data = data.get("promotion", {})
-    promotion = PromotionConfig(
-        enabled=bool(promotion_data.get("enabled", True)),
-        max_components_per_candidate=int(promotion_data.get("max_components_per_candidate", 50)),
-        max_candidates_per_run=int(promotion_data.get("max_candidates_per_run", 20)),
-        min_confidence_for_direct_write=str(promotion_data.get("min_confidence_for_direct_write", "medium")),
-        auto_review_on_conflict=bool(promotion_data.get("auto_review_on_conflict", True)),
-        retry_after_hours=int(promotion_data.get("retry_after_hours", 24)),
-    )
-
+    # --- daemon: Path construction ---
     daemon_data = data.get("daemon", {})
     daemon_schedules = daemon_data.get("schedules", {})
     daemon = DaemonConfig(
@@ -350,11 +436,12 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
         pid_path=_resolve_path(root, str(daemon_data.get("pid_path", "brain/data/mnemonic.pid"))),
         log_path=_resolve_path(root, str(daemon_data.get("log_path", "brain/logs/daemon.log"))),
         schedules={str(name): str(schedule) for name, schedule in daemon_schedules.items()},
-        max_pending=int(daemon_data.get("max_pending", 200)),
-        max_oldest_age_minutes=int(daemon_data.get("max_oldest_age_minutes", 1440)),
-        stale_episode_threshold_hours=int(daemon_data.get("stale_episode_threshold_hours", 2)),
+        max_pending=int(daemon_data.get("max_pending", DaemonConfig.__dataclass_fields__["max_pending"].default)),
+        max_oldest_age_minutes=int(daemon_data.get("max_oldest_age_minutes", DaemonConfig.__dataclass_fields__["max_oldest_age_minutes"].default)),
+        stale_episode_threshold_hours=int(daemon_data.get("stale_episode_threshold_hours", DaemonConfig.__dataclass_fields__["stale_episode_threshold_hours"].default)),
     )
 
+    # --- per-bridge config: dynamic keys ---
     bridges: dict[str, BridgeConfig] = {}
     bridges_data = data.get("bridges")
     if bridges_data is None:
@@ -364,31 +451,6 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
             session_prefix=str(bridge_data.get("session_prefix", bridge_name)),
             can_promote=bool(bridge_data.get("can_promote", False)),
         )
-
-    maintenance_data = data.get("maintenance", {})
-    maintenance = MaintenanceConfig(
-        lifecycle_verified_threshold=int(maintenance_data.get("lifecycle_verified_threshold", 2)),
-        lifecycle_canonical_threshold=int(maintenance_data.get("lifecycle_canonical_threshold", 4)),
-        lifecycle_drift_days=int(maintenance_data.get("lifecycle_drift_days", 30)),
-        graph_rebuild_enabled=bool(maintenance_data.get("graph_rebuild_enabled", True)),
-        lifecycle_audit_enabled=bool(maintenance_data.get("lifecycle_audit_enabled", True)),
-        importance_scoring_enabled=bool(maintenance_data.get("importance_scoring_enabled", True)),
-        semantic_dedup_threshold=float(maintenance_data.get("semantic_dedup_threshold", 0.92)),
-        semantic_dedup_enabled=bool(maintenance_data.get("semantic_dedup_enabled", True)),
-        embedding_neighbor_enabled=bool(maintenance_data.get("embedding_neighbor_enabled", True)),
-        neighbor_similarity_threshold=float(maintenance_data.get("neighbor_similarity_threshold", 0.78)),
-        neighbor_k=int(maintenance_data.get("neighbor_k", 10)),
-        neighbor_scan_max_age_days=int(maintenance_data.get("neighbor_scan_max_age_days", 7)),
-        cluster_validation_enabled=bool(maintenance_data.get("cluster_validation_enabled", True)),
-        cluster_validation_max_size=int(maintenance_data.get("cluster_validation_max_size", 12)),
-        cluster_validation_min_cluster_size=int(maintenance_data.get("cluster_validation_min_cluster_size", 2)),
-        pattern_discovery_enabled=bool(maintenance_data.get("pattern_discovery_enabled", True)),
-        requeue_enabled=bool(maintenance_data.get("requeue_enabled", True)),
-        requeue_min_age_days=int(maintenance_data.get("requeue_min_age_days", 30)),
-        requeue_context_enabled=bool(maintenance_data.get("requeue_context_enabled", True)),
-        requeue_context_top_k=int(maintenance_data.get("requeue_context_top_k", 5)),
-        requeue_max_per_run=int(maintenance_data.get("requeue_max_per_run", 20)),
-    )
 
     return AppConfig(
         paths=paths,
@@ -400,6 +462,11 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
         extraction=extraction,
         promotion=promotion,
         maintenance=maintenance,
+        reranker=reranker,
+        signal=signal,
+        query_parser=query_parser_cfg,
+        orchestrator=orchestrator,
+        bridge_matching=bridge_matching,
         daemon=daemon,
         bridges=bridges,
         config_path=resolved_config,

@@ -243,7 +243,14 @@ def classify_persona(caller_type: str, query_type: str | None, tokens: set[str])
     return "rag"
 
 
-def classify_query(tokens: list[str], hint: str | None) -> tuple[str | None, float]:
+def classify_query(
+    tokens: list[str],
+    hint: str | None,
+    *,
+    confidence_base: float = 0.45,
+    confidence_primary_bonus: float = 0.20,
+    confidence_secondary_bonus: float = 0.10,
+) -> tuple[str | None, float]:
     if hint and hint in QUERY_KEYWORD_SIGNATURES:
         return hint, 1.0
 
@@ -266,7 +273,7 @@ def classify_query(tokens: list[str], hint: str | None) -> tuple[str | None, flo
     if best_type is None or best_score == 0.0:
         return None, 0.0
 
-    confidence = min(1.0, 0.45 + 0.20 * best_primary_hits + 0.10 * best_secondary_hits)
+    confidence = min(1.0, confidence_base + confidence_primary_bonus * best_primary_hits + confidence_secondary_bonus * best_secondary_hits)
     return best_type, confidence
 
 
@@ -292,6 +299,9 @@ def extract_anchor_terms(
     tokens: list[str],
     connection: sqlite3.Connection | None,
     alias_titles_out: dict[str, str] | None = None,
+    *,
+    max_anchor_terms: int = 5,
+    max_candidate_tokens: int = 5,
 ) -> list[str]:
     if connection is None:
         return []
@@ -306,17 +316,17 @@ def extract_anchor_terms(
         if prefix in NOTE_ID_PREFIXES and token not in seen:
             anchors.append(token)
             seen.add(token)
-            if len(anchors) >= 5:
+            if len(anchors) >= max_anchor_terms:
                 return anchors
 
     eligible = sorted(
         (token for token in tokens if len(token) >= 4 and token not in seen),
         key=len,
         reverse=True,
-    )[:5]
+    )[:max_candidate_tokens]
 
     for token in eligible:
-        if len(anchors) >= 5:
+        if len(anchors) >= max_anchor_terms:
             break
         row = connection.execute(
             """
@@ -337,7 +347,13 @@ def extract_anchor_terms(
     return anchors
 
 
-def expand_terms(tokens: list[str], anchor_terms: list[str], alias_titles: dict[str, str]) -> list[str]:
+def expand_terms(
+    tokens: list[str],
+    anchor_terms: list[str],
+    alias_titles: dict[str, str],
+    *,
+    max_expanded_terms: int = 3,
+) -> list[str]:
     candidates: list[str] = []
     seen: set[str] = set(tokens)
 
@@ -346,8 +362,8 @@ def expand_terms(tokens: list[str], anchor_terms: list[str], alias_titles: dict[
             if synonym not in seen:
                 candidates.append(synonym)
                 seen.add(synonym)
-            if len(candidates) >= 3:
-                return candidates[:3]
+            if len(candidates) >= max_expanded_terms:
+                return candidates[:max_expanded_terms]
 
     for anchor in anchor_terms:
         title = alias_titles.get(anchor)
@@ -359,8 +375,8 @@ def expand_terms(tokens: list[str], anchor_terms: list[str], alias_titles: dict[
             if title_token not in seen:
                 candidates.append(title_token)
                 seen.add(title_token)
-            if len(candidates) >= 3:
-                return candidates[:3]
+            if len(candidates) >= max_expanded_terms:
+                return candidates[:max_expanded_terms]
 
     return candidates[:3]
 
@@ -375,8 +391,23 @@ def parse_query(
 ) -> ParsedQuery:
     hints = hints or QueryHints()
 
+    # Extract query_parser config values (duck-typed for backward compat with test stubs).
+    _qp = getattr(config, "query_parser", None)
+    qp_confidence_base: float = float(getattr(_qp, "confidence_base", 0.45))
+    qp_confidence_primary: float = float(getattr(_qp, "confidence_primary_bonus", 0.20))
+    qp_confidence_secondary: float = float(getattr(_qp, "confidence_secondary_bonus", 0.10))
+    qp_max_anchor: int = int(getattr(_qp, "max_anchor_terms", 5))
+    qp_max_candidate: int = int(getattr(_qp, "max_candidate_tokens", 5))
+    qp_max_expanded: int = int(getattr(_qp, "max_expanded_terms", 3))
+
     tokens = tokenize(raw)
-    query_type, classifier_confidence = classify_query(tokens, hints.query_type_hint)
+    query_type, classifier_confidence = classify_query(
+        tokens,
+        hints.query_type_hint,
+        confidence_base=qp_confidence_base,
+        confidence_primary_bonus=qp_confidence_primary,
+        confidence_secondary_bonus=qp_confidence_secondary,
+    )
     temporality = infer_temporality(tokens, hints.temporality_override)
     caller_type = detect_caller(bridge_id, hints.caller_type_hint)
     persona = classify_persona(caller_type, query_type, set(tokens))
@@ -384,12 +415,19 @@ def parse_query(
 
     alias_titles: dict[str, str] = {}
     try:
-        anchor_terms = extract_anchor_terms(tokens, connection, alias_titles)
+        anchor_terms = extract_anchor_terms(
+            tokens, connection, alias_titles,
+            max_anchor_terms=qp_max_anchor,
+            max_candidate_tokens=qp_max_candidate,
+        )
     except Exception:
         logger.warning("anchor extraction failed; continuing with empty anchors", exc_info=True)
         anchor_terms = []
         alias_titles = {}
-    expanded_terms = expand_terms(tokens, anchor_terms, alias_titles)
+    expanded_terms = expand_terms(
+        tokens, anchor_terms, alias_titles,
+        max_expanded_terms=qp_max_expanded,
+    )
 
     retrieval_config = getattr(config, "retrieval")
     top_k = hints.top_k if hints.top_k is not None else int(getattr(retrieval_config, "top_k"))

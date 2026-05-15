@@ -132,7 +132,7 @@ for each candidate:
     suppress(candidate)   # do not include in RankedHits
 ```
 
-`min_relevance_score` default: **0.25**
+`min_relevance_score` default: **0.35** (raised from 0.25 — 0.25 sits inside the embedding noise floor; 0.35 clears it)
 
 ### Threshold Rationale
 
@@ -193,7 +193,11 @@ distribution after a week of retrieval traffic.
 ## Rules
 
 1. `relevance_score` and `quality_score` are each independently normalized to
-   [0, 1] via their respective weight-sum denominators.
+   [0, 1] via their respective weight-sum denominators. **Exception: archive
+   candidates** (`type="archive_chunk"`) use a rank-based fallback score
+   (`1.0 - ((rank - 1) / top_k)`) and have no wiki metadata signals; their
+   `relevance_score` and `quality_score` fields are meaningless defaults (0.0)
+   and must not be displayed or consumed as if they were the wiki 2D scores.
 2. Exact matches set `relevance_score = 1.0` and bypass composite scoring for
    the ranking column; the 2D triple is still emitted for observability.
 3. `bm25_abs` uses the raw score from `retrieval_hit_features.bm25_score`, not
