@@ -126,7 +126,9 @@ if hits:
             lines.append(f"  {summary[:220]}")
         if channels:
             lines.append(f"  _via {channels}_")
-        if relevance_score is not None and quality_score is not None:
+        if note_type == "archive_chunk":
+            lines.append(f"  score={hit.get('final_score', 0.0):.3f} [rank-based]")
+        elif relevance_score is not None and quality_score is not None:
             lines.append(f"  relevance={relevance_score:.2f} quality={quality_score:.2f}")
         lines.append("")
     if suppression_rate > 0.50 and suppressed_by_gate > 0:

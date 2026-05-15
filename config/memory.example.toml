@@ -123,3 +123,108 @@ can_promote = false
 [bridges.automation]
 session_prefix = "automation"
 can_promote = true
+
+# ---------------------------------------------------------------------------
+# Reranker — historical bonus values, diversity cap, archive hit floor
+# ---------------------------------------------------------------------------
+[reranker]
+historical_bonus_max = 0.20          # normalization ceiling for quality_weight_sum_max
+historical_bonus_stale = 0.20        # bonus for stale notes on historical queries
+historical_bonus_suspect = 0.12
+historical_bonus_aging = 0.06
+min_type_prior_weight = 0.25         # floor applied when classifier confidence == 1.0
+min_freshness_weight_what_changed = 0.25  # floor applied for what_changed queries
+chain_diversity_min = 2              # min results allowed per chain before cap kicks in
+min_archive_hits = 3                 # minimum archive hits emitted alongside wiki hits
+
+# ---------------------------------------------------------------------------
+# Signal — freshness scoring and quality classification thresholds
+# ---------------------------------------------------------------------------
+[signal]
+default_freshness_score = 0.20       # used when note has no date
+freshness_max_age_days = 365         # days at which freshness score reaches 0.0
+min_summary_word_count = 8           # min words for "useful" quality classification
+min_excerpt_word_count = 20          # min words for excerpt to count as signal
+excerpt_char_limit = 240             # chars used when body is the excerpt fallback
+passive_used_weight = 0.30           # confidence weight for passive_used_likely label
+passive_useful_weight = 0.60         # confidence weight for passive_useful_likely label
+passive_misleading_weight = 0.60     # confidence weight for passive_misleading_likely label
+
+# ---------------------------------------------------------------------------
+# Query parser — confidence formula and term extraction limits
+# ---------------------------------------------------------------------------
+[query_parser]
+confidence_base = 0.45               # baseline classification confidence
+confidence_primary_bonus = 0.20      # added per primary keyword hit
+confidence_secondary_bonus = 0.10    # added per secondary keyword hit
+max_anchor_terms = 5                 # max anchor terms extracted per query
+max_candidate_tokens = 5             # max eligible tokens considered for anchor lookup
+max_expanded_terms = 3               # max synonym/title-expansion terms added
+
+# ---------------------------------------------------------------------------
+# Orchestrator — token budgets and retry limits
+# ---------------------------------------------------------------------------
+[orchestrator]
+default_token_budget = 3000          # default context token budget for most task kinds
+research_token_budget = 5000         # budget for architecture/research/knowledge tasks
+max_focused_retries = 1              # max focused-requery retries per retrieval cycle
+
+# ---------------------------------------------------------------------------
+# Bridge matching — candidate identity score thresholds
+# ---------------------------------------------------------------------------
+[bridge_matching]
+exact_title_score = 1.00             # case-insensitive exact title match
+id_slug_score = 0.99                 # note ID ends with slug
+slug_score = 0.98                    # slug equals note title slug
+alias_exact_score = 0.96             # alias matches title exactly
+min_candidate_score = 0.55           # minimum score to include in candidate list
+candidate_limit = 5                  # max candidates returned per find_existing_candidates call
+
+# ---------------------------------------------------------------------------
+# Maintenance — full set including passive feedback and importance scoring
+# ---------------------------------------------------------------------------
+[maintenance]
+lifecycle_verified_threshold = 2
+lifecycle_canonical_threshold = 4
+lifecycle_drift_days = 30
+graph_rebuild_enabled = true
+lifecycle_audit_enabled = true
+importance_scoring_enabled = true
+semantic_dedup_threshold = 0.92
+semantic_dedup_enabled = true
+embedding_neighbor_enabled = true
+neighbor_similarity_threshold = 0.78
+neighbor_k = 10
+neighbor_scan_max_age_days = 7
+cluster_validation_enabled = true
+cluster_validation_max_size = 12
+cluster_validation_min_cluster_size = 2
+pattern_discovery_enabled = true
+requeue_enabled = true
+requeue_min_age_days = 30
+requeue_context_enabled = true
+requeue_context_top_k = 5
+requeue_max_per_run = 20
+passive_feedback_enabled = true
+passive_feedback_inline_only = false
+passive_inline_boost_threshold = 0.85
+passive_weak_confidence_default = 0.20
+passive_misleading_min_confidence = 0.50
+passive_max_promoted_per_session = 10
+passive_retrieval_hits_limit = 500
+pattern_role_similarity_threshold = 0.85
+pattern_ch3_candidate_score = 0.70
+pattern_ch2_max_pairs = 20
+importance_out_degree_weight = 0.40
+importance_sigmoid_scale = 5.0
+importance_sigmoid_amp = 2.0
+importance_connectivity_weight = 0.35
+importance_trust_weight = 0.25
+importance_freshness_weight = 0.25
+importance_lifecycle_weight = 0.15
+lifecycle_weight_canonical = 1.00
+lifecycle_weight_verified = 0.70
+lifecycle_weight_draft = 0.40
+lifecycle_weight_review = 0.30
+lifecycle_weight_contested = 0.20
+lifecycle_weight_archived = 0.05

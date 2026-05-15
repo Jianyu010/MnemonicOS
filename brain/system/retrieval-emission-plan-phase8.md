@@ -89,6 +89,7 @@ each hit with a one-word confidence label:
 ```text
 1. [HIGH] concept/hook-firing... score=0.62 relevance=0.81 quality=0.76
 2. [MEDIUM] procedure/promotion-gate... score=0.34 relevance=0.45 quality=0.76
+3. [HIGH] session/2026-05-04-... [archive_chunk] channels=archive score=1.000 [rank-based]
 ```
 
 This label is **not** emitted in the agent hook Markdown block (adds token cost
@@ -133,8 +134,11 @@ agents reading raw text.
 
 ## Rules
 
-1. `relevance_score` and `quality_score` are always emitted for every hit, even
-   if the consumer does not use them. They are additive fields.
+1. `relevance_score` and `quality_score` are emitted for every **wiki** hit.
+   **Archive hits** (`type="archive_chunk"`) are scored via a separate rank-based
+   formula (`1.0 - ((rank - 1) / top_k)`) and carry no meaningful 2D sub-scores;
+   `relevance_score` and `quality_score` remain at their default `0.0` and must
+   not be displayed. Display shows `score=X.XXX [rank-based]` instead.
 2. `final_score` continues to equal `composite_score`. No renaming — downstream
    consumers reading `final_score` are unaffected.
 3. Confidence band labels appear in CLI text output only, not in agent hook

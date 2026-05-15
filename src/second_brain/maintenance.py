@@ -12,7 +12,7 @@ from typing import Any
 
 import yaml
 
-from .config import AppConfig
+from .config import AppConfig, MaintenanceConfig
 from .embedding_providers import build_embedding_provider
 from .graph import rebuild_note_graph
 from .parser import NoteParseError, parse_note, split_frontmatter
@@ -205,6 +205,8 @@ def audit_lifecycle_states(
     )
 
 
+# _LIFECYCLE_WEIGHTS is now derived from config.maintenance lifecycle_weight_* fields
+# inside compute_importance_scores(). Kept here only for any legacy callers.
 _LIFECYCLE_WEIGHTS: dict[str, float] = {
     "canonical": 1.0,
     "verified": 0.70,
@@ -226,7 +228,10 @@ class ImportanceSignal:
     lifecycle_weight: float
 
 
-def compute_importance_scores(connection: sqlite3.Connection) -> dict[str, ImportanceSignal]:
+def compute_importance_scores(
+    connection: sqlite3.Connection,
+    config: AppConfig | None = None,
+) -> dict[str, ImportanceSignal]:
     from .trust import load_note_trust, load_note_freshness
 
     degree_rows = connection.execute(
@@ -248,6 +253,17 @@ def compute_importance_scores(connection: sqlite3.Connection) -> dict[str, Impor
     trust_map = load_note_trust(connection, note_ids)
     freshness_map = load_note_freshness(connection, note_ids)
 
+    # Pull scoring constants from config (or use defaults matching MaintenanceConfig).
+    _mc = config.maintenance if config is not None else MaintenanceConfig()
+    _lifecycle_weights: dict[str, float] = {
+        "canonical": _mc.lifecycle_weight_canonical,
+        "verified": _mc.lifecycle_weight_verified,
+        "draft": _mc.lifecycle_weight_draft,
+        "review": _mc.lifecycle_weight_review,
+        "contested": _mc.lifecycle_weight_contested,
+        "archived": _mc.lifecycle_weight_archived,
+    }
+
     signals: dict[str, ImportanceSignal] = {}
     with connection:
         for row in degree_rows:
@@ -256,8 +272,8 @@ def compute_importance_scores(connection: sqlite3.Connection) -> dict[str, Impor
             out_degree = int(row["out_degree"])
             lifecycle_state = str(row["lifecycle_state"])
 
-            raw_conn = in_degree + 0.4 * out_degree
-            connectivity_score = 2.0 / (1.0 + math.exp(-raw_conn / 5.0)) - 1.0
+            raw_conn = in_degree + _mc.importance_out_degree_weight * out_degree
+            connectivity_score = _mc.importance_sigmoid_amp / (1.0 + math.exp(-raw_conn / _mc.importance_sigmoid_scale)) - 1.0
 
             trust = trust_map.get(note_id)
             trust_score = trust.usefulness_score if trust else 0.5
@@ -265,13 +281,13 @@ def compute_importance_scores(connection: sqlite3.Connection) -> dict[str, Impor
             freshness = freshness_map.get(note_id)
             freshness_score = 1.0 - freshness.staleness_score if freshness else 0.5
 
-            lifecycle_weight = _LIFECYCLE_WEIGHTS.get(lifecycle_state, 0.40)
+            lifecycle_weight = _lifecycle_weights.get(lifecycle_state, _mc.lifecycle_weight_draft)
 
             importance_score = (
-                0.35 * connectivity_score
-                + 0.25 * trust_score
-                + 0.25 * freshness_score
-                + 0.15 * lifecycle_weight
+                _mc.importance_connectivity_weight * connectivity_score
+                + _mc.importance_trust_weight * trust_score
+                + _mc.importance_freshness_weight * freshness_score
+                + _mc.importance_lifecycle_weight * lifecycle_weight
             )
 
             connection.execute(
@@ -1065,7 +1081,7 @@ def run_pattern_discovery(
             if types[a] != types[b]:
                 continue
             sim = _cosine(vecs[a], vecs[b])
-            if sim >= 0.85:
+            if sim >= config.maintenance.pattern_role_similarity_threshold:
                 ch2_pairs.append((a, b, sim))
 
     if ch2_pairs:
@@ -1101,7 +1117,7 @@ def run_pattern_discovery(
                 role_signature={},
                 failure_token=fail_tok,
                 resolution_token=res_tok,
-                candidate_score=0.7,
+                candidate_score=config.maintenance.pattern_ch3_candidate_score,
             ))
 
     result.channel_3_candidates = len(ch3_candidates)
@@ -1126,13 +1142,14 @@ def run_pattern_discovery(
                         INSERT INTO archetypes
                             (archetype_id, label, layer_a_description, layer_b_role_schema,
                              occurrence_count, score, relation_type, source_channel, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, 1, 0.7, 'evidence_for', 3, ?, ?)
+                        VALUES (?, ?, ?, ?, 1, ?, 'evidence_for', 3, ?, ?)
                         """,
                         (
                             archetype_id,
                             f"{fail_tok.title()} / {res_tok.title()} Symmetry",
                             f"Failure-resolution pair: incident has '{fail_tok}', procedure has '{res_tok}'",
                             _json.dumps({"incident": "failure_mode", "procedure": "sync_mechanism"}),
+                            config.maintenance.pattern_ch3_candidate_score,
                             now, now,
                         ),
                     )
@@ -1151,9 +1168,9 @@ def run_pattern_discovery(
                     source_note_id=inc_id,
                     target_id=proc_id,
                     relation_type="evidence_for",
-                    weight=0.7,
+                    weight=config.maintenance.pattern_ch3_candidate_score,
                     archetype_id=archetype_id,
-                    archetype_score=0.7,
+                    archetype_score=config.maintenance.pattern_ch3_candidate_score,
                     instance_confidence=0.7,
                     updated_at=now,
                 )
@@ -1161,7 +1178,7 @@ def run_pattern_discovery(
 
     # --- LLM validation of channel 2 candidates ---
     if llm_fn is not None and ch2_pairs:
-        top = ch2_pairs[:20]
+        top = ch2_pairs[:config.maintenance.pattern_ch2_max_pairs]
         prompt = (
             "Review these note pairs for abstract structural role similarity "
             "(same role in different domains). "
@@ -1385,6 +1402,8 @@ def run_raw_revisitation(
 # Passive Feedback Derivation
 # ---------------------------------------------------------------------------
 
+# Moved to config.maintenance.passive_inline_boost_threshold (default 0.85).
+# Kept here for backward compatibility with any external callers.
 PASSIVE_INLINE_CONFIDENCE_BOOST_THRESHOLD = 0.85
 
 
@@ -1510,7 +1529,7 @@ def _derive_inline_path(
 
             # Boost confidence when this promotion also corroborated the referenced note.
             if decision in ("confirm", "update") and target_note_id == note_id:
-                confidence = max(confidence, PASSIVE_INLINE_CONFIDENCE_BOOST_THRESHOLD)
+                confidence = max(confidence, config.maintenance.passive_inline_boost_threshold)
 
             if not dry_run:
                 wrote = _write_passive_feedback(
@@ -1553,14 +1572,14 @@ def _derive_post_hoc_path(
 
     try:
         hit_rows = conn.execute(
-            """
+            f"""
             SELECT rh.id AS hit_id, rh.note_id, rh.final_score,
                    rq.archive_id AS session_archive_id
             FROM retrieval_hits rh
             LEFT JOIN retrieval_queries rq ON rq.id = rh.query_id
             WHERE rh.note_id IS NOT NULL
             ORDER BY rh.id DESC
-            LIMIT 500
+            LIMIT {config.maintenance.passive_retrieval_hits_limit}
             """,
         ).fetchall()
     except sqlite3.OperationalError:
@@ -1584,13 +1603,13 @@ def _derive_post_hoc_path(
         if session_archive_id:
             try:
                 promo_rows = conn.execute(
-                    """
+                    f"""
                     SELECT n.summary, n.type, pd.decision
                     FROM promotion_decisions pd
                     JOIN notes n ON n.id = pd.target_note_id
                     WHERE pd.archive_id = ?
                       AND pd.promotion_state = 'promoted'
-                    LIMIT 10
+                    LIMIT {config.maintenance.passive_max_promoted_per_session}
                     """,
                     (session_archive_id,),
                 ).fetchall()
@@ -1605,7 +1624,7 @@ def _derive_post_hoc_path(
         if not llm_fn or not promoted_summaries:
             # No LLM available or no session evidence: emit weak passive_used_likely
             # based on retrieval exposure alone, with low confidence.
-            confidence = 0.2
+            confidence = config.maintenance.passive_weak_confidence_default
             if not dry_run:
                 wrote = _write_passive_feedback(
                     conn,
@@ -1716,7 +1735,7 @@ def derive_passive_feedback(
                 SELECT 1 FROM note_passive_feedback
                 WHERE note_id IN ({placeholders})
                   AND feedback_state = 'passive_misleading_likely'
-                  AND confidence >= 0.5
+                  AND confidence >= {config.maintenance.passive_misleading_min_confidence}
                 LIMIT 1
                 """,
                 list(all_affected),

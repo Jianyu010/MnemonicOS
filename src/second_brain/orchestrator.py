@@ -179,6 +179,8 @@ _RESEARCH_KW = frozenset((
 
 _CURRENT_KINDS = frozenset(("coding", "debugging", "testing", "implementation"))
 
+# Kept as fallback for call sites that don't have config loaded.
+# Canonical defaults live in OrchestratorConfig in config.py.
 _DEFAULT_TOKEN_BUDGET = 3000
 _RESEARCH_TOKEN_BUDGET = 5000
 
@@ -205,12 +207,18 @@ def _infer_temporality(task_kind: str) -> str:
     return "current" if task_kind in _CURRENT_KINDS else "mixed"
 
 
-def _infer_token_budget(task_kind: str, explicit: int | None) -> int:
+def _infer_token_budget(
+    task_kind: str,
+    explicit: int | None,
+    *,
+    default_budget: int = _DEFAULT_TOKEN_BUDGET,
+    research_budget: int = _RESEARCH_TOKEN_BUDGET,
+) -> int:
     if explicit is not None and explicit > 0:
         return explicit
     if task_kind in ("architecture", "research", "knowledge"):
-        return _RESEARCH_TOKEN_BUDGET
-    return _DEFAULT_TOKEN_BUDGET
+        return research_budget
+    return default_budget
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +262,19 @@ def begin_task(config: AppConfig, req: OrchestratorTaskRequest) -> OrchestratorC
     """
     task_kind = req.task_kind or _infer_task_kind(req.task_text)
     temporality = req.temporality or _infer_temporality(task_kind)
-    token_budget = _infer_token_budget(task_kind, req.token_budget)
+    token_budget = _infer_token_budget(
+        task_kind,
+        req.token_budget,
+        default_budget=config.orchestrator.default_token_budget,
+        research_budget=config.orchestrator.research_token_budget,
+    )
+    # Use config default for max_focused_retries when the request carries the
+    # module-level sentinel (DEFAULT_MAX_FOCUSED_RETRIES) unchanged.
+    max_focused_retries = (
+        config.orchestrator.max_focused_retries
+        if req.max_focused_retries == DEFAULT_MAX_FOCUSED_RETRIES
+        else req.max_focused_retries
+    )
 
     runtime_req = ResolveTaskContextRequest(
         bridge_id=req.bridge_id,
@@ -277,7 +297,7 @@ def begin_task(config: AppConfig, req: OrchestratorTaskRequest) -> OrchestratorC
         task_kind=task_kind,
         temporality=temporality,
         auto_retry_allowed=req.auto_retry,
-        max_focused_retries=req.max_focused_retries,
+        max_focused_retries=max_focused_retries,
         retry_attempt=0,
         previous_queries=[req.task_text],
     )

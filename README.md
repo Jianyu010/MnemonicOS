@@ -108,24 +108,33 @@ bounded packet for the caller.
 
 ```mermaid
 flowchart LR
-    A["Task or query"] --> B["Stage 1<br/>query parsing"]
-    B --> C["Stage 2<br/>exact, BM25, semantic, graph, archive recall"]
-    C --> D["Stage 3<br/>trust, freshness, importance signals"]
-    D --> E["Stage 4<br/>reranking"]
-    E --> F["Stage 5<br/>packet assembly"]
-    F --> G["Stage 6<br/>assessment"]
-    G --> H["Stage 7<br/>JSON or Markdown emission"]
+    A["Task or query"] --> B["Query parsing<br/>intent · type hint · temporality<br/>anchor terms · expansion"]
+
+    B --> C1["Exact match"]
+    B --> C2["BM25 keyword"]
+    B --> C3["Semantic embedding"]
+    B --> C4["Graph traversal"]
+    B --> C5["Archive recall<br/>(if allowed)"]
+
+    C1 --> D["Signal scoring<br/>trust · freshness · importance<br/>type prior · historical bonus"]
+    C2 --> D
+    C3 --> D
+    C4 --> D
+    C5 --> D
+
+    D --> E["Reranking<br/>multiplicative scoring · relevance gate · dynamic top-k"]
+    E --> F["Packet assembly<br/>primary hits + related context + archive fallback"]
+    F --> G["Assessment<br/>reuse / reuse_with_verification / research_fresh"]
+    G --> H["Emission<br/>JSON or Markdown bounded packet<br/>+ warnings + provenance"]
 ```
 
-The packet includes primary memories, related context, archive fallback when
-allowed, warnings, provenance, and a recommendation:
+Important invariants:
 
-- `reuse`
-- `reuse_with_verification`
-- `research_fresh`
-
-Retrieval is read-only for memory content. It may write telemetry and feedback
-signals, but it does not mutate canonical notes.
+- Retrieval is read-only for memory content. It may write telemetry and feedback
+  signals, but it does not mutate canonical notes.
+- Recall strategies run across all channels; scores are merged before reranking.
+- Archive recall is gated and only surfaces when wiki recall is insufficient.
+- The recommendation in the emitted packet is binding for the caller protocol.
 
 ## Install
 

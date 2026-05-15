@@ -33,23 +33,35 @@ def type_prior_score(query_type: str | None, note_type: str) -> float:
     return TYPE_PRIORS.get(query_type, {}).get(note_type, 0.0)
 
 
-def date_freshness_score(candidate: RecallCandidate) -> float:
+def date_freshness_score(
+    candidate: RecallCandidate,
+    *,
+    default_score: float = 0.20,
+    max_age_days: int = 365,
+) -> float:
     raw_date = candidate.last_verified_at or candidate.updated_at or candidate.created_at
     if not raw_date:
-        return 0.2
+        return default_score
     try:
         year, month, day = (int(part) for part in raw_date.split("-")[:3])
         delta = (date.today() - date(year, month, day)).days
     except Exception:
-        return 0.2
-    return max(0.0, 1.0 - min(delta, 365) / 365.0)
+        return default_score
+    return max(0.0, 1.0 - min(delta, max_age_days) / max_age_days)
 
 
 def _text_words(text: str) -> list[str]:
     return [word for word in text.replace("|", " ").split() if word.strip()]
 
 
-def classify_summary_quality(*, title: str, summary: str, excerpt: str = "") -> tuple[str, list[str], bool]:
+def classify_summary_quality(
+    *,
+    title: str,
+    summary: str,
+    excerpt: str = "",
+    min_summary_words: int = 8,
+    min_excerpt_words: int = 20,
+) -> tuple[str, list[str], bool]:
     stripped_title = title.strip()
     stripped_summary = summary.strip()
     stripped_excerpt = excerpt.strip()
@@ -74,10 +86,10 @@ def classify_summary_quality(*, title: str, summary: str, excerpt: str = "") -> 
         return "title_only", reasons, False
 
     summary_words = _text_words(stripped_summary)
-    if len(summary_words) >= 8 or any(marker in stripped_summary for marker in CONTENT_MARKERS):
+    if len(summary_words) >= min_summary_words or any(marker in stripped_summary for marker in CONTENT_MARKERS):
         return "useful", reasons, True
 
-    if _excerpt_has_signal(stripped_excerpt):
+    if _excerpt_has_signal(stripped_excerpt, min_excerpt_words=min_excerpt_words):
         reasons.append("weak_actionability")
         return "weak", reasons, True
 
@@ -85,10 +97,10 @@ def classify_summary_quality(*, title: str, summary: str, excerpt: str = "") -> 
     return "weak", reasons, False
 
 
-def _excerpt_has_signal(excerpt: str) -> bool:
+def _excerpt_has_signal(excerpt: str, *, min_excerpt_words: int = 20) -> bool:
     if not excerpt:
         return False
-    if len(_text_words(excerpt)) >= 20:
+    if len(_text_words(excerpt)) >= min_excerpt_words:
         return True
     return any(marker in excerpt for marker in CONTENT_MARKERS)
 
@@ -148,8 +160,8 @@ def _passive_feedback_signals(connection: sqlite3.Connection, note_ids: list[str
     return selected
 
 
-def _candidate_excerpt(candidate: RecallCandidate) -> str:
-    return candidate.summary or candidate.body[:240]
+def _candidate_excerpt(candidate: RecallCandidate, *, char_limit: int = 240) -> str:
+    return candidate.summary or candidate.body[:char_limit]
 
 
 def _archive_excerpt(candidate: ArchiveCandidate) -> str:
@@ -170,6 +182,7 @@ def integrate_signals(
     importance_scores = _importance_scores(connection, note_ids)
     passive_feedback = _passive_feedback_signals(connection, note_ids)
 
+    sig_cfg = config.signal
     enriched_wiki: list[SignalEnrichedCandidate] = []
     for candidate in candidate_pool.wiki_candidates:
         trust_signal = trust_signals.get(candidate.id)
@@ -177,7 +190,11 @@ def integrate_signals(
         passive_feedback_state, passive_feedback_confidence = passive_feedback.get(candidate.id, ("none", 0.0))
 
         trust_score = trust_signal.usefulness_score if trust_signal is not None else 0.0
-        freshness_score = date_freshness_score(candidate)
+        freshness_score = date_freshness_score(
+            candidate,
+            default_score=sig_cfg.default_freshness_score,
+            max_age_days=sig_cfg.freshness_max_age_days,
+        )
         freshness_state = "fresh"
         if freshness_signal is not None:
             freshness_state = freshness_signal.freshness_state
@@ -186,7 +203,9 @@ def integrate_signals(
         summary_quality, quality_reasons, quality_pass = classify_summary_quality(
             title=candidate.title,
             summary=candidate.summary,
-            excerpt=_candidate_excerpt(candidate),
+            excerpt=_candidate_excerpt(candidate, char_limit=sig_cfg.excerpt_char_limit),
+            min_summary_words=sig_cfg.min_summary_word_count,
+            min_excerpt_words=sig_cfg.min_excerpt_word_count,
         )
         if freshness_state == "fresh" and not quality_pass:
             quality_reasons = [*quality_reasons, "fresh_but_empty"]

@@ -6,7 +6,23 @@ import json
 import math
 import sqlite3
 
-from .config import AppConfig
+from .config import AppConfig, GraphConfig, RetrievalConfig
+
+# Defaults mirror dataclass field defaults — single source of truth.
+# This dict is the rerank-model fallback when training data is absent.
+_RC = RetrievalConfig()
+_GC = GraphConfig()
+DEFAULT_RERANK_WEIGHTS = {
+    "bm25_weight": _RC.bm25_weight,
+    "semantic_weight": _RC.semantic_weight,
+    "graph_weight": _GC.graph_weight,
+    "type_prior_weight": _RC.type_prior_weight,
+    "freshness_weight": _RC.freshness_weight,
+    "trust_weight": _RC.trust_weight,
+    "importance_weight": _RC.importance_weight,
+    "quality_weight": _RC.quality_weight,
+}
+del _RC, _GC
 
 
 CURRENT_QUERY_HINTS = {
@@ -82,23 +98,24 @@ def query_temporality(query: str) -> str:
 
 
 def freshness_multiplier(config: AppConfig, *, state: str, temporality: str) -> float:
+    t = config.trust
     if temporality == "historical":
         if state == "contested":
-            return 0.75
+            return t.historical_contested_multiplier
         if state == "stale":
-            return max(0.6, 1.0 - config.trust.historical_query_relief)
+            return max(t.historical_stale_min, 1.0 - t.historical_query_relief)
         if state == "suspect":
-            return max(0.75, 1.0 - config.trust.historical_query_relief / 2.0)
+            return max(t.historical_suspect_multiplier, 1.0 - t.historical_query_relief / 2.0)
         return 1.0
 
     if state == "contested":
-        return max(0.05, 1.0 - config.trust.current_query_contested_penalty)
+        return max(t.current_contested_min, 1.0 - t.current_query_contested_penalty)
     if state == "stale":
-        return max(0.10, 1.0 - config.trust.current_query_stale_penalty)
+        return max(t.current_stale_min, 1.0 - t.current_query_stale_penalty)
     if state == "suspect":
-        return 0.70
+        return t.current_suspect_multiplier
     if state == "aging":
-        return 0.88
+        return t.current_aging_multiplier
     return 1.0
 
 

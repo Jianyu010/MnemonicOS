@@ -384,7 +384,11 @@ def _retrieve(config_path: str, query: str, top_k: int | None, query_type_hint: 
             band = "MEDIUM"
         else:
             band = "LOW"
-        print(f"{index}. [{band}] {hit.id} [{hit.type}] channels={channels} score={hit.final_score:.3f} relevance={hit.relevance_score:.2f} quality={hit.quality_score:.2f}")
+        if hit.type == "archive_chunk":
+            score_suffix = f"score={hit.final_score:.3f} [rank-based]"
+        else:
+            score_suffix = f"score={hit.final_score:.3f} relevance={hit.relevance_score:.2f} quality={hit.quality_score:.2f}"
+        print(f"{index}. [{band}] {hit.id} [{hit.type}] channels={channels} {score_suffix}")
         print(f"   title: {hit.title}")
         print(f"   path: {hit.body_path}")
         if hit.summary:
