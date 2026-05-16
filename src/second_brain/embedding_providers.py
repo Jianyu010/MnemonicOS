@@ -16,6 +16,7 @@ class ProviderHealth:
     ok: bool
     status: str
     detail: str = ""
+    multilingual_status: str = "unknown"
 
 
 class EmbeddingProvider(Protocol):
@@ -41,7 +42,12 @@ class HashEmbeddingProvider:
         return [encode_text(text, dimensions=self.dimensions) for text in texts]
 
     def healthcheck(self) -> ProviderHealth:
-        return ProviderHealth(ok=True, status="available", detail="zero-dependency hash encoder")
+        return ProviderHealth(
+            ok=True,
+            status="available",
+            detail="zero-dependency hash encoder; degraded for Chinese semantic retrieval",
+            multilingual_status="degraded_hash",
+        )
 
 
 class OllamaEmbeddingProvider:
@@ -80,7 +86,7 @@ class OllamaEmbeddingProvider:
             self.embed_texts(["healthcheck"])
         except Exception as exc:
             return ProviderHealth(ok=False, status="provider_unavailable", detail=str(exc))
-        return ProviderHealth(ok=True, status="available")
+        return ProviderHealth(ok=True, status="available", multilingual_status="configured_external")
 
 
 class OpenAICompatibleEmbeddingProvider:
@@ -128,7 +134,7 @@ class OpenAICompatibleEmbeddingProvider:
             self.embed_texts(["healthcheck"])
         except Exception as exc:
             return ProviderHealth(ok=False, status="provider_unavailable", detail=str(exc))
-        return ProviderHealth(ok=True, status="available")
+        return ProviderHealth(ok=True, status="available", multilingual_status="configured_external")
 
 
 def build_embedding_provider(config: AppConfig) -> EmbeddingProvider:
@@ -161,7 +167,10 @@ def embed_one(config: AppConfig, text: str) -> list[float]:
 
 
 def embedding_model_key(config: AppConfig) -> str:
-    return config.embeddings.model
+    provider = config.embeddings.provider.strip().casefold() or "hash"
+    model = config.embeddings.model.strip()
+    dimensions = int(config.embeddings.dimensions)
+    return f"{provider}:{model}:{dimensions}"
 
 
 def _auth_headers(api_key_env: str) -> dict[str, str]:

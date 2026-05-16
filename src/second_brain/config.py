@@ -87,6 +87,14 @@ class IngestConfig:
 
 
 @dataclass(slots=True)
+class TextProcessingConfig:
+    cjk_enabled: bool = True
+    cjk_ngram_min: int = 1
+    cjk_ngram_max: int = 3
+    latin_min_token_chars: int = 3
+
+
+@dataclass(slots=True)
 class EmbeddingsConfig:
     enabled: bool = True
     provider: str = "hash"
@@ -280,6 +288,7 @@ class AppConfig:
     paths: PathsConfig
     retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
     ingest: IngestConfig = field(default_factory=IngestConfig)
+    text_processing: TextProcessingConfig = field(default_factory=TextProcessingConfig)
     embeddings: EmbeddingsConfig = field(default_factory=EmbeddingsConfig)
     graph: GraphConfig = field(default_factory=GraphConfig)
     trust: TrustConfig = field(default_factory=TrustConfig)
@@ -395,6 +404,7 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
     orchestrator = _apply_toml(OrchestratorConfig(), data.get("orchestrator", {}))
     bridge_matching = _apply_toml(BridgeMatchingConfig(), data.get("bridge_matching", {}))
     maintenance = _apply_toml(MaintenanceConfig(), data.get("maintenance", {}))
+    text_processing = _apply_toml(TextProcessingConfig(), data.get("text_processing", {}))
 
     # --- ingest: env-var override for auto_trigger_pipeline ---
     auto_trigger_override = _env_bool("MNEMOS_AUTO_TRIGGER_PIPELINE")
@@ -456,6 +466,7 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
         paths=paths,
         retrieval=retrieval,
         ingest=ingest,
+        text_processing=text_processing,
         embeddings=embeddings,
         graph=graph,
         trust=trust,

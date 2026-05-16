@@ -37,6 +37,14 @@ class QueryParserPhase1Test(unittest.TestCase):
     def test_tokenize_preserves_unicode_terms(self) -> None:
         self.assertEqual(tokenize("Ünïcödé tëst"), ["ünïcödé", "tëst"])
 
+    def test_tokenize_supports_cjk_terms(self) -> None:
+        self.assertEqual(tokenize("中文 支持 检索"), ["中", "文", "中文", "支", "持", "支持", "检", "索", "检索"])
+        tokens = tokenize("embedding layer 支持中文吗")
+        self.assertIn("embedding", tokens)
+        self.assertIn("layer", tokens)
+        self.assertIn("支持", tokens)
+        self.assertIn("中文", tokens)
+
     def test_parsed_query_is_frozen(self) -> None:
         parsed = ParsedQuery(
             raw="x",

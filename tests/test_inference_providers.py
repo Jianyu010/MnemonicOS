@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from second_brain.config import load_config
-from second_brain.embedding_providers import HashEmbeddingProvider, build_embedding_provider
+from second_brain.embedding_providers import HashEmbeddingProvider, build_embedding_provider, embedding_model_key
 from second_brain.extraction.providers import (
     CLICommandLLMProvider,
     OpenAICompatibleLLMProvider,
@@ -43,6 +43,8 @@ class InferenceProviderConfigTest(unittest.TestCase):
             self.assertIsInstance(provider, HashEmbeddingProvider)
             self.assertEqual(provider.model_name, "hash-256-v1")
             self.assertEqual(len(provider.embed_texts(["hello"])[0]), 256)
+            self.assertEqual(provider.healthcheck().multilingual_status, "degraded_hash")
+            self.assertEqual(embedding_model_key(config), "hash:hash-256-v1:256")
 
     def test_models_llm_overrides_legacy_extraction_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

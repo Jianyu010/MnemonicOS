@@ -6,6 +6,8 @@ import re
 import sqlite3
 from typing import Literal, TypeAlias
 
+from .text_processing import TextProcessingOptions, query_terms
+
 
 logger = logging.getLogger(__name__)
 
@@ -205,18 +207,12 @@ class ParsedQuery:
 
 
 def tokenize(query: str) -> list[str]:
-    tokens: list[str] = []
-    seen: set[str] = set()
-    for raw_token in TOKEN_PATTERN.findall(query):
-        lowered = raw_token.casefold()
-        if len(lowered) < 3:
-            continue
-        if lowered in STOPWORDS:
-            continue
-        if lowered in seen:
-            continue
-        tokens.append(lowered)
-        seen.add(lowered)
+    tokens = query_terms(query, stopwords=STOPWORDS)
+    return tokens if tokens else ["*"]
+
+
+def tokenize_with_options(query: str, *, options: TextProcessingOptions) -> list[str]:
+    tokens = query_terms(query, stopwords=STOPWORDS, options=options)
     return tokens if tokens else ["*"]
 
 
@@ -400,7 +396,15 @@ def parse_query(
     qp_max_candidate: int = int(getattr(_qp, "max_candidate_tokens", 5))
     qp_max_expanded: int = int(getattr(_qp, "max_expanded_terms", 3))
 
-    tokens = tokenize(raw)
+    _tp = getattr(config, "text_processing", None)
+    text_options = TextProcessingOptions(
+        cjk_enabled=bool(getattr(_tp, "cjk_enabled", True)),
+        cjk_ngram_min=int(getattr(_tp, "cjk_ngram_min", 1)),
+        cjk_ngram_max=int(getattr(_tp, "cjk_ngram_max", 3)),
+        latin_min_token_chars=int(getattr(_tp, "latin_min_token_chars", 3)),
+    )
+
+    tokens = tokenize_with_options(raw, options=text_options)
     query_type, classifier_confidence = classify_query(
         tokens,
         hints.query_type_hint,
