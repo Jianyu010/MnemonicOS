@@ -88,6 +88,8 @@ mnemonicos retry-extraction {--queue-id N | --all-errors} [--dry-run]
 
 **Note:** `attempt_count` is preserved on retry. If an item fails again after retry, the extraction worker will automatically tombstone it (prefixes `last_error` with `tombstoned:`). Tombstoned items are excluded from `--all-errors`.
 
+**Tip for large artifacts (textbooks, long PDFs):** If extraction fails with `HTTP Error 500`, the LLM context window was exceeded. The worker sends one text window (~10 000 tokens) per LLM call by default (`extraction.max_windows_per_batch = 1`). Increasing this value on capable hardware reduces round-trips but risks context overflow on smaller models.
+
 ---
 
 ### `promote-status`
@@ -206,6 +208,15 @@ To disable lazy ingest and extract text synchronously at ingest time, set:
 [ingest]
 lazy_pdf_ingest = false
 ```
+
+**Extraction windowing** — the projection layer splits each artifact's text into windows of `~10 000` tokens (paragraphs, with 512-token overlap). The extraction worker sends one window per LLM call by default. Relevant `[extraction]` config keys:
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `max_windows_per_batch` | `1` | Windows sent per LLM call. Keep at `1` for models with ≤ 32 K context. Increase only if your model handles larger inputs. |
+| `max_queue_batch` | `10` | Artifacts processed per daemon tick (every 5 min). |
+
+Large textbooks produce many windows (a 566-page PDF ≈ 17 windows). At `max_windows_per_batch = 1` the daemon processes one window per LLM call, serialised within each artifact, emitting N candidates per window (one candidate per discrete knowledge piece: theorem, definition, proof, procedure). All candidates across windows are merged before promotion.
 
 ---
 
