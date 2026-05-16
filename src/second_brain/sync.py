@@ -13,6 +13,7 @@ from .models import NoteRecord, SyncResult
 from .parser import NoteParseError, parse_note
 from .paths import VaultPaths
 from .semantics import upsert_note_vector
+from .text_processing import TextProcessingOptions, prepare_fts_text
 
 
 def _file_hash(path: Path) -> str:
@@ -77,7 +78,16 @@ def _build_aliases(note: NoteRecord) -> list[str]:
     return ordered
 
 
-def _upsert_note(connection: sqlite3.Connection, note: NoteRecord) -> tuple[list[str], str]:
+def _text_options(config: AppConfig) -> TextProcessingOptions:
+    return TextProcessingOptions(
+        cjk_enabled=config.text_processing.cjk_enabled,
+        cjk_ngram_min=config.text_processing.cjk_ngram_min,
+        cjk_ngram_max=config.text_processing.cjk_ngram_max,
+        latin_min_token_chars=config.text_processing.latin_min_token_chars,
+    )
+
+
+def _upsert_note(connection: sqlite3.Connection, note: NoteRecord, *, text_options: TextProcessingOptions) -> tuple[list[str], str]:
     connection.execute(
         "DELETE FROM notes WHERE body_path = ? AND id != ?",
         (str(note.body_path), note.id),
@@ -166,17 +176,38 @@ def _upsert_note(connection: sqlite3.Connection, note: NoteRecord) -> tuple[list
         )
 
     search_terms = " ".join([*aliases, *note.tags]).strip()
+    search_title = prepare_fts_text([note.title], options=text_options)
+    search_aliases = prepare_fts_text([search_terms], options=text_options)
+    search_summary = prepare_fts_text([note.summary], options=text_options)
+    search_body = prepare_fts_text([note.body], options=text_options)
     connection.execute(
         """
-        INSERT INTO notes_search(note_id, title, aliases_flat, summary, body)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO notes_search(
+            note_id, title, aliases_flat, summary, body,
+            search_title, search_aliases_flat, search_summary, search_body
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(note_id) DO UPDATE SET
             title = excluded.title,
             aliases_flat = excluded.aliases_flat,
             summary = excluded.summary,
-            body = excluded.body
+            body = excluded.body,
+            search_title = excluded.search_title,
+            search_aliases_flat = excluded.search_aliases_flat,
+            search_summary = excluded.search_summary,
+            search_body = excluded.search_body
         """,
-        (note.id, note.title, search_terms, note.summary, note.body),
+        (
+            note.id,
+            note.title,
+            search_terms,
+            note.summary,
+            note.body,
+            search_title,
+            search_aliases,
+            search_summary,
+            search_body,
+        ),
     )
 
     semantic_source = "\n".join([note.title, search_terms, note.summary]).strip()
@@ -243,6 +274,7 @@ def sync_vault(config: AppConfig, mode: str = "incremental", selected_paths: lis
             _sync_system_file(connection, path)
 
         embedding_provider = build_embedding_provider(config) if config.embeddings.enabled else None
+        text_options = _text_options(config)
         for resolved_path, path in note_files.items():
             if selected and resolved_path not in selected:
                 continue
@@ -256,7 +288,7 @@ def sync_vault(config: AppConfig, mode: str = "incremental", selected_paths: lis
             scanned_paths += 1
             try:
                 note = parse_note(path)
-                aliases, semantic_source = _upsert_note(connection, note)
+                aliases, semantic_source = _upsert_note(connection, note, text_options=text_options)
                 if embedding_provider is not None:
                     vector = embedding_provider.embed_texts([semantic_source])[0]
                     upsert_note_vector(

@@ -36,6 +36,12 @@ default_archive_type = "session"
 explicit_markers_only = false
 auto_trigger_pipeline = true
 
+[text_processing]
+cjk_enabled = true
+cjk_ngram_min = 1
+cjk_ngram_max = 3
+latin_min_token_chars = 3
+
 [embeddings]
 enabled = true
 provider = "hash"

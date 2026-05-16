@@ -15,6 +15,7 @@ if str(SRC) not in sys.path:
 from second_brain.config import load_config
 from second_brain.db import connect_db, run_migrations
 from second_brain.embedding_providers import embedding_model_key
+from second_brain.ingest import ingest_session
 from second_brain.query_parser import QueryHints, parse_query
 from second_brain.recall import (
     decide_archive_policy,
@@ -169,6 +170,43 @@ class RecallStageTest(unittest.TestCase):
             self.assertEqual(candidates[0].bm25_rank, 1)
             self.assertIsNotNone(candidates[0].bm25_score)
 
+    def test_bm25_channel_supports_chinese_note_queries_without_body_pollution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            config = self._prepare_workspace(workspace, graph_enabled=False)
+            _write(
+                workspace / "brain/wiki/concepts/chinese-retrieval.md",
+                """
+                ---
+                id: concept/chinese-retrieval
+                type: concept
+                title: 中文检索支持
+                status: active
+                updated_at: 2026-05-16
+                created_at: 2026-05-16
+                source_refs: [session/2026-05-16-cn]
+                confidence: high
+                ---
+
+                系统支持中文检索和嵌入。
+                """,
+            )
+            sync_vault(config, mode="full")
+            parsed = self._parse(config, "系统支持中文吗")
+            connection = connect_db(config.paths.db_path)
+            try:
+                candidates = run_bm25_channel(connection, parsed)
+                stored = connection.execute(
+                    "SELECT body, search_body FROM notes_search WHERE note_id = ?",
+                    ("concept/chinese-retrieval",),
+                ).fetchone()
+            finally:
+                connection.close()
+
+            self.assertEqual(candidates[0].id, "concept/chinese-retrieval")
+            self.assertEqual(str(stored["body"]).strip(), "系统支持中文检索和嵌入。")
+            self.assertIn("中文", str(stored["search_body"]))
+
     def test_semantic_channel_returns_scored_candidates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             workspace = Path(tmp_dir)
@@ -312,6 +350,34 @@ class RecallStageTest(unittest.TestCase):
             self.assertEqual(policy.mode, "explicit_raw_intent")
             self.assertEqual(candidates[0].archive_id, "session/test-raw")
             self.assertIn("archive", candidates[0].channels)
+
+    def test_archive_channel_supports_chinese_ingested_chunks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            config = self._prepare_workspace(workspace, graph_enabled=False)
+            result = ingest_session(
+                config,
+                bridge_id="codex",
+                session_id="cn-archive",
+                content=("系统支持中文检索和嵌入。" * 60),
+            )
+            self.assertGreater(result.chunk_count, 1)
+            parsed = self._parse(config, "检索")
+            policy = decide_archive_policy(parsed, include_archive_fallback=True)
+            connection = connect_db(config.paths.db_path)
+            try:
+                candidates = run_archive_channel(connection, parsed, archive_policy=policy)
+                row = connection.execute(
+                    "SELECT body, search_body FROM archive_chunks WHERE archive_id = ? ORDER BY chunk_index LIMIT 1",
+                    (result.archive_id,),
+                ).fetchone()
+            finally:
+                connection.close()
+
+            self.assertTrue(candidates)
+            self.assertEqual(candidates[0].archive_id, result.archive_id)
+            self.assertNotIn("系 统", str(row["body"]))
+            self.assertIn("检索", str(row["search_body"]))
 
     def test_merge_preserves_multi_channel_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

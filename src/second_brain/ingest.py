@@ -26,6 +26,7 @@ from .models import IngestArtifactResult, IngestSessionResult
 from .review import slugify
 from .semantics import upsert_archive_chunk_vector
 from .summaries import summarize_text
+from .text_processing import TextProcessingOptions, chunk_text_by_units, count_chunk_units, prepare_fts_text
 
 
 MEMORY_BLOCK_PATTERN = re.compile(r"```(?:memory|mnemonic)\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
@@ -248,7 +249,24 @@ def _read_memory_items(content: str, explicit_only: bool) -> list[dict[str, Any]
     return items
 
 
-def _chunk_text(text: str, *, chunk_tokens: int, overlap_tokens: int) -> list[str]:
+def _text_options(config: AppConfig) -> TextProcessingOptions:
+    return TextProcessingOptions(
+        cjk_enabled=config.text_processing.cjk_enabled,
+        cjk_ngram_min=config.text_processing.cjk_ngram_min,
+        cjk_ngram_max=config.text_processing.cjk_ngram_max,
+        latin_min_token_chars=config.text_processing.latin_min_token_chars,
+    )
+
+
+def _chunk_text(
+    text: str,
+    *,
+    chunk_tokens: int,
+    overlap_tokens: int,
+    text_options: TextProcessingOptions | None = None,
+) -> list[str]:
+    if text_options is None or text_options.cjk_enabled:
+        return chunk_text_by_units(text, chunk_units=chunk_tokens, overlap_units=overlap_tokens)
     words = WORD_PATTERN.findall(text)
     if not words:
         return []
@@ -684,10 +702,12 @@ def _archive_session(
     connection = connect_db(config.paths.db_path)
     run_migrations(connection, _migrations_dir(config))
 
+    text_options = _text_options(config)
     chunks = _chunk_text(
         content,
         chunk_tokens=config.ingest.chunk_tokens,
         overlap_tokens=config.ingest.chunk_overlap_tokens,
+        text_options=text_options,
     )
 
     with connection:
@@ -714,10 +734,22 @@ def _archive_session(
             content_hash = sha256(chunk.encode("utf-8")).hexdigest()
             cursor = connection.execute(
                 """
-                INSERT INTO archive_chunks(archive_id, chunk_index, body, summary, token_count, content_hash)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO archive_chunks(
+                    archive_id, chunk_index, body, summary, token_count, content_hash,
+                    search_body, search_summary
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (archive_id, index, chunk, summary, len(WORD_PATTERN.findall(chunk)), content_hash),
+                (
+                    archive_id,
+                    index,
+                    chunk,
+                    summary,
+                    count_chunk_units(chunk),
+                    content_hash,
+                    prepare_fts_text([chunk], options=text_options),
+                    prepare_fts_text([summary], options=text_options),
+                ),
             )
             chunk_id = int(cursor.lastrowid)
             if embedding_provider is not None:
