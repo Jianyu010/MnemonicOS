@@ -19,6 +19,16 @@ when `auto_trigger_pipeline` is enabled. The daemon's scheduled extraction and
 promotion jobs are now classified as maintenance/cleanup, not the primary
 processing path.
 
+Phase 7 (embedded image extraction for text PDFs) is **implemented** (2026-05-17).
+The VLM lane was producing zero output because embedded XObject images in
+text-based PDFs were never extracted. Phase 7 adds `_extract_embedded_images()`
+via `fitz.page.get_images()` + `doc.extract_image(xref)` for the non-image-only
+branch of `PdfConnector.extract()`. Key config: `max_embedded_images = 100`,
+`min_embedded_image_px = 64` (both in `memory.toml` and threaded through
+`ExtractionConfig` → `ProjectionOptions` → `ConnectorConfig`). 7 stale artifact
+PDFs requeued (`status` reset to `pending`). All 27 west-flange + extraction
+tests pass. See `ingestion-west-flange-plan-phase7.md`.
+
 ## Current Implementation State
 
 Implemented surfaces:

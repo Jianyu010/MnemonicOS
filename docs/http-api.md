@@ -44,7 +44,9 @@ Run hybrid retrieval (BM25 + semantic + graph + archive channels).
   "query": "string (required)",
   "top_k": 10,
   "query_type_hint": "how_to | decision | who_where_relation",
-  "include_archive_fallback": true
+  "include_archive_fallback": true,
+  "include_body": false,
+  "body_chars": 4000
 }
 ```
 
@@ -59,6 +61,8 @@ Run hybrid retrieval (BM25 + semantic + graph + archive channels).
       "title": "...",
       "body_path": "brain/wiki/...",
       "summary": "...",
+      "body": "... only present for CLI/API callers that opt into body hydration ...",
+      "body_truncated": false,
       "excerpt": "...",
       "channels": ["bm25", "semantic"],
       "raw_score": 0.87,
@@ -73,6 +77,10 @@ Run hybrid retrieval (BM25 + semantic + graph + archive channels).
   "passed_gate_count": 5
 }
 ```
+
+`body` and `body_truncated` are omitted unless `include_body` is true. Body
+hydration is an inspection/debug feature for selected wiki hits; normal retrieval
+responses remain compact and archive chunks are not hydrated by this flag.
 
 ---
 

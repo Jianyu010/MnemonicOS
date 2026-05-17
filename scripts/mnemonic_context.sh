@@ -9,6 +9,8 @@ QUERY_TYPE_HINT=""
 TOP_K=""
 DRY_RUN=0
 EMIT_JSON=0
+INCLUDE_BODY=0
+BODY_CHARS=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -16,13 +18,15 @@ while [[ $# -gt 0 ]]; do
     --top-k)           TOP_K="$2"; shift 2 ;;
     --dry-run)         DRY_RUN=1; shift ;;
     --json)            EMIT_JSON=1; shift ;;
+    --include-body)    INCLUDE_BODY=1; shift ;;
+    --body-chars)      BODY_CHARS="$2"; shift 2 ;;
     -*)                echo "Unknown option: $1" >&2; exit 1 ;;
     *)                 QUERY="$1"; shift ;;
   esac
 done
 
 if [[ -z "$QUERY" ]]; then
-  echo "Usage: mnemonic_context.sh \"<query>\" [--query-type-hint <hint>] [--top-k <N>] [--json]" >&2
+  echo "Usage: mnemonic_context.sh \"<query>\" [--query-type-hint <hint>] [--top-k <N>] [--json] [--include-body] [--body-chars <N>]" >&2
   exit 1
 fi
 
@@ -53,6 +57,8 @@ fi
 RETRIEVE_CMD=("${CLI[@]}" retrieve "$QUERY" --json)
 [[ -n "$QUERY_TYPE_HINT" ]] && RETRIEVE_CMD+=(--query-type-hint "$QUERY_TYPE_HINT")
 [[ -n "$TOP_K" ]] && RETRIEVE_CMD+=(--top-k "$TOP_K")
+[[ $INCLUDE_BODY -eq 1 ]] && RETRIEVE_CMD+=(--include-body)
+[[ -n "$BODY_CHARS" ]] && RETRIEVE_CMD+=(--body-chars "$BODY_CHARS")
 
 cd "$REPO_ROOT"
 RAW="$("${RETRIEVE_CMD[@]}" 2>/dev/null)" || RAW=""

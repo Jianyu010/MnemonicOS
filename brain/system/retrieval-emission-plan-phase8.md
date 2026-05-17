@@ -17,13 +17,15 @@ emits a clear human-readable message distinguishing it from a corpus miss.
 - Human-readable gate-suppressed message for `insufficient_no_hit` with reason
   `relevance_gate_suppressed_all`
 - No breaking change to existing JSON fields; new fields are additive
+- Direct retrieve inspection body hydration remains additive and independent of
+  the 2D score fields
 
 ## Components
 
 ```text
 src/second_brain/emission.py     — render 2D fields, gate message, suppression metadata
-src/second_brain/cli.py          — pass relevance/quality in direct retrieve text output
-scripts/mnemonic_context.sh      — Markdown rendering of confidence tags
+src/second_brain/cli.py          — pass relevance/quality in direct retrieve text output; optional body inspection
+scripts/mnemonic_context.sh      — Markdown rendering of confidence tags; optional JSON body pass-through
 tests/test_emission.py           — 2D field presence, gate-suppressed message fixture
 ```
 
@@ -149,6 +151,9 @@ agents reading raw text.
    hits from MnemonicOS — the correct action is fresh research, not requery.
 6. `retrieval_state` in the output header must still be the first line of the
    assessment block so agents reading the context block see it immediately.
+7. `--include-body` / `include_body` does not alter scores, relevance gate
+   behavior, hit count, or ranking order. It reads selected wiki `body_path`
+   files only after retrieval has completed.
 
 ## Verification
 
@@ -158,6 +163,8 @@ agents reading raw text.
 - CLI text output: confidence band labels present
 - Agent hook Markdown output: no confidence band labels
 - `final_score` unchanged for all existing fixtures (no regression)
+- Direct retrieve inspection fixture: body fields are absent by default and
+  present only under explicit hydration.
 
 ---
 

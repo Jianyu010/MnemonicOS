@@ -8,6 +8,7 @@ from second_brain.config import AppConfig
 from second_brain.db import connect_db, run_migrations
 from second_brain.ingest import _migrations_dir
 from second_brain.projection.pipeline import ProjectionService
+from second_brain.projection.pipeline_models import ProjectionOptions
 
 from .models import ExtractionProcessResult, ModelCandidate
 from .providers import build_llm_provider, build_vlm_provider, make_llm_packet
@@ -74,7 +75,11 @@ def _process_item(
     dry_run: bool,
 ) -> dict[str, int]:
     source_ref = queue_row_to_source_ref(item)
-    lease = service.open_projection(source_ref)
+    projection_options = ProjectionOptions(
+        max_embedded_images=config.extraction.max_embedded_images,
+        min_embedded_image_px=config.extraction.min_embedded_image_px,
+    )
+    lease = service.open_projection(source_ref, options=projection_options)
     try:
         windows = list(service.iter_text_windows(lease.lease_id))
         artifacts = list(service.iter_artifacts(lease.lease_id))

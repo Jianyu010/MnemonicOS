@@ -19,6 +19,8 @@ class ConnectorConfig:
     persist_extracted_figures: bool = False
     archive_source_attachments: bool = True
     max_in_memory_figure_bytes: int | None = None
+    max_embedded_images: int = 100
+    min_embedded_image_px: int = 64
     optional_dependencies: dict[str, bool] = field(default_factory=dict)
     skip_text_extraction: bool = False
 

@@ -203,6 +203,7 @@ mnemonicos extraction-status
 mnemonicos promote-status
 mnemonicos review list
 mnemonicos retrieve "what do we know about raw re-visitation?" --json
+mnemonicos retrieve "what do we know about raw re-visitation?" --include-body --body-chars 4000 --json
 
 # HTTP
 mnemonicos server --host 127.0.0.1 --port 8000

@@ -329,10 +329,18 @@ Stage 6 decides which branches/profile are eligible.
 Stage 7 renders the eligible text and references faithfully.
 ```
 
-If Stage 7 later gains a body resolver, it must be a narrow read-only adapter
-that obeys `hydration_policy`, packet body references, and budget metadata. It
-must not broaden the memory set, follow links, or silently replace Stage 5's
-budget decisions.
+If Stage 7 later gains a body resolver for normal emission, it must be a narrow
+read-only adapter that obeys `hydration_policy`, packet body references, and
+budget metadata. It must not broaden the memory set, follow links, or silently
+replace Stage 5's budget decisions.
+
+Direct retrieval now has a separate opt-in inspection affordance:
+`mnemonicos retrieve --include-body [--body-chars N]` and the matching HTTP
+`include_body` / `body_chars` fields hydrate returned wiki hits from their
+`body_path` files after ranking. This is not Stage 7 normal emission, does not
+change recall/ranking/assessment, and does not activate deep research mode. It
+exists so humans and debugging tools can inspect the exact selected wiki note
+text while compact retrieval remains the default.
 
 ---
 
@@ -426,6 +434,11 @@ schema for tooling and tests.
 > until the deep research phase is formally planned. Reference
 > `hydration_policy = hydrate_full_functional_path` and the `full_chain`
 > emission profile, which are currently unreachable dead code.
+>
+> **Clarification:** the implemented `--include-body` / `include_body` retrieval
+> inspection path is not this mode. It hydrates only the already-returned wiki
+> hits for explicit caller inspection and remains subject to normal top-k
+> selection.
 
 ### What the Mode Is
 
@@ -480,9 +493,11 @@ When deep research mode is active:
 ### Exact Design Is Deferred
 
 The specific token ceiling, `deep_research_max_hits` value, body resolver
-implementation, self-trigger conditions, and CLI surface (flags, config keys,
-bridge protocol fields) are to be designed when this mode is planned. Do not
-guess or hardcode values here.
+implementation, self-trigger conditions, and deep-research CLI surface (mode
+flags, config keys, bridge protocol fields) are to be designed when this mode is
+planned. Do not guess or hardcode values here. Existing direct-retrieve
+inspection flags (`--include-body`, `--body-chars`) are intentionally narrower
+and should not be treated as a deep-research API.
 
 What is fixed by this placeholder:
 1. Deep research is a **named mode**, not an implicit escalation.
@@ -517,6 +532,8 @@ Stage 7 is complete when:
    without raising.
 11. Stage 7 tests prove no reassessment or packet broadening occurs during
    emission.
+12. Direct retrieve inspection hydration, when requested, is additive,
+    post-selection, read-only, and absent by default.
 
 ---
 

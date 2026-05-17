@@ -59,6 +59,12 @@ def _require(body: dict[str, Any], *keys: str) -> None:
 def _handle_retrieve(config: AppConfig, body: dict[str, Any]) -> dict[str, Any]:
     _require(body, "query")
     from .retrieval import result_to_json, retrieve
+    body_chars = body.get("body_chars")
+    if body_chars is not None:
+        try:
+            body_chars = int(body_chars)
+        except (TypeError, ValueError) as exc:
+            raise _BadRequest("body_chars must be an integer") from exc
     result = retrieve(
         config,
         body["query"],
@@ -66,7 +72,13 @@ def _handle_retrieve(config: AppConfig, body: dict[str, Any]) -> dict[str, Any]:
         query_type_hint=body.get("query_type_hint"),
         include_archive_fallback=body.get("include_archive_fallback"),
     )
-    return json.loads(result_to_json(result))
+    return json.loads(
+        result_to_json(
+            result,
+            include_body=bool(body.get("include_body", False)),
+            body_chars=body_chars,
+        )
+    )
 
 
 def _handle_ingest_session(config: AppConfig, body: dict[str, Any]) -> dict[str, Any]:

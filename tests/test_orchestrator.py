@@ -1363,6 +1363,14 @@ class TestHTTPServer(unittest.TestCase):
                 )
                 self.assertIn("hits", data)
                 self.assertIsInstance(data["hits"], list)
+                self.assertNotIn("body", data["hits"][0])
+                hydrated = _http_post(
+                    port,
+                    "/v1/retrieve",
+                    {"query": "http retrieve procedure", "include_body": True, "body_chars": 40},
+                )
+                self.assertIn("body", hydrated["hits"][0])
+                self.assertTrue(hydrated["hits"][0]["body_truncated"])
             finally:
                 _stop_server(server)
 

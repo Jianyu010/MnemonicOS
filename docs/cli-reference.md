@@ -77,16 +77,17 @@ Without flags: shows queue counts by status and the N most recent items.
 Reset errored extraction queue items back to `pending` so they will be retried.
 
 ```
-mnemonicos retry-extraction {--queue-id N | --all-errors} [--dry-run]
+mnemonicos retry-extraction {--queue-id N | --all-errors} [--include-tombstoned] [--dry-run]
 ```
 
 | Arg | Description |
 |-----|-------------|
 | `--queue-id N` | Retry a single item by queue id |
 | `--all-errors` | Retry all non-tombstoned error items |
+| `--include-tombstoned` | Also reset tombstoned items (`last_error LIKE 'tombstoned:%'`) when using `--all-errors` |
 | `--dry-run` | Print what would change without modifying the DB |
 
-**Note:** `attempt_count` is preserved on retry. If an item fails again after retry, the extraction worker will automatically tombstone it (prefixes `last_error` with `tombstoned:`). Tombstoned items are excluded from `--all-errors`.
+**Note:** `attempt_count` is preserved on retry. If an item fails again after retry, the extraction worker will automatically tombstone it (prefixes `last_error` with `tombstoned:`). Tombstoned items are excluded from `--all-errors` by default; pass `--include-tombstoned` to override.
 
 **Tip for large artifacts (textbooks, long PDFs):** If extraction fails with `HTTP Error 500`, the LLM context window was exceeded. The worker sends one text window (~10 000 tokens) per LLM call by default (`extraction.max_windows_per_batch = 1`). Increasing this value on capable hardware reduces round-trips but risks context overflow on smaller models.
 
@@ -299,10 +300,15 @@ mnemonicos reprocess-artifact {--archive-id ID | --failed} [--json]
 Run hybrid retrieval against the wiki and archive.
 
 ```
-mnemonicos retrieve QUERY [--top-k N] [--query-type-hint HINT] [--json]
+mnemonicos retrieve QUERY [--top-k N] [--query-type-hint HINT] [--include-body] [--body-chars N] [--json]
 ```
 
 `--query-type-hint` ∈ `{how_to, decision, who_where_relation}`. Adjusts channel weights.
+
+By default, retrieve output stays compact: hits expose `summary`, `excerpt`, and
+`body_path`, but not full note text. `--include-body` hydrates returned wiki hits
+from `body_path` for inspection. Combine it with `--body-chars N` to cap each
+body. Archive chunks are not hydrated by this flag.
 
 ---
 
