@@ -11,6 +11,7 @@ from .models import JobRunResult
 _DEFAULT_SCHEDULES = {
     "process_extraction_queue": "*/5 * * * *",
     "process_promotion_queue": "*/5 * * * *",
+    "wiki_auto_resolve_review": "*/10 * * * *",
     "expire_stale_episodes": "0 * * * *",
     "embed_backfill": "15 * * * *",
     "status_report": "0 * * * *",

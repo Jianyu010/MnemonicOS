@@ -11,7 +11,7 @@ When documents conflict, use this order:
 3. Strategic roadmaps under `development/`.
 4. Historical or obsolete docs marked `OBSOLETE`.
 
-The west-flange, LLM/VLM extraction, promotion, review command, and knowledge
+The west-flange, LLM/VLM extraction, promotion, auto-resolve daemon, review command, and knowledge
 maintenance governing plans are authoritative for their respective layers.
 
 ## Current System Shape
@@ -22,7 +22,8 @@ flowchart TD
     B --> C["Runtime layer<br/>runtime.py<br/><b>software-driven</b>"]
     C --> D["Push-triggered ingestion compiler<br/>west intake -> projection -> extraction candidates<br/><b>mixed: software orchestration + AI extraction</b>"]
     D --> E["Deterministic promotion layer<br/>gate -> decide -> render -> write<br/><b>software-driven</b>"]
-    E --> R["Human review path<br/>promotion review CLI/TUI<br/><b>human governed + software-guarded</b>"]
+    E --> AR["Auto-resolve daemon<br/>wiki_auto_resolve_review<br/><b>LLM-arbitrated; software-driven</b>"]
+    AR --> R["Human review path (fallback)<br/>promotion review CLI/TUI<br/><b>human governed + software-guarded</b>"]
     R --> F["Canonical memory store<br/>brain/wiki/* + SQLite/index substrate<br/><b>software/human governed + derived stores</b>"]
     E --> F
     F --> M["Knowledge maintenance layer<br/>graph, lifecycle, importance, dedup, health<br/><b>software-driven; active</b>"]
@@ -142,8 +143,10 @@ details too early.
   promotion ledger.
 - [Promotion Layer Development Roadmap](ingestion-promotion-roadmap.md):
   implementation status and remaining integration-test gaps.
+- [Auto-Resolve Daemon Spec](../../docs/superpowers/specs/2026-05-18-auto-resolve-review-design.md):
+  LLM-arbitrated resolution of review-routed candidates; enriches files for human when confidence < 0.75.
 - [Review Command Development Plan](ingestion-review-plan.md): human
-  approval/rejection path for promotion-routed notes.
+  approval/rejection path for review items the auto-resolve daemon could not resolve.
 - [Review Command Development Roadmap](ingestion-review-roadmap.md):
   current review CLI/TUI status and hardening history.
 - [Knowledge Maintenance Layer Development Plan](ingestion-maintenance-plan.md):

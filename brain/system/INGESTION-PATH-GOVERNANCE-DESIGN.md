@@ -52,9 +52,20 @@ External Material (PDF, DOCX, agent episodes, attachments)
 │  atomic wiki write. Routes low-confidence /         │
 │  conflicting candidates to brain/wiki/review/.      │
 │  Writes promotion_decisions ledger.                 │
-└────────────────────┬────────────────────────────────┘
-                     │ promoted notes on disk
-                     ▼
+└──────┬──────────────────────────┬───────────────────┘
+       │ promoted notes on disk   │ review_routed candidates
+       │                          ▼
+       │           ┌──────────────────────────────────┐
+       │           │  AUTO-RESOLVE DAEMON             │
+       │           │  wiki_auto_resolve_review        │
+       │           │  (*/10 * * * *)                  │
+       │           │  LLM arbitration of review items.│
+       │           │  High-confidence → approve/reject│
+       │           │  automatically. Low-confidence → │
+       │           │  enrich file for human reviewer. │
+       │           └──────────────┬───────────────────┘
+       │                          │ human-fallback items only
+       ▼                          ▼
 ┌─────────────────────────────────────────────────────┐
 │  LAYER 4 · Maintenance                              │
 │  ingestion-maintenance-plan.md                      │
@@ -147,12 +158,15 @@ Phase files:
 **Plan:** [ingestion-promotion-plan.md](ingestion-promotion-plan.md)
 **Roadmap:** [ingestion-promotion-roadmap.md](ingestion-promotion-roadmap.md)
 
-Deterministic software layer. No LLM inference. Consumes `promotion_ready`
-candidates, runs gate checks, makes decision (promote / hold / reject / review),
-renders markdown, and performs atomic wiki write. Low-confidence or conflicting
-candidates route to `brain/wiki/review/`. Writes `promotion_decisions` ledger.
-Intra-source relations amendment applies extracted relations to note frontmatter
-and graph edges.
+Deterministic software layer. Consumes `promotion_ready` candidates, runs gate
+checks, makes decision (promote / hold / reject / review), renders markdown, and
+performs atomic wiki write. Routes low-confidence / conflicting candidates to
+`brain/wiki/review/`. Writes `promotion_decisions` ledger. Intra-source relations
+amendment applies extracted relations to note frontmatter and graph edges.
+
+The `wiki_auto_resolve_review` daemon then attempts LLM arbitration on routed
+items; items it cannot resolve with sufficient confidence (< 0.75) are left
+enriched with `## LLM Analysis` for human review.
 
 Phase files:
 [P1](ingestion-promotion-plan-phase1.md) ·
@@ -213,14 +227,28 @@ Audit baseline: [docs/east-flange-audit.md](../../docs/east-flange-audit.md)
 
 ---
 
+### Side path — Auto-Resolve Daemon
+**Spec:** [docs/superpowers/specs/2026-05-18-auto-resolve-review-design.md](../../docs/superpowers/specs/2026-05-18-auto-resolve-review-design.md)
+
+LLM-arbitrated resolution of `review_routed` candidates. Runs every 10 minutes
+(`wiki_auto_resolve_review`). Re-evaluates each item against current wiki state:
+auto-promotes if decision changed, or dispatches to a reason-specific LLM resolver
+(`low_confidence`, `type_collision`, `wiki_conflict`, `contested_lifecycle`).
+When confidence ≥ 0.75, approves or rejects automatically. When confidence < 0.75
+or action is `human`, appends `## LLM Analysis` to the review file so human
+reviewers receive full context.
+
+---
+
 ### Side path — Review Command
 **Plan:** [ingestion-review-plan.md](ingestion-review-plan.md)
 **Roadmap:** [ingestion-review-roadmap.md](ingestion-review-roadmap.md)
 
-Ergonomic human triage for `brain/wiki/review/` items routed by Layer 3. The
-`mnemonic review` command presents review items one at a time, lets the operator
-approve (advance lifecycle, move to wiki) or reject (delete, mark ledger).
-Reduces manual file editing to zero.
+Ergonomic human triage for items in `brain/wiki/review/` that the auto-resolve
+daemon could not resolve with confidence (≥ 0.75). The `mnemonic review` command
+presents these enriched items (with `## LLM Analysis` attached) one at a time,
+lets the operator approve (advance lifecycle, move to wiki) or reject (delete,
+mark ledger). Reduces manual file editing to zero.
 
 Phase files:
 [P1](ingestion-review-plan-phase1.md) ·

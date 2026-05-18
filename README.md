@@ -108,6 +108,8 @@ flowchart LR
     H --> I["Promotion<br/>new, confirm, update, review, reject"]
     I --> J["brain/wiki"]
     I --> K["brain/wiki/review"]
+    K --> AR["Auto-resolve daemon<br/>wiki_auto_resolve_review"]
+    AR --> R["Human review fallback<br/>mnemonic review"]
     J --> L["Maintenance jobs"]
 ```
 
@@ -118,7 +120,7 @@ Important invariants:
   model interpretation authoritative.
 - LLM/VLM output stops at validated candidates. It does not directly write wiki.
 - Promotion is software-gated and ledgered.
-- Ambiguous or conflicting material goes to human review.
+- Ambiguous or conflicting material is first processed by the auto-resolve daemon (LLM arbitration); items it cannot resolve with confidence go to human review with LLM analysis attached.
 
 ## Retrieval Flow
 
