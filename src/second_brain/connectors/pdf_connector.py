@@ -18,6 +18,18 @@ IMAGE_RE = re.compile(rb"/Subtype\s*/Image\b")
 # Maximum pages rendered as figures during OCR / VLM pass.
 _MAX_OCR_PAGES = 50
 
+# Mime type normalisation for fitz extension strings.
+_EXT_TO_MIME: dict[str, str] = {
+    "jpeg": "image/jpeg",
+    "jpg": "image/jpeg",
+    "png": "image/png",
+    "jp2": "image/jp2",
+    "jxr": "image/jxr",
+    "gif": "image/gif",
+    "tiff": "image/tiff",
+    "bmp": "image/bmp",
+}
+
 
 def _extract_text_pymupdf(path: Path) -> tuple[str, list[str]]:
     warnings: list[str] = []
@@ -88,6 +100,71 @@ def _render_pages_as_figures(
     return figures, payloads
 
 
+def _extract_embedded_images(
+    path: Path,
+    config: ConnectorConfig,
+) -> tuple[list[FigureMetadata], list[FigurePayload]]:
+    """Extract XObject images embedded in a text-layer PDF via fitz.
+
+    Deduplicates by xref, skips smask-only images and images below
+    ``config.min_embedded_image_px`` on either axis, and caps output at
+    ``config.max_embedded_images``.  Failures are silently swallowed so the
+    caller always receives text extraction even if image extraction fails.
+    """
+    figures: list[FigureMetadata] = []
+    payloads: list[FigurePayload] = []
+    try:
+        import fitz  # type: ignore[import-not-found]
+
+        doc = fitz.open(str(path))
+        seen_xrefs: set[int] = set()
+        for page_num in range(len(doc)):
+            if len(figures) >= config.max_embedded_images:
+                break
+            page = doc[page_num]
+            for img_info in page.get_images(full=True):
+                xref: int = img_info[0]
+                smask: int = img_info[1]
+                if xref in seen_xrefs or (smask and smask == xref):
+                    continue
+                seen_xrefs.add(xref)
+                try:
+                    extracted = doc.extract_image(xref)
+                except Exception:
+                    continue
+                data: bytes = extracted["image"]
+                w: int = extracted.get("width") or 0
+                h: int = extracted.get("height") or 0
+                if w < config.min_embedded_image_px or h < config.min_embedded_image_px:
+                    continue
+                if config.max_in_memory_figure_bytes and len(data) > config.max_in_memory_figure_bytes:
+                    continue
+                ext = str(extracted.get("ext") or "png").lower()
+                mime = _EXT_TO_MIME.get(ext, f"image/{ext}")
+                figure_id = f"emb_{len(figures) + 1:04d}"
+                figures.append(
+                    FigureMetadata(
+                        figure_id=figure_id,
+                        storage_policy="in_memory_extracted",
+                        source_page=page_num + 1,
+                        source_index=len(figures) + 1,
+                        width_px=w,
+                        height_px=h,
+                        mime_type=mime,
+                        byte_size=len(data),
+                        structural_location=f"page:{page_num + 1}:xref:{xref}",
+                        needs_visual_pass=True,
+                    )
+                )
+                payloads.append(FigurePayload(figure_id=figure_id, data=data, mime_type=mime))
+                if len(figures) >= config.max_embedded_images:
+                    break
+        doc.close()
+    except Exception:
+        pass
+    return figures, payloads
+
+
 class PdfConnector:
     name = "pdf_connector"
     source_format = "pdf"
@@ -123,6 +200,10 @@ class PdfConnector:
                 text = ocr_text
                 image_only_pdf = False
             figures, figure_payloads = _render_pages_as_figures(path, config)
+        elif text.strip() and config.figures_enabled and figure_count > 0:
+            emb_figures, emb_payloads = _extract_embedded_images(path, config)
+            figures.extend(emb_figures)
+            figure_payloads.extend(emb_payloads)
 
         failure_reason = None if text.strip() else "no_text_extracted"
         status = status_for_text(text, warnings, failure_reason)

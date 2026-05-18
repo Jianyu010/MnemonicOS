@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import json
-from typing import Any
+from typing import Any, Iterator
 
 from second_brain.config import AppConfig
 from second_brain.db import connect_db, run_migrations
 from second_brain.ingest import _migrations_dir
 from second_brain.projection.pipeline import ProjectionService
+from second_brain.projection.pipeline_models import ProjectionOptions
 
 from .models import ExtractionProcessResult, ModelCandidate
 from .providers import build_llm_provider, build_vlm_provider, make_llm_packet
@@ -74,7 +75,11 @@ def _process_item(
     dry_run: bool,
 ) -> dict[str, int]:
     source_ref = queue_row_to_source_ref(item)
-    lease = service.open_projection(source_ref)
+    projection_options = ProjectionOptions(
+        max_embedded_images=config.extraction.max_embedded_images,
+        min_embedded_image_px=config.extraction.min_embedded_image_px,
+    )
+    lease = service.open_projection(source_ref, options=projection_options)
     try:
         windows = list(service.iter_text_windows(lease.lease_id))
         artifacts = list(service.iter_artifacts(lease.lease_id))
@@ -122,21 +127,41 @@ def _process_item(
         visual_snippets = [vlm.describe(artifact) for artifact in artifacts]
         existing_knowledge_context = _existing_knowledge_context(item.revisit_context_json)
         retrieval_context_note_ids = _parse_memory_context_note_ids(windows)
-        packet = make_llm_packet(
-            active_source_ref=source_ref_id(item),
-            projection_metadata=projection_metadata,
-            windows=windows,
-            visual_snippets=visual_snippets,
-            existing_knowledge_context=existing_knowledge_context,
-            retrieval_context_note_ids=retrieval_context_note_ids or None,
-        )
-        raw_output = llm.extract_candidates(packet)
-        candidates = _extract_and_validate_candidates(
-            raw_output=raw_output,
-            active_source_ref=source_ref_id(item),
-            evidence_ids=projection_evidence_ids(packet),
-        )
-        intra_relations = parse_intra_source_relations(raw_output)
+
+        # Send windows in batches to avoid LLM context overflow.
+        # Each window is ~10 000 tokens (ProjectionOptions.window_token_target).
+        # Default batch size = 1: one window per LLM call, N candidates out.
+        snippet_by_id = {s.artifact_id: s for s in visual_snippets}
+        batch_size = config.extraction.max_windows_per_batch
+        all_candidates: list[ModelCandidate] = []
+        all_intra_relations: list[dict[str, Any]] = []
+        for batch_windows in _iter_batches(windows, batch_size):
+            batch_artifact_ids = {
+                m.artifact_id for w in batch_windows for m in w.artifact_markers
+            }
+            batch_snippets = [
+                snippet_by_id[aid] for aid in batch_artifact_ids if aid in snippet_by_id
+            ]
+            packet = make_llm_packet(
+                active_source_ref=source_ref_id(item),
+                projection_metadata=projection_metadata,
+                windows=batch_windows,
+                visual_snippets=batch_snippets,
+                existing_knowledge_context=existing_knowledge_context,
+                retrieval_context_note_ids=retrieval_context_note_ids or None,
+            )
+            raw_output = llm.extract_candidates(packet)
+            all_candidates.extend(
+                _extract_and_validate_candidates(
+                    raw_output=raw_output,
+                    active_source_ref=source_ref_id(item),
+                    evidence_ids=projection_evidence_ids(packet),
+                )
+            )
+            all_intra_relations.extend(parse_intra_source_relations(raw_output))
+
+        candidates = all_candidates
+        intra_relations = all_intra_relations
         counts = candidate_counts(candidates)
         with connection:
             replace_visual_snippets(
@@ -241,6 +266,19 @@ def _existing_knowledge_context(raw_context: str | None) -> str | None:
         if note_id:
             lines.append(f"[{note_id}] {title}\n{summary}".strip())
     return "\n\n".join(lines) or None
+
+
+def _iter_batches(items: list[Any], batch_size: int) -> Iterator[list[Any]]:
+    """Yield successive non-overlapping batches.
+
+    Always yields at least one batch (empty list) so callers that must run
+    the LLM at least once (e.g. artifact with no text) still execute.
+    """
+    if not items:
+        yield []
+        return
+    for start in range(0, len(items), batch_size):
+        yield items[start: start + batch_size]
 
 
 def _extract_and_validate_candidates(

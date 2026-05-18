@@ -144,7 +144,9 @@ that evidence into passive labels:
 
 - Stage 3 input is the frozen `ParsedQuery` and Stage 2 `CandidatePool`.
 - Stage 3 performs batch reads only. No DB writes.
-- Stage 3 does not inspect full note bodies for ranking decisions.
+- Stage 3 does not inspect full note bodies for ranking decisions. Later
+  direct-retrieve inspection hydration may read selected `body_path` files after
+  ranking, but that output-only path must not feed back into Stage 3 signals.
 - Summary/control-signal quality is a separate feature, not hidden inside score.
 - `quality_pass=False` must not erase the candidate; Stage 5/6 need warnings.
 - Missing maintenance rows use explicit defaults and reason codes.

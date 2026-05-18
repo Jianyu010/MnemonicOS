@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import shutil
 import sys
 import tempfile
@@ -15,7 +16,7 @@ if str(SRC) not in sys.path:
 from second_brain.config import load_config
 from second_brain.db import connect_db, run_migrations
 from second_brain.parser import parse_note
-from second_brain.retrieval import retrieve
+from second_brain.retrieval import result_to_json, retrieve
 from second_brain.sync import sync_vault
 
 
@@ -151,6 +152,13 @@ class Phase1Test(unittest.TestCase):
             decision_result = retrieve(config, "Why did we pick Postgres for auth?", top_k=3)
             self.assertTrue(decision_result.hits)
             self.assertEqual(decision_result.hits[0].id, "decision/auth-postgres")
+            compact_payload = json.loads(result_to_json(decision_result))
+            self.assertNotIn("body", compact_payload["hits"][0])
+            hydrated_payload = json.loads(result_to_json(decision_result, include_body=True))
+            self.assertIn("Postgres is the primary store", hydrated_payload["hits"][0]["body"])
+            truncated_payload = json.loads(result_to_json(decision_result, include_body=True, body_chars=20))
+            self.assertEqual(len(truncated_payload["hits"][0]["body"]), 20)
+            self.assertTrue(truncated_payload["hits"][0]["body_truncated"])
 
             procedure_result = retrieve(config, "auth deploy", top_k=3)
             self.assertTrue(procedure_result.hits)

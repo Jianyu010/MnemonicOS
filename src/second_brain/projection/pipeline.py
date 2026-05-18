@@ -127,7 +127,14 @@ class ProjectionService:
 
         raw_path = Path(str(row["artifact_path"] or row["path"]))
         connector = connector_for_path(raw_path)
-        result = connector.extract(raw_path, config=ConnectorConfig(figures_enabled=options.figures_enabled))
+        result = connector.extract(
+            raw_path,
+            config=ConnectorConfig(
+                figures_enabled=options.figures_enabled,
+                max_embedded_images=options.max_embedded_images,
+                min_embedded_image_px=options.min_embedded_image_px,
+            ),
+        )
         text = result.usable_raw_text.strip()
         artifacts = _artifact_views_from_connector(result)
         artifacts.extend(_artifact_views_from_rows(connection, source_ref.archive_id))

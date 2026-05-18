@@ -639,6 +639,14 @@ components:
         include_archive_fallback:
           type: boolean
           default: true
+        include_body:
+          type: boolean
+          default: false
+          description: Hydrate selected wiki hits with note body text for explicit inspection/debug output.
+        body_chars:
+          type: integer
+          minimum: 0
+          description: Maximum characters to include for each hydrated body.
       required: [query]
 
     RetrieveResponse:
@@ -671,6 +679,12 @@ components:
           type: string
         summary:
           type: string
+        body:
+          type: string
+          description: Present only for wiki hits when retrieve request sets include_body.
+        body_truncated:
+          type: boolean
+          description: True when hydrated body text was capped by body_chars.
         channels:
           type: array
           items:

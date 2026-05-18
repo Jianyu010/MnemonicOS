@@ -35,6 +35,8 @@ class ProjectionOptions:
     figures_enabled: bool = True
     max_per_figure_bytes: int = 256 * 1024 * 1024
     max_total_payload_bytes: int | None = None
+    max_embedded_images: int = 100
+    min_embedded_image_px: int = 64
     lease_idle_ttl_seconds: int = 1_800
     lease_hard_ttl_seconds: int = 21_600
 

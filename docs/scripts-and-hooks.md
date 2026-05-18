@@ -122,6 +122,19 @@ Old wrapper for `mnemonic_codex_notify_bridge.py`. Superseded by direct invocati
 
 These scripts return exit code 0 (proceed) or non-zero (skip) based on lightweight heuristics. Used to avoid expensive operations when not warranted.
 
+### `mnemonic_context.sh`
+
+Run retrieval and render either compact Markdown context or structured JSON for
+agent/bridge use.
+
+```bash
+scripts/mnemonic_context.sh "query" [--query-type-hint HINT] [--top-k N] [--json]
+```
+
+Use `--include-body [--body-chars N]` with `--json` for debugging selected wiki
+hits. This hydrates returned wiki hits from `body_path` after retrieval; compact
+context rendering still uses summaries/excerpts by default.
+
 ### `mnemonic_should_retrieve.sh`
 
 Gate: should we run retrieval for this prompt?

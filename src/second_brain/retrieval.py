@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import json
+from pathlib import Path
 import re
 
 from .config import AppConfig
@@ -178,7 +179,34 @@ def retrieve(
     )
 
 
-def result_to_json(result: RetrieveResult) -> str:
+def _hydrate_hit_body(hit, *, body_chars: int | None = None) -> tuple[str | None, bool]:
+    if hit.type == "archive_chunk" or not hit.body_path:
+        return None, False
+    try:
+        body = Path(hit.body_path).read_text(encoding="utf-8")
+    except OSError:
+        return None, False
+    if body_chars is not None and body_chars >= 0 and len(body) > body_chars:
+        return body[:body_chars], True
+    return body, False
+
+
+def _hit_to_dict(hit, *, include_body: bool = False, body_chars: int | None = None) -> dict[str, object]:
+    payload = asdict(hit)
+    if include_body:
+        body, truncated = _hydrate_hit_body(hit, body_chars=body_chars)
+        if body is not None:
+            payload["body"] = body
+            payload["body_truncated"] = truncated
+    return payload
+
+
+def result_to_json(
+    result: RetrieveResult,
+    *,
+    include_body: bool = False,
+    body_chars: int | None = None,
+) -> str:
     payload = {
         "query_id": result.query_id,
         "query_type": result.query_type,
@@ -187,8 +215,10 @@ def result_to_json(result: RetrieveResult) -> str:
         "persona": result.persona,
         "back_feed_hook": result.back_feed_hook,
         "pinned_paths": result.pinned_paths,
-        "hits": [asdict(hit) for hit in result.hits],
-        "archive_hits": [asdict(hit) for hit in result.archive_hits],
+        "hits": [_hit_to_dict(hit, include_body=include_body, body_chars=body_chars) for hit in result.hits],
+        "archive_hits": [
+            _hit_to_dict(hit, include_body=include_body, body_chars=body_chars) for hit in result.archive_hits
+        ],
         "suppressed_by_gate_count": result.suppressed_by_gate_count,
         "passed_gate_count": result.passed_gate_count,
     }

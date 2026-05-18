@@ -12,6 +12,7 @@ runtime, shell, and HTTP JSON paths around one schema.
 - `archive_context` and `assessment_directive` exposure
 - stable field names for downstream tools
 - schema regression tests
+- opt-in direct-retrieve inspection hydration fields
 
 ## Current Gap
 
@@ -19,6 +20,10 @@ The direct `RetrieveResult` JSON path currently exposes hits and archive hits,
 but not the Stage 6 directive fields. Runtime context JSON exposes
 `assessment_directive` and `memory_packet`, but Stage 7 does not yet normalize
 the presentation across paths.
+
+The direct retrieval JSON path also has a deliberate inspection-only extension:
+callers may request body hydration for selected wiki hits. This is additive and
+off by default.
 
 ## Target JSON Sections
 
@@ -86,11 +91,28 @@ Legacy `hits` and `archive_hits` may remain for direct retrieval compatibility,
 but the Stage 7 schema should make the assessed packet shape the preferred
 consumer surface.
 
+For direct retrieve compatibility, `hits[]` remains compact by default. When a
+caller explicitly opts in with CLI `--include-body` or HTTP `include_body`, wiki
+hits may include:
+
+```json
+{
+  "body": "... hydrated wiki note body ...",
+  "body_truncated": true
+}
+```
+
+`body_chars` caps each hydrated body. Archive chunks are not hydrated by this
+inspection path; their normal `summary`, `excerpt`, and `body_path` fields remain
+the supported surface.
+
 ## Verification
 
 - JSON snapshots for direct retrieval and runtime context
 - HTTP parity against Python API
 - shell `--json` parity against Python API
+- direct retrieve JSON omits `body` by default and includes `body` /
+  `body_truncated` only when body hydration is requested
 - archive-only JSON includes `archive_context`, not only `archive_hits`
 - directive fields appear at top level and in `assessment_directive`
 - immediate focused requery JSON includes `followup_query` and does not trigger

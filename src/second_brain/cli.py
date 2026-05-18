@@ -165,6 +165,7 @@ def _build_parser() -> argparse.ArgumentParser:
     retry_group = retry_parser.add_mutually_exclusive_group(required=True)
     retry_group.add_argument("--queue-id", type=int, help="Retry a single item by queue id.")
     retry_group.add_argument("--all-errors", action="store_true", help="Retry all non-tombstoned error items.")
+    retry_parser.add_argument("--include-tombstoned", action="store_true", help="Also include tombstoned items (last_error LIKE 'tombstoned:%%') when using --all-errors.")
     retry_parser.add_argument("--dry-run", action="store_true", help="Print what would be retried without changing status.")
 
     promote_status_parser = subparsers.add_parser("promote-status", help="Show promotion queue health (pending/promoted/review/rejected counts).")
@@ -190,6 +191,8 @@ def _build_parser() -> argparse.ArgumentParser:
     retrieve_parser.add_argument("query", help="Query text.")
     retrieve_parser.add_argument("--top-k", type=int, default=None)
     retrieve_parser.add_argument("--query-type-hint", default=None)
+    retrieve_parser.add_argument("--include-body", action="store_true", help="Hydrate returned wiki hits with full note bodies.")
+    retrieve_parser.add_argument("--body-chars", type=int, default=None, help="Maximum characters to print or emit for each hydrated body.")
     retrieve_parser.add_argument("--json", action="store_true", help="Emit JSON output.")
 
     resolve_parser = subparsers.add_parser("resolve-task-context", help="Resolve a unified Phase 1 runtime context packet.")
@@ -355,11 +358,27 @@ def _sync(config_path: str, mode: str, paths: list[str]) -> int:
     return 0 if result.parse_errors == 0 else 1
 
 
-def _retrieve(config_path: str, query: str, top_k: int | None, query_type_hint: str | None, emit_json: bool) -> int:
+def _format_body_for_text(body: str, *, truncated: bool) -> list[str]:
+    lines = ["   body:"]
+    lines.extend(f"      {line}" if line else "" for line in body.splitlines())
+    if truncated:
+        lines.append("      ... [truncated]")
+    return lines
+
+
+def _retrieve(
+    config_path: str,
+    query: str,
+    top_k: int | None,
+    query_type_hint: str | None,
+    emit_json: bool,
+    include_body: bool = False,
+    body_chars: int | None = None,
+) -> int:
     config = load_config(config_path)
     result = retrieve(config, query, top_k=top_k, query_type_hint=query_type_hint)
     if emit_json:
-        print(result_to_json(result))
+        print(result_to_json(result, include_body=include_body, body_chars=body_chars))
         return 0
 
     print(f"query_id={result.query_id}")
@@ -395,6 +414,13 @@ def _retrieve(config_path: str, query: str, top_k: int | None, query_type_hint: 
             print(f"   summary: {hit.summary}")
         elif hit.excerpt:
             print(f"   excerpt: {hit.excerpt}")
+        if include_body:
+            from .retrieval import _hydrate_hit_body
+
+            body, truncated = _hydrate_hit_body(hit, body_chars=body_chars)
+            if body is not None:
+                for line in _format_body_for_text(body, truncated=truncated):
+                    print(line)
     return 0
 
 
@@ -1143,7 +1169,7 @@ def _queue_extraction(
     return _print_or_json(item.to_dict(), emit_json)
 
 
-def _retry_extraction(config_path: str, queue_id: int | None, all_errors: bool, dry_run: bool) -> int:
+def _retry_extraction(config_path: str, queue_id: int | None, all_errors: bool, dry_run: bool, include_tombstoned: bool = False) -> int:
     config = load_config(config_path)
     from .db import connect_db, run_migrations
     connection = connect_db(config.paths.db_path)
@@ -1170,9 +1196,14 @@ def _retry_extraction(config_path: str, queue_id: int | None, all_errors: bool, 
             print(f"retried #{queue_id}")
             return 0
 
-        rows = connection.execute(
-            "SELECT id, last_error FROM extraction_queue WHERE status='error' AND (last_error IS NULL OR last_error NOT LIKE '%tombstoned%')"
-        ).fetchall()
+        if include_tombstoned:
+            rows = connection.execute(
+                "SELECT id, last_error FROM extraction_queue WHERE status='error'"
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                "SELECT id, last_error FROM extraction_queue WHERE status='error' AND (last_error IS NULL OR last_error NOT LIKE 'tombstoned:%')"
+            ).fetchall()
         if not rows:
             print("no retryable errors found")
             return 0
@@ -1713,13 +1744,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "extraction-status":
         return _extraction_status(args.config, args.queue_id, args.errors_only, args.limit, args.json)
     if args.command == "retry-extraction":
-        return _retry_extraction(args.config, args.queue_id, args.all_errors, args.dry_run)
+        return _retry_extraction(args.config, args.queue_id, args.all_errors, args.dry_run, args.include_tombstoned)
     if args.command == "promote-status":
         return _promote_status(args.config, args.json)
     if args.command == "review":
         return _review(args.config, args)
     if args.command == "retrieve":
-        return _retrieve(args.config, args.query, args.top_k, args.query_type_hint, args.json)
+        return _retrieve(
+            args.config,
+            args.query,
+            args.top_k,
+            args.query_type_hint,
+            args.json,
+            include_body=args.include_body,
+            body_chars=args.body_chars,
+        )
     if args.command == "resolve-task-context":
         return _resolve_task_context(
             args.config,

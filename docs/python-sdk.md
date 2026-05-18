@@ -77,7 +77,16 @@ result = retrieve(
 | `suppressed_by_gate_count` | `int` | Hits filtered by trust gate |
 | `passed_gate_count` | `int` | Hits that passed gate |
 
-`result_to_json(result)` → JSON string suitable for CLI output.
+`result_to_json(result, include_body=False, body_chars=None)` → JSON string
+suitable for CLI output.
+
+By default, retrieve JSON remains compact and exposes `summary`, `excerpt`, and
+`body_path`. Pass `include_body=True` to hydrate returned wiki hits with their
+note body text for inspection; `body_chars` caps each hydrated body.
+
+```python
+payload = result_to_json(result, include_body=True, body_chars=4000)
+```
 
 ---
 

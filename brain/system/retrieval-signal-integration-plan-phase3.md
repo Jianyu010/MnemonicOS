@@ -17,6 +17,8 @@ as a primary retrieval result.
 1. Stage 3 may inspect title, summary, compact control signal, excerpt, and
    metadata already carried by Stage 2.
 2. Stage 3 must not read full note bodies for ranking decisions.
+   Post-selection inspection hydration in direct retrieve output is allowed
+   only after ranking and must not affect `quality_pass` or score features.
 3. A summary equal to the title is `title_only`.
 4. Missing or placeholder summary is `none`.
 5. Vague summaries with no action, claim, decision, failure, entity, or relation

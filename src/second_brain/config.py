@@ -146,6 +146,9 @@ class ExtractionConfig:
     vlm_api_key_env: str = ""
     vlm_timeout_seconds: int | None = None
     max_queue_batch: int = 10
+    max_windows_per_batch: int = 1
+    max_embedded_images: int = 100
+    min_embedded_image_px: int = 64
 
 
 @dataclass(slots=True)
@@ -436,6 +439,9 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
         vlm_api_key_env=str(vlm_data.get("api_key_env", extraction_data.get("vlm_api_key_env", _ed.vlm_api_key_env))),
         vlm_timeout_seconds=_parse_timeout(vlm_data.get("timeout_seconds", extraction_data.get("vlm_timeout_seconds"))),
         max_queue_batch=int(extraction_data.get("max_queue_batch", _ed.max_queue_batch)),
+        max_windows_per_batch=int(extraction_data.get("max_windows_per_batch", _ed.max_windows_per_batch)),
+        max_embedded_images=int(extraction_data.get("max_embedded_images", _ed.max_embedded_images)),
+        min_embedded_image_px=int(extraction_data.get("min_embedded_image_px", _ed.min_embedded_image_px)),
     )
 
     # --- daemon: Path construction ---

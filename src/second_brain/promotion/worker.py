@@ -28,12 +28,11 @@ def process_promotion_queue(
 ) -> PromotionRunResult:
     """Main entry point for the promotion daemon job.
 
-    Fetches up to max_candidates_per_run promotion_ready candidates,
-    runs the gate → decision → render → write pipeline for each.
+    Drains all promotion_ready candidates each run (no per-run cap).
+    Fetches in chunks of _FETCH_CHUNK to avoid loading the full queue into memory.
     """
     result = PromotionRunResult()
     promo_cfg = getattr(config, "promotion", None)
-    max_batch = getattr(promo_cfg, "max_candidates_per_run", 20) if promo_cfg is not None else 20
     retry_hours = getattr(promo_cfg, "retry_after_hours", 24) if promo_cfg is not None else 24
     pre_relation_sync_done = False
 
@@ -76,134 +75,136 @@ def process_promotion_queue(
                 )
                 result.requeued = cur.rowcount
 
-        # Fetch candidates that are promotion_ready and not yet decided
-        rows = conn.execute(
-            """
-            SELECT
-                ec.id AS candidate_id,
-                ec.queue_id,
-                ec.candidate_index,
-                ec.candidate_type,
-                ec.title,
-                ec.payload_json,
-                eq.archive_id,
-                eq.duplicate_state,
-                eq.bridge_id AS source_bridge_id
-            FROM extraction_candidates ec
-            JOIN extraction_queue eq ON eq.id = ec.queue_id
-            WHERE ec.promotion_state = 'promotion_ready'
-              AND NOT EXISTS (
-                  SELECT 1 FROM promotion_decisions pd WHERE pd.candidate_id = ec.id
-              )
-            ORDER BY ec.id ASC
-            LIMIT ?
-            """,
-            (max_batch,),
-        ).fetchall()
+        _FETCH_CHUNK = 200
 
         # queue_id → {candidate_index → note_id} for successfully promoted candidates
         promoted_by_queue: dict[int, dict[int, str]] = {}
 
-        for row in rows:
-            candidate_id = int(row["candidate_id"])
-            queue_id = int(row["queue_id"])
-            candidate_index = int(row["candidate_index"])
-            archive_id = str(row["archive_id"] or "")
-            duplicate_state = row["duplicate_state"]
+        _FETCH_CHUNK = 200
+        while True:
+            rows = conn.execute(
+                """
+                SELECT
+                    ec.id AS candidate_id,
+                    ec.queue_id,
+                    ec.candidate_index,
+                    ec.candidate_type,
+                    ec.title,
+                    ec.payload_json,
+                    eq.archive_id,
+                    eq.duplicate_state,
+                    eq.bridge_id AS source_bridge_id
+                FROM extraction_candidates ec
+                JOIN extraction_queue eq ON eq.id = ec.queue_id
+                WHERE ec.promotion_state = 'promotion_ready'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM promotion_decisions pd WHERE pd.candidate_id = ec.id
+                  )
+                ORDER BY ec.id ASC
+                LIMIT ?
+                """,
+                (_FETCH_CHUNK,),
+            ).fetchall()
+            if not rows:
+                break
 
-            try:
-                payload = json.loads(str(row["payload_json"]))
-            except (json.JSONDecodeError, TypeError) as exc:
-                result.errors.append(f"candidate:{candidate_id}:json_error:{exc}")
-                result.rejected += 1
-                continue
+            for row in rows:
+                candidate_id = int(row["candidate_id"])
+                queue_id = int(row["queue_id"])
+                candidate_index = int(row["candidate_index"])
+                archive_id = str(row["archive_id"] or "")
+                duplicate_state = row["duplicate_state"]
 
-            # Phase 1: Gate
-            gate = run_gate(payload, config=config)
-            if not gate.ok:
-                if not dry_run:
+                try:
+                    payload = json.loads(str(row["payload_json"]))
+                except (json.JSONDecodeError, TypeError) as exc:
+                    result.errors.append(f"candidate:{candidate_id}:json_error:{exc}")
+                    result.rejected += 1
+                    continue
+
+                # Phase 1: Gate
+                gate = run_gate(payload, config=config)
+                if not gate.ok:
+                    if not dry_run:
+                        with conn:
+                            write_rejected(conn, candidate_id, gate.errors, _DEFAULT_BRIDGE_ID)
+                    result.rejected += 1
+                    continue
+
+                # Phase 2: Decision
+                try:
+                    decision = decide(
+                        payload,
+                        duplicate_state=duplicate_state,
+                        conn=conn,
+                        config=config,
+                    )
+                except Exception as exc:
+                    result.errors.append(f"candidate:{candidate_id}:decision_error:{exc}")
+                    result.rejected += 1
+                    continue
+
+                if dry_run:
+                    _report_dry_run(candidate_id, decision)
+                    if decision.decision == "review":
+                        result.review_routed += 1
+                    else:
+                        result.promoted += 1
+                    continue
+
+                # Phase 3: Render
+                existing_path = _resolve_existing_path(decision, config)
+                try:
+                    metadata, rendered_markdown = render(
+                        payload,
+                        decision=decision,
+                        candidate_id=candidate_id,
+                        archive_id=archive_id,
+                        existing_note_path=existing_path,
+                    )
+                except Exception as exc:
+                    result.errors.append(f"candidate:{candidate_id}:render_error:{exc}")
+                    result.rejected += 1
+                    continue
+
+                # Phase 4: Write
+                raw_attribution = payload.get("retrieval_attribution")
+                retrieval_attribution_json: str | None = None
+                if isinstance(raw_attribution, list) and raw_attribution:
+                    try:
+                        retrieval_attribution_json = json.dumps(raw_attribution)
+                    except (TypeError, ValueError):
+                        retrieval_attribution_json = None
+                try:
                     with conn:
-                        write_rejected(conn, candidate_id, gate.errors, _DEFAULT_BRIDGE_ID)
-                result.rejected += 1
-                continue
+                        write_promotion(
+                            rendered_markdown,
+                            metadata=metadata,
+                            decision=decision,
+                            candidate_id=candidate_id,
+                            archive_id=archive_id,
+                            bridge_id=_DEFAULT_BRIDGE_ID,
+                            conn=conn,
+                            vault_root=config.paths.vault_root,
+                            retrieval_attribution_json=retrieval_attribution_json,
+                        )
+                except Exception as exc:
+                    result.errors.append(f"candidate:{candidate_id}:write_error:{exc}")
+                    result.rejected += 1
+                    continue
 
-            # Phase 2: Decision
-            try:
-                decision = decide(
-                    payload,
-                    duplicate_state=duplicate_state,
-                    conn=conn,
-                    config=config,
-                )
-            except Exception as exc:
-                result.errors.append(f"candidate:{candidate_id}:decision_error:{exc}")
-                result.rejected += 1
-                continue
-
-            if dry_run:
-                # Dry-run: report decision without writing
-                _report_dry_run(candidate_id, decision)
                 if decision.decision == "review":
                     result.review_routed += 1
                 else:
                     result.promoted += 1
-                continue
-
-            # Phase 3: Render
-            existing_path = _resolve_existing_path(decision, config)
-            try:
-                metadata, rendered_markdown = render(
-                    payload,
-                    decision=decision,
-                    candidate_id=candidate_id,
-                    archive_id=archive_id,
-                    existing_note_path=existing_path,
-                )
-            except Exception as exc:
-                result.errors.append(f"candidate:{candidate_id}:render_error:{exc}")
-                result.rejected += 1
-                continue
-
-            # Phase 4: Write
-            # Serialize retrieval_attribution from validated payload if present.
-            raw_attribution = payload.get("retrieval_attribution")
-            retrieval_attribution_json: str | None = None
-            if isinstance(raw_attribution, list) and raw_attribution:
-                try:
-                    retrieval_attribution_json = json.dumps(raw_attribution)
-                except (TypeError, ValueError):
-                    retrieval_attribution_json = None
-            try:
-                with conn:
-                    write_promotion(
-                        rendered_markdown,
-                        metadata=metadata,
-                        decision=decision,
-                        candidate_id=candidate_id,
-                        archive_id=archive_id,
-                        bridge_id=_DEFAULT_BRIDGE_ID,
-                        conn=conn,
-                        vault_root=config.paths.vault_root,
-                        retrieval_attribution_json=retrieval_attribution_json,
-                    )
-            except Exception as exc:
-                result.errors.append(f"candidate:{candidate_id}:write_error:{exc}")
-                result.rejected += 1
-                continue
-
-            if decision.decision == "review":
-                result.review_routed += 1
-            else:
-                result.promoted += 1
-                # Record for intra-source relation second pass (keyed by candidate_index)
-                pd_row = conn.execute(
-                    "SELECT target_note_id FROM promotion_decisions WHERE candidate_id = ?",
-                    (candidate_id,),
-                ).fetchone()
-                if pd_row is not None:
-                    note_id = str(pd_row["target_note_id"] or "")
-                    if note_id:
-                        promoted_by_queue.setdefault(queue_id, {})[candidate_index] = note_id
+                    pd_row = conn.execute(
+                        "SELECT target_note_id FROM promotion_decisions WHERE candidate_id = ?",
+                        (candidate_id,),
+                    ).fetchone()
+                    if pd_row is not None:
+                        note_id = str(pd_row["target_note_id"] or "")
+                        if note_id:
+                            promoted_by_queue.setdefault(queue_id, {})[candidate_index] = note_id
 
         if not dry_run and promoted_by_queue:
             # Newly promoted files must be present in notes before graph_edges can

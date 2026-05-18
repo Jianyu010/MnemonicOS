@@ -77,16 +77,19 @@ Without flags: shows queue counts by status and the N most recent items.
 Reset errored extraction queue items back to `pending` so they will be retried.
 
 ```
-mnemonicos retry-extraction {--queue-id N | --all-errors} [--dry-run]
+mnemonicos retry-extraction {--queue-id N | --all-errors} [--include-tombstoned] [--dry-run]
 ```
 
 | Arg | Description |
 |-----|-------------|
 | `--queue-id N` | Retry a single item by queue id |
 | `--all-errors` | Retry all non-tombstoned error items |
+| `--include-tombstoned` | Also reset tombstoned items (`last_error LIKE 'tombstoned:%'`) when using `--all-errors` |
 | `--dry-run` | Print what would change without modifying the DB |
 
-**Note:** `attempt_count` is preserved on retry. If an item fails again after retry, the extraction worker will automatically tombstone it (prefixes `last_error` with `tombstoned:`). Tombstoned items are excluded from `--all-errors`.
+**Note:** `attempt_count` is preserved on retry. If an item fails again after retry, the extraction worker will automatically tombstone it (prefixes `last_error` with `tombstoned:`). Tombstoned items are excluded from `--all-errors` by default; pass `--include-tombstoned` to override.
+
+**Tip for large artifacts (textbooks, long PDFs):** If extraction fails with `HTTP Error 500`, the LLM context window was exceeded. The worker sends one text window (~10 000 tokens) per LLM call by default (`extraction.max_windows_per_batch = 1`). Increasing this value on capable hardware reduces round-trips but risks context overflow on smaller models.
 
 ---
 
@@ -207,6 +210,15 @@ To disable lazy ingest and extract text synchronously at ingest time, set:
 lazy_pdf_ingest = false
 ```
 
+**Extraction windowing** — the projection layer splits each artifact's text into windows of `~10 000` tokens (paragraphs, with 512-token overlap). The extraction worker sends one window per LLM call by default. Relevant `[extraction]` config keys:
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `max_windows_per_batch` | `1` | Windows sent per LLM call. Keep at `1` for models with ≤ 32 K context. Increase only if your model handles larger inputs. |
+| `max_queue_batch` | `10` | Artifacts processed per daemon tick (every 5 min). |
+
+Large textbooks produce many windows (a 566-page PDF ≈ 17 windows). At `max_windows_per_batch = 1` the daemon processes one window per LLM call, serialised within each artifact, emitting N candidates per window (one candidate per discrete knowledge piece: theorem, definition, proof, procedure). All candidates across windows are merged before promotion.
+
 ---
 
 ### `ingest-dir`
@@ -288,10 +300,15 @@ mnemonicos reprocess-artifact {--archive-id ID | --failed} [--json]
 Run hybrid retrieval against the wiki and archive.
 
 ```
-mnemonicos retrieve QUERY [--top-k N] [--query-type-hint HINT] [--json]
+mnemonicos retrieve QUERY [--top-k N] [--query-type-hint HINT] [--include-body] [--body-chars N] [--json]
 ```
 
 `--query-type-hint` ∈ `{how_to, decision, who_where_relation}`. Adjusts channel weights.
+
+By default, retrieve output stays compact: hits expose `summary`, `excerpt`, and
+`body_path`, but not full note text. `--include-body` hydrates returned wiki hits
+from `body_path` for inspection. Combine it with `--body-chars N` to cap each
+body. Archive chunks are not hydrated by this flag.
 
 ---
 
