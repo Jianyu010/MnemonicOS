@@ -6,7 +6,9 @@ import json
 import os
 from pathlib import Path
 import shlex
+import socket
 import subprocess
+import time
 from typing import Any, Protocol
 from urllib import request
 from urllib.parse import urlparse
@@ -551,7 +553,14 @@ def _candidate_extraction_prompt(packet: dict[str, Any]) -> str:
     )
 
 
-def _ollama_generate(base_url: str, *, model: str, prompt: str, images: list[str] | None = None) -> str:
+def _ollama_generate(
+    base_url: str,
+    *,
+    model: str,
+    prompt: str,
+    images: list[str] | None = None,
+    timeout_seconds: int | None = None,
+) -> str:
     payload: dict[str, Any] = {
         "model": model,
         "prompt": prompt,
@@ -565,7 +574,7 @@ def _ollama_generate(base_url: str, *, model: str, prompt: str, images: list[str
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with _open_request(req, timeout_seconds=None) as response:
+    with _open_request(req, timeout_seconds=timeout_seconds) as response:
         data = json.loads(response.read().decode("utf-8"))
     return str(data.get("response") or "").strip()
 
@@ -599,12 +608,44 @@ def _json_request(
     return data
 
 
+_TRANSIENT_ERRORS = (
+    BrokenPipeError,
+    ConnectionResetError,
+    ConnectionAbortedError,
+    TimeoutError,
+    socket.timeout,
+)
+_RETRY_DELAYS = (1.0, 3.0, 8.0)
+
+
 def _open_request(req: request.Request, *, timeout_seconds: int | None):
+    import http.client
+    from urllib.error import URLError
+    transient = _TRANSIENT_ERRORS + (http.client.RemoteDisconnected,)
     host = urlparse(req.full_url).hostname or ""
-    if host in {"127.0.0.1", "localhost", "::1"}:
-        opener = request.build_opener(request.ProxyHandler({}))
-        return opener.open(req, timeout=timeout_seconds)
-    return request.urlopen(req, timeout=timeout_seconds)
+    use_proxy_bypass = host in {"127.0.0.1", "localhost", "::1"}
+    last_exc: BaseException | None = None
+    for attempt, delay in enumerate((*_RETRY_DELAYS, None)):
+        try:
+            if use_proxy_bypass:
+                opener = request.build_opener(request.ProxyHandler({}))
+                return opener.open(req, timeout=timeout_seconds)
+            return request.urlopen(req, timeout=timeout_seconds)
+        except URLError as exc:
+            if isinstance(exc.reason, transient):
+                last_exc = exc
+                if delay is None:
+                    break
+                time.sleep(delay)
+            else:
+                raise
+        except transient as exc:
+            last_exc = exc
+            if delay is None:
+                break
+            time.sleep(delay)
+    assert last_exc is not None
+    raise last_exc
 
 
 def _parse_jsonish_response(text: str) -> dict[str, Any]:
