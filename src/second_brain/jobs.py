@@ -581,12 +581,46 @@ def run_job(config: AppConfig, *, job_name: str, dry_run: bool = False) -> JobRu
         connection.close()
         return JobRunResult(job_name=job_name, status="ok", stats=stats, review_items_created=[])
 
+    if job_name == "wiki_auto_resolve_review":
+        connection.close()
+        return _wiki_auto_resolve_review_job(config, dry_run=dry_run)
+
     if job_name == "retry_failed_extractions":
         connection.close()
         return _retry_failed_extractions_job(config, dry_run=dry_run)
 
     connection.close()
     raise ValueError(f"unsupported job: {job_name}")
+
+
+def _wiki_auto_resolve_review_job(config: AppConfig, *, dry_run: bool = False) -> JobRunResult:
+    from .promotion.auto_resolver import run_auto_resolve
+
+    conn = connect_db(config.paths.db_path)
+    run_migrations(conn, config.paths.workspace_root / "migrations")
+    stats: dict[str, int] = {}
+    with conn:
+        job_id = _open_job_run(conn, "wiki_auto_resolve_review", "dry-run" if dry_run else "live")
+    conn.close()
+    try:
+        result = run_auto_resolve(config, dry_run=dry_run)
+        stats = result.to_stats()
+        conn = connect_db(config.paths.db_path)
+        with conn:
+            _close_job_run(conn, job_id, status="ok", stats=stats)
+        conn.close()
+        return JobRunResult(
+            job_name="wiki_auto_resolve_review",
+            status="ok",
+            stats=stats,
+            review_items_created=[],
+        )
+    except Exception as exc:
+        conn = connect_db(config.paths.db_path)
+        with conn:
+            _close_job_run(conn, job_id, status="error", stats=stats, error_text=str(exc))
+        conn.close()
+        raise
 
 
 def _retry_failed_extractions_job(config: AppConfig, *, dry_run: bool = False) -> JobRunResult:

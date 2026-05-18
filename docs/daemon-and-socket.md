@@ -57,6 +57,7 @@ Default schedule (all times UTC, cron format `minute hour day month weekday`):
 |-----|------|------|
 | `process_extraction_queue` | `*/5 * * * *` | every 5 min |
 | `process_promotion_queue` | `*/5 * * * *` | every 5 min |
+| `wiki_auto_resolve_review` | `*/10 * * * *` | every 10 min |
 | `wiki_derive_passive_feedback` | `*/30 * * * *` | every 30 min |
 | `expire_stale_episodes` | `0 * * * *` | hourly :00 |
 | `status_report` | `0 * * * *` | hourly :00 |

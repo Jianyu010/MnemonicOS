@@ -109,6 +109,8 @@ Displays counts of `promotion_ready`, `promoted`, `review_routed`, `rejected`, a
 
 Inspect and process notes routed to human review.
 
+> Review items are pre-processed by the `wiki_auto_resolve_review` daemon before they reach human review. Items that remain in `brain/wiki/review/` carry a `## LLM Analysis` block with the daemon's recommendation and reasoning.
+
 ```
 mnemonicos review [list|show NAME|approve NAME|reject NAME]
 ```
@@ -137,6 +139,7 @@ mnemonicos run-job JOB_NAME [--dry-run]
 |----------|----------|-------------|
 | `process_extraction_queue` | every 5 min | Run LLM/VLM extraction on pending items |
 | `process_promotion_queue` | every 5 min | Promote extraction candidates to wiki |
+| `wiki_auto_resolve_review` | every 10 min | LLM-auto-resolve promotion review items; enriches files for human when confidence < 0.75 |
 | `expire_stale_episodes` | hourly :00 | Close raw capture episodes idle > threshold |
 | `embed_backfill` | hourly :15 | Compute missing embedding vectors |
 | `status_report` | hourly :00 | Write queue/storage health snapshot to job_runs |
