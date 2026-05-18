@@ -147,17 +147,20 @@ def approve_review_item(
 
     vault_root = config.paths.vault_root
 
+    resolved_from_id: Path | None = None
     if target_note_id:
-        resolved = _path_from_note_id(vault_root, target_note_id)
-        final = resolved if resolved is not None else _final_path(vault_root, note_type, str(metadata.get("title") or ""))
+        resolved_from_id = _path_from_note_id(vault_root, target_note_id)
+
+    if resolved_from_id is not None:
+        final = resolved_from_id
+        # Writing to an existing known path is intentional — no conflict check.
     else:
         final = _final_path(vault_root, note_type, str(metadata.get("title") or ""))
-
-    if not target_note_id and final.exists():
-        raise FileExistsError(
-            f"target already exists: {final}\n"
-            "resolve conflict manually or use mnemonic review show to inspect both notes"
-        )
+        if final.exists():
+            raise FileExistsError(
+                f"target already exists: {final}\n"
+                "resolve conflict manually or use mnemonic review show to inspect both notes"
+            )
 
     if dry_run:
         print(f"dry_run: would move {item.path.name}")

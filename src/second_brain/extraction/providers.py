@@ -620,6 +620,7 @@ _RETRY_DELAYS = (1.0, 3.0, 8.0)
 
 def _open_request(req: request.Request, *, timeout_seconds: int | None):
     import http.client
+    from urllib.error import URLError
     transient = _TRANSIENT_ERRORS + (http.client.RemoteDisconnected,)
     host = urlparse(req.full_url).hostname or ""
     use_proxy_bypass = host in {"127.0.0.1", "localhost", "::1"}
@@ -630,13 +631,19 @@ def _open_request(req: request.Request, *, timeout_seconds: int | None):
                 opener = request.build_opener(request.ProxyHandler({}))
                 return opener.open(req, timeout=timeout_seconds)
             return request.urlopen(req, timeout=timeout_seconds)
+        except URLError as exc:
+            if isinstance(exc.reason, transient):
+                last_exc = exc
+                if delay is None:
+                    break
+                time.sleep(delay)
+            else:
+                raise
         except transient as exc:
             last_exc = exc
             if delay is None:
                 break
             time.sleep(delay)
-        except Exception:
-            raise
     assert last_exc is not None
     raise last_exc
 
