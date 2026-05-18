@@ -252,6 +252,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "sync_vault_incremental",
             "process_extraction_queue",
             "process_promotion_queue",
+            "wiki_auto_resolve_review",
             "expire_stale_episodes",
             "embed_backfill",
             "status_report",
