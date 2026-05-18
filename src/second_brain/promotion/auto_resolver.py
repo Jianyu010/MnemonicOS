@@ -123,14 +123,22 @@ def _process_one(
         result.auto_promoted += 1
         return
 
-    # Step 3: LLM resolution
+    # Step 3: LLM resolution — skip in dry_run to avoid blocking on real LLM calls
+    if dry_run:
+        result.human_fallback += 1
+        return
+
     llm_result = _resolve_with_llm(item, payload, decision, conn, config, llm_fn)
 
-    if llm_result.get("confidence", 0.0) >= _CONFIDENCE_THRESHOLD and llm_result.get("action") != "human":
+    if float(llm_result.get("confidence", 0.0)) >= _CONFIDENCE_THRESHOLD and llm_result.get("action") != "human":
         if not dry_run:
             if llm_result["action"] == "approve":
                 try:
-                    approve_review_item(config, item.filename)
+                    approve_review_item(
+                        config,
+                        item.filename,
+                        target_note_id=llm_result.get("target_note_id") or None,
+                    )
                 except FileExistsError:
                     _safe_reject(config, item.filename)
                 except FileNotFoundError:
@@ -427,9 +435,10 @@ def _make_llm_fn(config: "AppConfig") -> Callable[[str], str]:
     if provider.provider_name == "ollama":
         base_url = (config.extraction.llm_base_url or config.extraction.ollama_base_url or "").rstrip("/")
         model_name = provider.model_name
+        timeout_seconds = config.extraction.llm_timeout_seconds
 
         def _ollama(prompt: str) -> str:
-            return _ollama_generate(base_url, model=model_name, prompt=prompt)
+            return _ollama_generate(base_url, model=model_name, prompt=prompt, timeout_seconds=timeout_seconds)
         return _ollama
 
     if provider.provider_name in {"openai", "openai_compatible"}:

@@ -108,12 +108,31 @@ def _render_note(metadata: dict[str, Any], body: str) -> str:
     return f"---\n{front}---\n\n{body}"
 
 
+def _path_from_note_id(vault_root: Path, note_id: str) -> Path | None:
+    """Resolve vault path from a note_id like 'concept/some-slug'. Returns None if not found."""
+    if "/" not in note_id:
+        return None
+    note_type, slug = note_id.split("/", 1)
+    if note_type == "procedure":
+        procedures_root = vault_root / "wiki" / "procedures"
+        for subdir in ("active", "drafts", "retired"):
+            candidate = procedures_root / subdir / f"{slug}.md"
+            if candidate.exists():
+                return candidate
+        return procedures_root / "drafts" / f"{slug}.md"
+    directory = TYPE_TO_DIRECTORY.get(note_type)
+    if directory is None:
+        return None
+    return vault_root / "wiki" / directory / f"{slug}.md"
+
+
 def approve_review_item(
     config: AppConfig,
     name: str,
     *,
     lifecycle_state: str | None = None,
     dry_run: bool = False,
+    target_note_id: str | None = None,
 ) -> Path:
     item = get_review_item(config, name)
     text = item.path.read_text(encoding="utf-8")
@@ -127,9 +146,14 @@ def approve_review_item(
     metadata["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     vault_root = config.paths.vault_root
-    final = _final_path(vault_root, note_type, str(metadata.get("title") or ""))
 
-    if final.exists():
+    if target_note_id:
+        resolved = _path_from_note_id(vault_root, target_note_id)
+        final = resolved if resolved is not None else _final_path(vault_root, note_type, str(metadata.get("title") or ""))
+    else:
+        final = _final_path(vault_root, note_type, str(metadata.get("title") or ""))
+
+    if not target_note_id and final.exists():
         raise FileExistsError(
             f"target already exists: {final}\n"
             "resolve conflict manually or use mnemonic review show to inspect both notes"

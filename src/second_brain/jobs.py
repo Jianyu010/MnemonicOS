@@ -623,10 +623,14 @@ def _wiki_auto_resolve_review_job(config: AppConfig, *, dry_run: bool = False) -
         raise
 
 
+_STALE_PROCESSING_TIMEOUT_MINUTES = 60
+_STALE_PROCESSING_TOMBSTONE_ATTEMPTS = 3
+
+
 def _retry_failed_extractions_job(config: AppConfig, *, dry_run: bool = False) -> JobRunResult:
     connection = connect_db(config.paths.db_path)
     run_migrations(connection, config.paths.workspace_root / "migrations")
-    stats: dict[str, int] = {"retried": 0, "skipped_tombstoned": 0}
+    stats: dict[str, int] = {"retried": 0, "skipped_tombstoned": 0, "stale_processing_reset": 0, "stale_processing_tombstoned": 0}
     job_id: int | None = None
     try:
         with connection:
@@ -646,6 +650,19 @@ def _retry_failed_extractions_job(config: AppConfig, *, dry_run: bool = False) -
             ).fetchone() or [0])[0]
         )
         stats["skipped_tombstoned"] = tombstoned_count
+
+        # Recover items stuck in 'processing' — worker died without calling mark_error.
+        stale_rows = connection.execute(
+            """
+            SELECT id, attempt_count
+            FROM extraction_queue
+            WHERE status = 'processing'
+              AND started_at < datetime('now', ? || ' minutes')
+            ORDER BY started_at ASC
+            """,
+            (f"-{_STALE_PROCESSING_TIMEOUT_MINUTES}",),
+        ).fetchall()
+
         if not dry_run:
             with connection:
                 for row in rows:
@@ -654,8 +671,29 @@ def _retry_failed_extractions_job(config: AppConfig, *, dry_run: bool = False) -
                         (int(row["id"]),),
                     )
                     stats["retried"] += 1
+                for row in stale_rows:
+                    if int(row["attempt_count"]) >= _STALE_PROCESSING_TOMBSTONE_ATTEMPTS:
+                        connection.execute(
+                            "UPDATE extraction_queue SET status='error', finished_at=datetime('now'), "
+                            "last_error='tombstoned: stale processing — worker did not complete after " + str(_STALE_PROCESSING_TOMBSTONE_ATTEMPTS) + " attempts' "
+                            "WHERE id=?",
+                            (int(row["id"]),),
+                        )
+                        stats["stale_processing_tombstoned"] += 1
+                    else:
+                        connection.execute(
+                            "UPDATE extraction_queue SET status='pending', last_error=NULL, started_at=NULL, finished_at=NULL WHERE id=?",
+                            (int(row["id"]),),
+                        )
+                        stats["stale_processing_reset"] += 1
         else:
             stats["retried"] = len(rows)
+            for row in stale_rows:
+                if int(row["attempt_count"]) >= _STALE_PROCESSING_TOMBSTONE_ATTEMPTS:
+                    stats["stale_processing_tombstoned"] += 1
+                else:
+                    stats["stale_processing_reset"] += 1
+
         with connection:
             _close_job_run(connection, job_id, status="ok", stats=stats)
         return JobRunResult(job_name="retry_failed_extractions", status="ok", stats=stats, review_items_created=[])
