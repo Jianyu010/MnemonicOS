@@ -232,6 +232,13 @@ def mark_finished(
     )
 
 
+def update_window_checkpoint(connection: sqlite3.Connection, *, queue_id: int, completed_window_count: int) -> None:
+    connection.execute(
+        "UPDATE extraction_queue SET completed_window_count = ? WHERE id = ?",
+        (completed_window_count, queue_id),
+    )
+
+
 def mark_error(connection: sqlite3.Connection, *, queue_id: int, error: str) -> None:
     connection.execute(
         """

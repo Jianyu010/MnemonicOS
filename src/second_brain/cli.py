@@ -13,7 +13,7 @@ import time
 from typing import Any
 
 from .config import default_config_path, load_config
-from .daemon_status import daemon_status_summary, daemon_unreachable_summary, read_pid, socket_send
+from .daemon_status import daemon_status_summary, daemon_unreachable_summary, read_pid, socket_send, watch_daemon
 from .db import connect_db, run_migrations
 from .extraction import enqueue_extraction, extraction_status
 from .ingest import (
@@ -277,6 +277,8 @@ def _build_parser() -> argparse.ArgumentParser:
     daemon_subparsers.add_parser("stop", help="Stop the daemon.")
     daemon_status = daemon_subparsers.add_parser("status", help="Show daemon status.")
     daemon_status.add_argument("--json", action="store_true", help="Emit raw JSON output.")
+    daemon_watch = daemon_subparsers.add_parser("watch", help="Live updating daemon status dashboard.")
+    daemon_watch.add_argument("--interval", type=int, default=3, metavar="SECS", help="Refresh interval in seconds (default: 3).")
     daemon_run_job = daemon_subparsers.add_parser("run-job", help="Ask the daemon to run a job immediately.")
     daemon_run_job.add_argument("job_name")
 
@@ -1631,6 +1633,11 @@ def _daemon_status(config_path: str, emit_json: bool) -> int:
     return 0 if response.get("status") == "ok" else 1
 
 
+def _daemon_watch(config_path: str, interval: int) -> int:
+    watch_daemon(config_path, interval=interval)
+    return 0
+
+
 def _daemon_run_job(config_path: str, job_name: str) -> int:
     config = load_config(config_path)
     if config.daemon is None:
@@ -1825,6 +1832,8 @@ def main(argv: list[str] | None = None) -> int:
             return _daemon_stop(args.config)
         if args.daemon_command == "status":
             return _daemon_status(args.config, args.json)
+        if args.daemon_command == "watch":
+            return _daemon_watch(args.config, args.interval)
         if args.daemon_command == "run-job":
             return _daemon_run_job(args.config, args.job_name)
     if args.command == "orchestrator":

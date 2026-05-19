@@ -204,13 +204,14 @@ class OllamaVLMProvider:
 class OllamaLLMProvider:
     provider_name = "ollama"
 
-    def __init__(self, model_name: str, *, base_url: str = "http://127.0.0.1:11434") -> None:
+    def __init__(self, model_name: str, *, base_url: str = "http://127.0.0.1:11434", timeout_seconds: int | None = None) -> None:
         self.model_name = model_name
         self.base_url = base_url.rstrip("/")
+        self.timeout_seconds = timeout_seconds
 
     def extract_candidates(self, packet: dict[str, Any]) -> str:
         prompt = _candidate_extraction_prompt(packet)
-        return _ollama_generate(self.base_url, model=self.model_name, prompt=prompt)
+        return _ollama_generate(self.base_url, model=self.model_name, prompt=prompt, timeout_seconds=self.timeout_seconds)
 
 
 class OpenAICompatibleLLMProvider:
@@ -367,7 +368,7 @@ def build_llm_provider(config: AppConfig) -> LLMProvider:
     if config.extraction.llm_provider == "fixture":
         return FixtureLLMProvider(config.extraction.llm_model)
     if config.extraction.llm_provider == "ollama":
-        return OllamaLLMProvider(config.extraction.llm_model, base_url=config.extraction.llm_base_url or config.extraction.ollama_base_url)
+        return OllamaLLMProvider(config.extraction.llm_model, base_url=config.extraction.llm_base_url or config.extraction.ollama_base_url, timeout_seconds=config.extraction.llm_timeout_seconds)
     if config.extraction.llm_provider in {"openai", "openai_compatible"}:
         return OpenAICompatibleLLMProvider(
             config.extraction.llm_model,

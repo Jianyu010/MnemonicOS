@@ -27,11 +27,13 @@ class Scheduler:
         self.logger = logging.getLogger("mnemonicos.daemon.scheduler")
         self.running_job: str | None = None
         self.last_result: dict[str, Any] | None = None
+        self.job_progress: dict[str, Any] = {}
 
     def _run_job(self, job_name: str) -> dict[str, Any]:
         self.running_job = job_name
+        self.job_progress.clear()
         try:
-            result = self.registry.run(self.config, job_name)
+            result = self.registry.run(self.config, job_name, progress=self.job_progress if job_name == "process_extraction_queue" else None)
             payload = {
                 "status": "ok",
                 "job": job_name,
@@ -51,6 +53,7 @@ class Scheduler:
             return payload
         finally:
             self.running_job = None
+            self.job_progress.clear()
 
     def tick(self) -> None:
         now = datetime.now(timezone.utc)
@@ -85,6 +88,7 @@ class Scheduler:
         ]
         return {
             "running_job": self.running_job,
+            "job_progress": dict(self.job_progress) if self.job_progress else None,
             "scheduled_jobs": scheduled_jobs,
             "last_result": self.last_result,
         }
@@ -97,6 +101,7 @@ class SocketServer:
         self.shutdown_event = shutdown_event
         self.logger = logging.getLogger("mnemonicos.daemon.socket")
         self.server_socket: socket.socket | None = None
+        self._bound = False  # True only after we successfully bind the socket
 
     def _remove_stale_socket(self) -> None:
         socket_path = self.config.daemon.socket_path if self.config.daemon is not None else None
@@ -131,6 +136,7 @@ class SocketServer:
         server_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.server_socket = server_socket
         server_socket.bind(str(socket_path))
+        self._bound = True
         server_socket.listen()
         server_socket.settimeout(1.0)
         while not self.shutdown_event.is_set():
@@ -152,7 +158,10 @@ class SocketServer:
                     response = self._handle_request(payload)
                 except Exception as exc:
                     response = {"status": "error", "error": str(exc)}
-                client.sendall((json.dumps(response, sort_keys=True) + "\n").encode("utf-8"))
+                try:
+                    client.sendall((json.dumps(response, sort_keys=True) + "\n").encode("utf-8"))
+                except OSError:
+                    pass
         self.close()
 
     def close(self) -> None:
@@ -162,7 +171,10 @@ class SocketServer:
             except OSError:
                 pass
             self.server_socket = None
-        self._remove_stale_socket()
+        # Only remove the socket file if we were the one who created it.
+        # Skipping this prevents a dying sibling from nuking a live daemon's socket.
+        if self._bound:
+            self._remove_stale_socket()
 
 
 class Daemon:
@@ -175,7 +187,7 @@ class Daemon:
         self.job_lock = threading.Lock()
         self.scheduler = Scheduler(config, self.registry, self.shutdown_event, self.job_lock)
         self.socket_server = SocketServer(config, self.scheduler, self.shutdown_event)
-        self.scheduler_thread = threading.Thread(target=self.scheduler.run, name="mnemonicos-scheduler", daemon=False)
+        self.scheduler_thread = threading.Thread(target=self.scheduler.run, name="mnemonicos-scheduler", daemon=True)
         self.socket_thread = threading.Thread(target=self.socket_server.serve, name="mnemonicos-socket", daemon=True)
         self.logger = logging.getLogger("mnemonicos.daemon")
 
@@ -199,10 +211,41 @@ class Daemon:
         pid_path.write_text(f"{os.getpid()}\n", encoding="utf-8")
 
     def _remove_pid(self) -> None:
+        pid_path = self.config.daemon.pid_path
         try:
-            self.config.daemon.pid_path.unlink()
-        except FileNotFoundError:
+            current = pid_path.read_text(encoding="utf-8").strip()
+            if current != str(os.getpid()):
+                return  # Another daemon owns this file; don't delete it.
+            pid_path.unlink()
+        except (FileNotFoundError, OSError):
             pass
+
+    def _mark_processing_items_as_error(self) -> None:
+        """On shutdown, mark any items still 'processing' as error.
+
+        Subprocess-based extraction means no item should be processing after
+        the scheduler thread joins — but if one was killed mid-run (e.g. OOM,
+        SIGKILL on the subprocess), the row stays stuck. Clearing it here lets
+        retry_failed_extractions tombstone them on the next daemon run instead
+        of waiting for the 60-minute stale timeout.
+        """
+        try:
+            from .db import connect_db, run_migrations
+            conn = connect_db(self.config.paths.db_path)
+            run_migrations(conn, self.config.paths.workspace_root / "migrations")
+            with conn:
+                conn.execute(
+                    """
+                    UPDATE extraction_queue
+                    SET status = 'error',
+                        finished_at = datetime('now'),
+                        last_error = 'daemon shutdown: item was still processing at exit'
+                    WHERE status = 'processing'
+                    """
+                )
+            self.logger.info("cleared in-flight processing items on shutdown")
+        except Exception as exc:
+            self.logger.warning("failed to clear processing items on shutdown: %s", exc)
 
     def _install_signal_handlers(self) -> None:
         def _handler(signum: int, _frame: Any) -> None:
@@ -225,9 +268,10 @@ class Daemon:
                 self.shutdown_event.wait(1.0)
         finally:
             self.shutdown_event.set()
-            self.scheduler_thread.join(timeout=60.0)
+            self.scheduler_thread.join(timeout=5.0)
             self.socket_server.close()
             self.socket_thread.join(timeout=2.0)
+            self._mark_processing_items_as_error()
             self._remove_pid()
             self.logger.info("mnemonicos daemon stopped")
         return 0

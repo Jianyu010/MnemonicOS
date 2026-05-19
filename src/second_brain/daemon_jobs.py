@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Callable
+from typing import Any, Callable
 
 from .config import AppConfig
 from .jobs import run_job
@@ -115,13 +115,13 @@ class JobRegistry:
                 entry.next_due = entry.cron.next_after(now_utc)
         return due
 
-    def run(self, config: AppConfig, job_name: str) -> JobRunResult:
-        return self._entries[job_name].fn(config)
+    def run(self, config: AppConfig, job_name: str, progress: dict[str, Any] | None = None) -> JobRunResult:
+        return self._entries[job_name].fn(config, progress=progress)
 
 
-def _wrap_job(name: str) -> Callable[[AppConfig], JobRunResult]:
-    def _runner(config: AppConfig) -> JobRunResult:
-        return run_job(config, job_name=name, dry_run=False)
+def _wrap_job(name: str) -> Callable[..., JobRunResult]:
+    def _runner(config: AppConfig, progress: dict[str, Any] | None = None) -> JobRunResult:
+        return run_job(config, job_name=name, dry_run=False, progress=progress)
 
     return _runner
 

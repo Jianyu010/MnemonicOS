@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import socket
+import sqlite3
+import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from .config import default_config_path, load_config
 
@@ -231,3 +236,222 @@ def run_daemon_maintenance_job(workspace_root: Path, job_name: str) -> str:
     if status == "busy":
         return f"Maintenance job: {job_name}\nStatus: busy\nRunning job: {response.get('running_job', 'unknown')}"
     return f"Maintenance job: {job_name}\nStatus: {status}\nError: {response.get('error', 'unknown')}"
+
+
+# ---------------------------------------------------------------------------
+# Live watch display
+# ---------------------------------------------------------------------------
+
+_RESET = "\033[0m"
+_BOLD = "\033[1m"
+_DIM = "\033[2m"
+_GREEN = "\033[32m"
+_YELLOW = "\033[33m"
+_RED = "\033[31m"
+_CYAN = "\033[36m"
+_BLUE = "\033[34m"
+_CLEAR_SCREEN = "\033[2J\033[H"
+
+
+def _bar(fraction: float, width: int = 32) -> str:
+    filled = min(width, int(fraction * width))
+    empty = width - filled
+    pct = int(fraction * 100)
+    return f"[{_GREEN}{'█' * filled}{_DIM}{'░' * empty}{_RESET}] {pct:3d}%"
+
+
+def _elapsed(started_at_str: str | None) -> str:
+    if not started_at_str:
+        return ""
+    try:
+        started = datetime.fromisoformat(started_at_str).replace(tzinfo=timezone.utc)
+        delta = int((datetime.now(timezone.utc) - started).total_seconds())
+    except ValueError:
+        return ""
+    if delta < 60:
+        return f"{delta}s"
+    if delta < 3600:
+        return f"{delta // 60}m{delta % 60:02d}s"
+    return f"{delta // 3600}h{(delta % 3600) // 60:02d}m"
+
+
+def _short_archive_id(archive_id: str | None) -> str:
+    if not archive_id:
+        return "unknown"
+    parts = str(archive_id).split("/")
+    name = parts[-1] if parts else archive_id
+    # strip leading timestamp prefix (YYYYMMDD-HHMMSS-NNNNNN-)
+    segments = name.split("-")
+    if len(segments) > 3 and segments[0].isdigit() and segments[1].isdigit():
+        name = "-".join(segments[3:])
+    return name[:52]
+
+
+def _query_processing_items(db_path: Path) -> list[dict]:
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT id, source_kind, archive_id, conversation_id, episode_id, "
+            "started_at, attempt_count, window_count, candidate_count "
+            "FROM extraction_queue WHERE status='processing' ORDER BY started_at"
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+
+
+def _render_watch(
+    response: dict | None,
+    processing_items: list[dict],
+    now: datetime,
+    interval: int,
+) -> str:
+    ts = now.strftime("%Y-%m-%d %H:%M:%S")
+    width = min(120, os.get_terminal_size().columns if sys.stdout.isatty() else 80)
+
+    lines: list[str] = []
+    lines.append(
+        f"{_BOLD}MnemonicOS Daemon{_RESET}  "
+        f"{_DIM}{ts}  refresh {interval}s  Ctrl+C to exit{_RESET}"
+    )
+    lines.append("─" * width)
+
+    if response is None:
+        lines.append(f"{_RED}● UNREACHABLE{_RESET}  daemon not responding")
+        return "\n".join(lines)
+
+    service = response.get("service") or {}
+    health = response.get("health") or {}
+    queue = health.get("queue") or {}
+    promo = health.get("promotion") or {}
+    recent = health.get("recent_job_runs") or []
+
+    running_job = service.get("running_job")
+    job_progress: dict = service.get("job_progress") or {}
+    counts = queue.get("queue_counts") or {}
+    n_processed = int(counts.get("processed", 0))
+    n_pending = int(counts.get("pending", 0))
+    n_processing = int(counts.get("processing", 0))
+    n_error = int(counts.get("error", 0))
+    n_total = n_processed + n_pending + n_processing + n_error
+    fraction = n_processed / n_total if n_total > 0 else 0.0
+
+    status_dot = f"{_GREEN}●{_RESET}" if response.get("status") == "ok" else f"{_YELLOW}●{_RESET}"
+    job_str = f"{_CYAN}{running_job}{_RESET}" if running_job else f"{_DIM}idle{_RESET}"
+    lines.append(f"{status_dot} ONLINE   running: {job_str}")
+    lines.append("")
+
+    # Extraction queue
+    lines.append(f"{_BOLD}EXTRACTION QUEUE{_RESET}")
+    lines.append(
+        f"  pending {_YELLOW}{n_pending:4d}{_RESET}  "
+        f"processing {_CYAN}{n_processing:2d}{_RESET}  "
+        f"error {_RED}{n_error:4d}{_RESET}  "
+        f"done {_GREEN}{n_processed:5d}{_RESET}"
+    )
+
+    oldest_age = queue.get("oldest_pending_age_minutes")
+    if oldest_age is not None:
+        lines.append(f"  oldest pending: {format_minutes(int(oldest_age))}")
+
+    if processing_items:
+        lines.append(f"  {_BOLD}Currently processing:{_RESET}")
+        for item in processing_items:
+            elapsed = _elapsed(item.get("started_at"))
+            archive_id = item.get("archive_id")
+            name = _short_archive_id(archive_id) if archive_id else f"episode/{item.get('episode_id', '?')}"
+            attempt = item.get("attempt_count") or 1
+            # Per-window LLM progress from live job_progress dict
+            if job_progress and str(job_progress.get("item_id")) == str(item["id"]):
+                jp_window = int(job_progress.get("window") or 0)
+                jp_total = int(job_progress.get("total_windows") or 0)
+                jp_phase = str(job_progress.get("phase") or "")
+                jp_index = int(job_progress.get("item_index") or 0)
+                jp_items_total = int(job_progress.get("total_items") or 0)
+                batch_str = f"  batch {jp_index + 1}/{jp_items_total}" if jp_items_total > 0 else ""
+                lines.append(
+                    f"    {_CYAN}{name}{_RESET}  attempt={attempt}  "
+                    f"elapsed={elapsed if elapsed else '—'}{batch_str}"
+                )
+                if jp_total > 0:
+                    win_frac = jp_window / jp_total
+                    lines.append(
+                        f"    window {_CYAN}{jp_window}/{jp_total}{_RESET}  "
+                        f"{_bar(win_frac, 32)}  {_DIM}{jp_phase}{_RESET}"
+                    )
+                elif jp_phase:
+                    lines.append(f"    {_DIM}{jp_phase}…{_RESET}")
+            else:
+                wins = item.get("window_count") or 0
+                cands = item.get("candidate_count") or 0
+                lines.append(
+                    f"    {_CYAN}{name}{_RESET}  "
+                    f"windows={wins}  candidates={cands}  attempt={attempt}  "
+                    f"elapsed={elapsed if elapsed else '—'}"
+                )
+    elif running_job == "process_extraction_queue":
+        if job_progress:
+            jp_index = int(job_progress.get("item_index") or 0)
+            jp_total = int(job_progress.get("total_items") or 0)
+            jp_name = str(job_progress.get("item_name") or "")
+            jp_phase = str(job_progress.get("phase") or "")
+            lines.append(
+                f"  item {jp_index + 1}/{jp_total}  {_CYAN}{jp_name}{_RESET}  "
+                f"{_DIM}{jp_phase}…{_RESET}"
+            )
+        else:
+            lines.append(f"  {_DIM}(fetching item…){_RESET}")
+
+    lines.append("")
+
+    # Promotion
+    promo_ready = int(promo.get("promotion_ready") or 0)
+    promo_promoted = int(promo.get("promoted") or 0)
+    promo_review = int(promo.get("review_routed") or 0)
+    promo_last = str(promo.get("last_run_at") or "never")
+    lines.append(f"{_BOLD}PROMOTION{_RESET}")
+    lines.append(
+        f"  ready {_YELLOW}{promo_ready:3d}{_RESET}  "
+        f"promoted {_GREEN}{promo_promoted:5d}{_RESET}  "
+        f"review {promo_review}  "
+        f"last run: {_DIM}{promo_last}{_RESET}"
+    )
+    lines.append("")
+
+    # Recent jobs
+    lines.append(f"{_BOLD}RECENT JOBS{_RESET}")
+    for run in recent[:6]:
+        name = str(run.get("job_name") or "unknown")
+        status = str(run.get("status") or "?")
+        finished = str(run.get("finished_at") or "—")
+        if status == "ok":
+            icon = f"{_GREEN}✓{_RESET}"
+        elif status == "error":
+            icon = f"{_RED}✗{_RESET}"
+        else:
+            icon = f"{_YELLOW}…{_RESET}"
+        lines.append(f"  {icon}  {name:<38}  {_DIM}{finished}{_RESET}")
+
+    return "\n".join(lines)
+
+
+def watch_daemon(config_path: str, interval: int = 3) -> None:
+    from .config import load_config as _load
+    config = _load(config_path)
+    if config.daemon is None:
+        print("Daemon configuration missing.")
+        return
+
+    try:
+        while True:
+            now = datetime.now(timezone.utc).astimezone()
+            response = socket_send(config.daemon.socket_path, {"cmd": "status"})
+            processing = _query_processing_items(config.paths.db_path)
+            frame = _render_watch(response, processing, now, interval)
+            sys.stdout.write(_CLEAR_SCREEN + frame + "\n")
+            sys.stdout.flush()
+            time.sleep(interval)
+    except (KeyboardInterrupt, SystemExit):
+        sys.stdout.write("\n")
