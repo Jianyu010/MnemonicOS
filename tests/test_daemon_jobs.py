@@ -265,5 +265,77 @@ class DaemonJobsTest(unittest.TestCase):
             self.assertTrue(expected.issubset(set(registry.job_names())))
 
 
+    def test_extraction_config_dual_lane_defaults(self) -> None:
+        from second_brain.config import ExtractionConfig
+        cfg = ExtractionConfig()
+        self.assertFalse(cfg.dual_lane_enabled)
+        self.assertEqual(cfg.quick_lane_batch, 5)
+        self.assertEqual(cfg.slow_lane_batch, 5)
+
+    def test_extraction_config_dual_lane_toml(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "config").mkdir()
+            (root / "config" / "memory.toml").write_text(textwrap.dedent("""\
+                [extraction]
+                dual_lane_enabled = true
+                quick_lane_batch = 3
+                slow_lane_batch = 2
+            """))
+            cfg = load_config(root)
+            self.assertTrue(cfg.extraction.dual_lane_enabled)
+            self.assertEqual(cfg.extraction.quick_lane_batch, 3)
+            self.assertEqual(cfg.extraction.slow_lane_batch, 2)
+
+    def test_daemon_status_dual_lane_progress_rendering(self) -> None:
+        response = {
+            "status": "ok",
+            "service": {
+                "running_job": "process_extraction_queue",
+                "running_jobs": ["process_extraction_queue"],
+                "scheduled_jobs": [],
+                "job_progress": {
+                    "mode": "dual_lane",
+                    "quick": {
+                        "item_id": 1,
+                        "item_name": "episode/quick-item",
+                        "phase": "llm",
+                        "window": 2,
+                        "total_windows": 5,
+                    },
+                    "slow": {
+                        "item_id": 2,
+                        "item_name": "artifact/big.pdf",
+                        "phase": "llm",
+                        "window": 0,
+                        "total_windows": 0,
+                    },
+                },
+            },
+            "health": {
+                "queue": {
+                    "pending_count": 4,
+                    "error_count": 0,
+                    "oldest_pending_age_minutes": 10,
+                    "warnings": [],
+                },
+                "storage": {
+                    "db_bytes": 2048,
+                    "vault_bytes": 8192,
+                    "note_vectors_count": 20,
+                    "chunk_vectors_count": 8,
+                    "graph_nodes_count": 15,
+                    "graph_edges_count": 7,
+                },
+                "recent_job_runs": [],
+            },
+        }
+        text = daemon_status_summary(response)
+        self.assertIn("quick lane", text)
+        self.assertIn("slow lane", text)
+        self.assertIn("episode/quick-item", text)
+        self.assertIn("artifact/big.pdf", text)
+
+
 if __name__ == "__main__":
     unittest.main()

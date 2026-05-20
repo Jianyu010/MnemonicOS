@@ -176,6 +176,62 @@ def pending_items(connection: sqlite3.Connection, *, limit: int) -> list[Extract
     return [_row_to_item(row) for row in rows]
 
 
+def pending_quick_items(connection: sqlite3.Connection, *, limit: int) -> list[ExtractionQueueItem]:
+    """Items in lanes 0-1: episode, session, and lightweight text artifacts."""
+    rows = connection.execute(
+        """
+        SELECT q.*
+        FROM extraction_queue q
+        LEFT JOIN archive a ON a.id = q.archive_id
+        WHERE q.status = 'pending'
+          AND (
+              q.source_kind IN ('episode', 'session')
+              OR (
+                  q.source_kind = 'artifact'
+                  AND lower(ltrim(COALESCE(a.source_format, ''), '.'))
+                      IN ('md', 'markdown', 'txt', 'text', 'plain_text', 'log')
+              )
+          )
+        ORDER BY
+            CASE WHEN q.source_kind IN ('episode', 'session') THEN 0 ELSE 1 END ASC,
+            q.queued_at ASC,
+            q.id ASC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [_row_to_item(row) for row in rows]
+
+
+def pending_slow_items(connection: sqlite3.Connection, *, limit: int) -> list[ExtractionQueueItem]:
+    """Items in lanes 2-3: unknown artifacts and heavy documents (pdf, docx, pptx)."""
+    rows = connection.execute(
+        """
+        SELECT q.*
+        FROM extraction_queue q
+        LEFT JOIN archive a ON a.id = q.archive_id
+        WHERE q.status = 'pending'
+          AND q.source_kind NOT IN ('episode', 'session')
+          AND NOT (
+              q.source_kind = 'artifact'
+              AND lower(ltrim(COALESCE(a.source_format, ''), '.'))
+                  IN ('md', 'markdown', 'txt', 'text', 'plain_text', 'log')
+          )
+        ORDER BY
+            CASE
+                WHEN lower(ltrim(COALESCE(a.source_format, ''), '.'))
+                     IN ('pdf', 'docx', 'pptx') THEN 1
+                ELSE 0
+            END ASC,
+            q.queued_at ASC,
+            q.id ASC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [_row_to_item(row) for row in rows]
+
+
 def mark_processing(connection: sqlite3.Connection, queue_id: int) -> None:
     connection.execute(
         """

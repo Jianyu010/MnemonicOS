@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
+from itertools import zip_longest
 import json
 import logging
 import os
 import signal
 import subprocess
 import sys
+import tempfile
+import threading
+from pathlib import Path
 from typing import Any, Iterator
 
 from second_brain.config import AppConfig
@@ -22,6 +26,8 @@ from .queue import (
     mark_finished,
     mark_processing,
     pending_items,
+    pending_quick_items,
+    pending_slow_items,
     queue_row_to_source_ref,
     source_ref_id,
     update_window_checkpoint,
@@ -30,6 +36,161 @@ from .store import append_candidates, candidate_counts, replace_candidates, repl
 from .validation import parse_candidate_bundle, parse_intra_source_relations, projection_evidence_ids, validate_candidate
 
 _log = logging.getLogger(__name__)
+
+
+@dataclass
+class _LaneHandle:
+    """Non-blocking handle for a single extraction subprocess lane.
+
+    Caller spawns the subprocess, receives a handle, and later calls
+    ``join()`` to block until completion or timeout.
+    """
+
+    proc: subprocess.Popen
+    poll_thread: "threading.Thread | None"
+    stop_poll: threading.Event
+    progress_file: Path
+    timeout_seconds: int
+    process_registry: "Any | None"
+
+    def join(self) -> bool:
+        """Block until subprocess completes or times out. Returns True if timed out."""
+        try:
+            _, stderr = self.proc.communicate(timeout=self.timeout_seconds)
+            if self.proc.returncode != 0:
+                _log.warning(
+                    "extraction subprocess (progress_file=%s) exited %s: %s",
+                    self.progress_file.name,
+                    self.proc.returncode,
+                    (stderr or b"").decode("utf-8", errors="replace")[:300],
+                )
+            return False
+        except subprocess.TimeoutExpired:
+            _log.warning(
+                "extraction subprocess (progress_file=%s) timed out after %ss — killing",
+                self.progress_file.name,
+                self.timeout_seconds,
+            )
+            try:
+                os.killpg(self.proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            self.proc.communicate()
+            return True
+        finally:
+            self.stop_poll.set()
+            if self.poll_thread is not None:
+                self.poll_thread.join(timeout=2.0)
+            if self.process_registry is not None:
+                self.process_registry.unregister(self.proc)
+            try:
+                self.progress_file.unlink()
+            except FileNotFoundError:
+                pass
+
+
+def _make_extraction_proc(
+    *,
+    config_path: str | None,
+    item_id: int,
+    progress_file: Path,
+) -> subprocess.Popen:
+    """Build and launch extraction subprocess. Returns Popen (not waited)."""
+    cmd = [
+        sys.executable, "-m", "second_brain.extraction._subprocess_entry",
+        "--item-id", str(item_id),
+        "--progress-file", str(progress_file),
+    ]
+    if config_path:
+        cmd.extend(["--config", config_path])
+    return subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+
+
+def _spawn_item_subprocess(
+    *,
+    config_path: str | None,
+    item_id: int,
+    timeout_seconds: int,
+    progress: "dict[str, Any] | None",
+    item_index: int,
+    total_items: int,
+    item_name: str,
+    process_registry: "Any | None" = None,
+    progress_key: "str | None" = None,
+) -> _LaneHandle:
+    """Spawn extraction subprocess; return handle immediately (non-blocking).
+
+    ``progress_key`` routes progress updates into a sub-dict of *progress*
+    (e.g. ``"quick"`` or ``"slow"`` for dual-lane mode).  ``None`` means
+    flat/single-lane mode — updates go directly into *progress*.
+    """
+    progress_file = Path(tempfile.gettempdir()) / f"mnemo_progress_{item_id}.json"
+    try:
+        progress_file.unlink()
+    except FileNotFoundError:
+        pass
+
+    if progress is not None:
+        update: dict[str, Any] = {
+            "item_id": item_id,
+            "item_name": item_name,
+            "item_index": item_index,
+            "total_items": total_items,
+            "phase": "preparing",
+            "window": 0,
+            "total_windows": 0,
+        }
+        if progress_key is not None:
+            if not isinstance(progress.get(progress_key), dict):
+                progress[progress_key] = {}
+            progress[progress_key].update(update)
+        else:
+            progress.update(update)
+
+    proc = _make_extraction_proc(
+        config_path=config_path,
+        item_id=item_id,
+        progress_file=progress_file,
+    )
+    if process_registry is not None:
+        process_registry.register(proc, label=f"extraction-item-{item_id}", process_group=True)
+
+    stop_poll = threading.Event()
+
+    def _poll() -> None:
+        while not stop_poll.is_set():
+            if progress_file.exists():
+                try:
+                    data = json.loads(progress_file.read_text())
+                    if progress_key is not None and progress is not None:
+                        if not isinstance(progress.get(progress_key), dict):
+                            progress[progress_key] = {}
+                        progress[progress_key].update(data)
+                    elif progress is not None:
+                        progress.update(data)
+                except Exception:
+                    pass
+            stop_poll.wait(1.5)
+
+    if progress is not None:
+        poll_thread = threading.Thread(target=_poll, daemon=True)
+        poll_thread.start()
+    else:
+        poll_thread = None
+
+    return _LaneHandle(
+        proc=proc,
+        poll_thread=poll_thread,
+        stop_poll=stop_poll,
+        progress_file=progress_file,
+        timeout_seconds=timeout_seconds,
+        process_registry=process_registry,
+    )
 
 
 def process_extraction_queue(
@@ -52,64 +213,226 @@ def process_extraction_queue(
         candidates=0,
         promotion_ready=0,
     )
-    max_item_seconds = config.extraction.max_extraction_item_seconds
     try:
-        items = pending_items(connection, limit=limit or config.extraction.max_queue_batch)
-        total_items = len(items)
-        for item_index, item in enumerate(items):
-            if progress is not None:
-                progress.clear()
-                progress.update({
-                    "item_id": item.id,
-                    "item_name": _progress_name(item),
-                    "item_index": item_index,
-                    "total_items": total_items,
-                    "window": 0,
-                    "total_windows": 0,
-                    "phase": "preparing",
-                })
-            if dry_run:
-                # Dry-run: use in-process path (no subprocess overhead, no DB writes)
-                service = ProjectionService(config)
-                try:
-                    item_result = _process_item(config, service, connection, item=item, dry_run=True, progress=progress)
-                    stats.processed += item_result["processed"]
-                    stats.skipped += item_result["skipped"]
-                    stats.windows += item_result["windows"]
-                    stats.artifacts += item_result["artifacts"]
-                except Exception as exc:
-                    _log.warning("dry-run item %s failed: %s", item.id, exc)
-                    stats.errors += 1
-                continue
-
-            with connection:
-                mark_processing(connection, item.id)
-
-            timed_out = _run_item_subprocess(
-                config_path=str(config.config_path) if config.config_path is not None else None,
-                item_id=item.id,
-                timeout_seconds=max_item_seconds,
+        if not dry_run and config.extraction.dual_lane_enabled:
+            _process_dual_lane(
+                config, connection, stats,
                 progress=progress,
-                item_index=item_index,
-                total_items=total_items,
-                item_name=_progress_name(item),
                 process_registry=process_registry,
             )
-            if timed_out:
-                stats.errors += 1
-                with connection:
-                    mark_error(
-                        connection,
-                        queue_id=item.id,
-                        error=f"timeout: item exceeded {max_item_seconds}s per-item limit",
-                    )
-            else:
-                _accumulate_subprocess_result(connection, stats, item.id)
+        else:
+            _process_single_lane(
+                config, connection, stats,
+                dry_run=dry_run,
+                limit=limit,
+                progress=progress,
+                process_registry=process_registry,
+            )
     finally:
         if progress is not None:
             progress.clear()
         connection.close()
     return stats
+
+
+def _process_single_lane(
+    config: AppConfig,
+    connection,
+    stats: ExtractionProcessResult,
+    *,
+    dry_run: bool,
+    limit: "int | None",
+    progress: "dict[str, Any] | None",
+    process_registry: "Any | None",
+) -> None:
+    """Process extraction queue sequentially (single-lane mode, original behaviour)."""
+    max_item_seconds = config.extraction.max_extraction_item_seconds
+    config_path = str(config.config_path) if config.config_path is not None else None
+    items = pending_items(connection, limit=limit or config.extraction.max_queue_batch)
+    total_items = len(items)
+    for item_index, item in enumerate(items):
+        if progress is not None:
+            progress.clear()
+            progress.update({
+                "item_id": item.id,
+                "item_name": _progress_name(item),
+                "item_index": item_index,
+                "total_items": total_items,
+                "window": 0,
+                "total_windows": 0,
+                "phase": "preparing",
+            })
+        if dry_run:
+            # Dry-run: use in-process path (no subprocess overhead, no DB writes)
+            service = ProjectionService(config)
+            try:
+                item_result = _process_item(config, service, connection, item=item, dry_run=True, progress=progress)
+                stats.processed += item_result["processed"]
+                stats.skipped += item_result["skipped"]
+                stats.windows += item_result["windows"]
+                stats.artifacts += item_result["artifacts"]
+            except Exception as exc:
+                _log.warning("dry-run item %s failed: %s", item.id, exc)
+                stats.errors += 1
+            continue
+
+        with connection:
+            mark_processing(connection, item.id)
+
+        timed_out = _run_item_subprocess(
+            config_path=config_path,
+            item_id=item.id,
+            timeout_seconds=max_item_seconds,
+            progress=progress,
+            item_index=item_index,
+            total_items=total_items,
+            item_name=_progress_name(item),
+            process_registry=process_registry,
+        )
+        if timed_out:
+            stats.errors += 1
+            with connection:
+                mark_error(
+                    connection,
+                    queue_id=item.id,
+                    error=f"timeout: item exceeded {max_item_seconds}s per-item limit",
+                )
+        else:
+            _accumulate_subprocess_result(connection, stats, item.id)
+
+
+def _process_dual_lane(
+    config: AppConfig,
+    connection,
+    stats: ExtractionProcessResult,
+    *,
+    progress: "dict[str, Any] | None",
+    process_registry: "Any | None",
+) -> None:
+    """Process extraction queue with one quick-lane and one slow-lane subprocess per round."""
+    max_item_seconds = config.extraction.max_extraction_item_seconds
+    config_path = str(config.config_path) if config.config_path is not None else None
+
+    if progress is not None:
+        progress.update({"mode": "dual_lane", "quick": {}, "slow": {}})
+
+    quick_candidates = pending_quick_items(connection, limit=config.extraction.quick_lane_batch)
+    slow_candidates = pending_slow_items(connection, limit=config.extraction.slow_lane_batch)
+    quick_total = len(quick_candidates)
+    slow_total = len(slow_candidates)
+
+    for pair_index, (quick_item, slow_item) in enumerate(zip_longest(quick_candidates, slow_candidates)):
+        if progress is not None:
+            progress.update({
+                "mode": "dual_lane",
+                "pair_index": pair_index,
+                "quick_total": quick_total,
+                "slow_total": slow_total,
+            })
+
+        # Invariant: mark both processing before spawning any subprocess.
+        with connection:
+            if quick_item is not None:
+                mark_processing(connection, quick_item.id)
+            if slow_item is not None:
+                mark_processing(connection, slow_item.id)
+
+        quick_handle: "_LaneHandle | None" = None
+        slow_handle: "_LaneHandle | None" = None
+
+        if quick_item is not None:
+            quick_handle = _spawn_item_subprocess(
+                config_path=config_path,
+                item_id=quick_item.id,
+                timeout_seconds=max_item_seconds,
+                progress=progress,
+                item_index=quick_candidates.index(quick_item),
+                total_items=quick_total,
+                item_name=_progress_name(quick_item),
+                process_registry=process_registry,
+                progress_key="quick",
+            )
+        if slow_item is not None:
+            slow_handle = _spawn_item_subprocess(
+                config_path=config_path,
+                item_id=slow_item.id,
+                timeout_seconds=max_item_seconds,
+                progress=progress,
+                item_index=slow_candidates.index(slow_item),
+                total_items=slow_total,
+                item_name=_progress_name(slow_item),
+                process_registry=process_registry,
+                progress_key="slow",
+            )
+
+        _join_lane_pair(
+            connection=connection,
+            stats=stats,
+            quick_handle=quick_handle,
+            quick_item=quick_item,
+            slow_handle=slow_handle,
+            slow_item=slow_item,
+            max_item_seconds=max_item_seconds,
+        )
+
+
+def _join_lane_pair(
+    *,
+    connection,
+    stats: ExtractionProcessResult,
+    quick_handle: "_LaneHandle | None",
+    quick_item: "Any | None",
+    slow_handle: "_LaneHandle | None",
+    slow_item: "Any | None",
+    max_item_seconds: int,
+) -> None:
+    """Join quick + slow lane handles concurrently; accumulate results into stats."""
+    quick_timed_out: list[bool] = [False]
+    slow_timed_out: list[bool] = [False]
+
+    def _join_quick() -> None:
+        if quick_handle is not None:
+            quick_timed_out[0] = quick_handle.join()
+
+    def _join_slow() -> None:
+        if slow_handle is not None:
+            slow_timed_out[0] = slow_handle.join()
+
+    join_threads = []
+    if quick_handle is not None:
+        t = threading.Thread(target=_join_quick, daemon=True)
+        t.start()
+        join_threads.append(t)
+    if slow_handle is not None:
+        t = threading.Thread(target=_join_slow, daemon=True)
+        t.start()
+        join_threads.append(t)
+    for t in join_threads:
+        t.join()
+
+    if quick_item is not None:
+        if quick_timed_out[0]:
+            stats.errors += 1
+            with connection:
+                mark_error(
+                    connection,
+                    queue_id=quick_item.id,
+                    error=f"timeout: item exceeded {max_item_seconds}s per-item limit",
+                )
+        else:
+            _accumulate_subprocess_result(connection, stats, quick_item.id)
+
+    if slow_item is not None:
+        if slow_timed_out[0]:
+            stats.errors += 1
+            with connection:
+                mark_error(
+                    connection,
+                    queue_id=slow_item.id,
+                    error=f"timeout: item exceeded {max_item_seconds}s per-item limit",
+                )
+        else:
+            _accumulate_subprocess_result(connection, stats, slow_item.id)
 
 
 def _run_item_subprocess(
@@ -124,88 +447,18 @@ def _run_item_subprocess(
     process_registry: Any | None = None,
 ) -> bool:
     """Spawn a subprocess to extract one item. Returns True if timed out."""
-    import tempfile
-    import threading
-    from pathlib import Path
-
-    progress_file = Path(tempfile.gettempdir()) / f"mnemo_progress_{item_id}.json"
-    try:
-        progress_file.unlink()
-    except FileNotFoundError:
-        pass
-
-    if progress is not None:
-        progress.update({
-            "item_id": item_id,
-            "item_name": item_name,
-            "item_index": item_index,
-            "total_items": total_items,
-            "phase": "preparing",
-            "window": 0,
-            "total_windows": 0,
-        })
-
-    cmd = [
-        sys.executable, "-m", "second_brain.extraction._subprocess_entry",
-        "--item-id", str(item_id),
-        "--progress-file", str(progress_file),
-    ]
-    if config_path:
-        cmd.extend(["--config", config_path])
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
+    handle = _spawn_item_subprocess(
+        config_path=config_path,
+        item_id=item_id,
+        timeout_seconds=timeout_seconds,
+        progress=progress,
+        item_index=item_index,
+        total_items=total_items,
+        item_name=item_name,
+        process_registry=process_registry,
+        progress_key=None,
     )
-    if process_registry is not None:
-        process_registry.register(proc, label=f"extraction-item-{item_id}", process_group=True)
-
-    # Poll progress file in background thread and forward into parent's progress dict.
-    stop_poll = threading.Event()
-
-    def _poll() -> None:
-        while not stop_poll.is_set():
-            if progress is not None and progress_file.exists():
-                try:
-                    data = json.loads(progress_file.read_text())
-                    progress.update(data)
-                except Exception:
-                    pass
-            stop_poll.wait(1.5)
-
-    if progress is not None:
-        poll_thread = threading.Thread(target=_poll, daemon=True)
-        poll_thread.start()
-    else:
-        poll_thread = None
-
-    try:
-        _, stderr = proc.communicate(timeout=timeout_seconds)
-        if proc.returncode != 0:
-            _log.warning(
-                "extraction subprocess for item %s exited %s: %s",
-                item_id, proc.returncode, (stderr or b"").decode("utf-8", errors="replace")[:300],
-            )
-        return False
-    except subprocess.TimeoutExpired:
-        _log.warning("extraction subprocess for item %s timed out after %ss — killing", item_id, timeout_seconds)
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        proc.communicate()
-        return True
-    finally:
-        stop_poll.set()
-        if poll_thread is not None:
-            poll_thread.join(timeout=2.0)
-        if process_registry is not None:
-            process_registry.unregister(proc)
-        try:
-            progress_file.unlink()
-        except FileNotFoundError:
-            pass
+    return handle.join()
 
 
 def _accumulate_subprocess_result(

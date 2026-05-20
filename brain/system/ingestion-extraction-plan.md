@@ -23,6 +23,7 @@ implementation details live in the phase files:
 9. [Phase 9: Retrieval Attribution in Session Extraction](ingestion-extraction-roadmap.md#phase-9-retrieval-attribution-in-session-extraction)
 10. [Phase 10: Confidence Signal Clarification and Context Injection Removal](ingestion-extraction-plan-phase10.md)
 11. [Phase 11: Expected-Time Queue Scheduling](ingestion-extraction-plan-phase11.md)
+12. [Phase 12: Dual-Lane Concurrent Extraction](ingestion-extraction-plan-phase12.md)
 
 ## Verified Breakpoint
 
@@ -122,6 +123,9 @@ warning, not an invented description.
 - Extraction queue scheduling may reorder pending rows by coarse expected
   processing time. It must preserve FIFO order within the same lane and must not
   require opening a west-flange projection just to choose the next row.
+- When dual-lane extraction is enabled, at most two extraction subprocesses run
+  concurrently: one from the quick lane and one from the slow lane. Both items
+  must be marked `processing` before either subprocess is spawned.
 
 ## High-Level Flow
 

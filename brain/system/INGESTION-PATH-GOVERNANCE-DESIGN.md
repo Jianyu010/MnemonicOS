@@ -228,7 +228,8 @@ Audit baseline: [docs/east-flange-audit.md](../../docs/east-flange-audit.md)
 ---
 
 ### Side path — Auto-Resolve Daemon
-**Spec:** [docs/superpowers/specs/2026-05-18-auto-resolve-review-design.md](../../docs/superpowers/specs/2026-05-18-auto-resolve-review-design.md)
+**Governing context:** [Review Command Plan](ingestion-review-plan.md) and
+[Promotion Phase 6](ingestion-promotion-plan-phase6.md)
 
 LLM-arbitrated resolution of `review_routed` candidates. Runs every 10 minutes
 (`wiki_auto_resolve_review`). Re-evaluates each item against current wiki state:

@@ -103,6 +103,17 @@ def format_minutes(age_minutes: int | None) -> str:
     return f"{days} d {hours} hr"
 
 
+def _format_lane_progress(lane: dict) -> str:
+    """One-line summary of a single dual-lane extraction progress dict."""
+    name = str(lane.get("item_name") or "—")
+    phase = str(lane.get("phase") or "")
+    window = int(lane.get("window") or 0)
+    total = int(lane.get("total_windows") or 0)
+    if total > 0:
+        return f"{name}  window {window}/{total}  {phase}"
+    return f"{name}  {phase}" if phase else name
+
+
 def daemon_status_summary(response: dict[str, object]) -> str:
     status = str(response.get("status") or "unknown")
     service = response.get("service") if isinstance(response.get("service"), dict) else {}
@@ -116,6 +127,7 @@ def daemon_status_summary(response: dict[str, object]) -> str:
     error_count = int(queue.get("error_count", 0) or 0) if isinstance(queue, dict) else 0
     oldest_age = queue.get("oldest_pending_age_minutes") if isinstance(queue, dict) else None
     running_job = service.get("running_job") if isinstance(service, dict) else None
+    job_progress = service.get("job_progress") if isinstance(service, dict) and isinstance(service.get("job_progress"), dict) else {}
     warnings = queue.get("warnings") if isinstance(queue, dict) and isinstance(queue.get("warnings"), list) else []
     db_bytes = storage.get("db_bytes") if isinstance(storage, dict) else None
     vault_bytes = storage.get("vault_bytes") if isinstance(storage, dict) else None
@@ -148,6 +160,16 @@ def daemon_status_summary(response: dict[str, object]) -> str:
     lines = [
         f"Daemon: {status}",
         f"Running job: {running_job or 'idle'}",
+    ]
+
+    # Dual-lane extraction progress
+    if running_job and isinstance(job_progress, dict) and str(job_progress.get("mode")) == "dual_lane":
+        quick_p = job_progress.get("quick") if isinstance(job_progress.get("quick"), dict) else {}
+        slow_p = job_progress.get("slow") if isinstance(job_progress.get("slow"), dict) else {}
+        lines.append(f"  quick lane: {_format_lane_progress(quick_p)}")
+        lines.append(f"  slow lane:  {_format_lane_progress(slow_p)}")
+
+    lines += [
         "",
         "Extraction Queue",
         f"  pending: {pending_count} item(s)",
@@ -362,7 +384,33 @@ def _render_watch(
     if oldest_age is not None:
         lines.append(f"  oldest pending: {format_minutes(int(oldest_age))}")
 
-    if processing_items:
+    # Dual-lane mode: show quick + slow lanes side by side
+    is_dual_lane = (
+        "process_extraction_queue" in running_jobs
+        and isinstance(job_progress, dict)
+        and str(job_progress.get("mode")) == "dual_lane"
+    )
+    if is_dual_lane:
+        lines.append(f"  {_BOLD}Mode: dual-lane{_RESET}")
+        for lane_label in ("quick", "slow"):
+            lane_p = job_progress.get(lane_label)
+            if not isinstance(lane_p, dict) or not lane_p:
+                lines.append(f"  {lane_label} lane: {_DIM}idle{_RESET}")
+                continue
+            name = str(lane_p.get("item_name") or "—")
+            phase = str(lane_p.get("phase") or "preparing")
+            window = int(lane_p.get("window") or 0)
+            total = int(lane_p.get("total_windows") or 0)
+            lines.append(
+                f"  {_CYAN}{lane_label} lane{_RESET}: {name}  {_DIM}{phase}…{_RESET}"
+            )
+            if total > 0:
+                frac = window / total
+                lines.append(
+                    f"    window {_CYAN}{window}/{total}{_RESET}  "
+                    f"{_bar(frac, 28)}  {_DIM}{phase}{_RESET}"
+                )
+    elif processing_items:
         lines.append(f"  {_BOLD}Currently processing:{_RESET}")
         for item in processing_items:
             elapsed = _elapsed(item.get("started_at"))
