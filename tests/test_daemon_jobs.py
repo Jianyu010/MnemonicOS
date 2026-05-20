@@ -265,5 +265,31 @@ class DaemonJobsTest(unittest.TestCase):
             self.assertTrue(expected.issubset(set(registry.job_names())))
 
 
+    def test_extraction_config_dual_lane_defaults(self) -> None:
+        from second_brain.config import ExtractionConfig
+        cfg = ExtractionConfig()
+        self.assertFalse(cfg.dual_lane_enabled)
+        self.assertEqual(cfg.quick_lane_batch, 5)
+        self.assertEqual(cfg.slow_lane_batch, 5)
+
+    def test_extraction_config_dual_lane_toml(self) -> None:
+        import tempfile, textwrap
+        from pathlib import Path
+        from second_brain.config import load_config
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "config").mkdir()
+            (root / "config" / "memory.toml").write_text(textwrap.dedent("""\
+                [extraction]
+                dual_lane_enabled = true
+                quick_lane_batch = 3
+                slow_lane_batch = 2
+            """))
+            cfg = load_config(root)
+            self.assertTrue(cfg.extraction.dual_lane_enabled)
+            self.assertEqual(cfg.extraction.quick_lane_batch, 3)
+            self.assertEqual(cfg.extraction.slow_lane_batch, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

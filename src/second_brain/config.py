@@ -150,6 +150,9 @@ class ExtractionConfig:
     max_embedded_images: int = 100
     min_embedded_image_px: int = 64
     max_extraction_item_seconds: int = 1800
+    dual_lane_enabled: bool = False
+    quick_lane_batch: int = 5
+    slow_lane_batch: int = 5
 
 
 @dataclass(slots=True)
@@ -378,8 +381,13 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
         root = Path(workspace_root).resolve() if workspace_root is not None else _discover_workspace_root()
         resolved_config = default_config_path(root)
     else:
-        resolved_config = Path(config_path).resolve()
-        root = Path(workspace_root).resolve() if workspace_root is not None else _workspace_root_from_config_path(resolved_config)
+        _cp = Path(config_path).resolve()
+        if _cp.is_dir():
+            root = _cp
+            resolved_config = default_config_path(root)
+        else:
+            resolved_config = _cp
+            root = Path(workspace_root).resolve() if workspace_root is not None else _workspace_root_from_config_path(resolved_config)
     data = tomllib.loads(resolved_config.read_text())
 
     # --- paths (no defaults helper; Path construction requires special handling) ---
@@ -448,6 +456,9 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
         max_embedded_images=int(extraction_data.get("max_embedded_images", _ed.max_embedded_images)),
         min_embedded_image_px=int(extraction_data.get("min_embedded_image_px", _ed.min_embedded_image_px)),
         max_extraction_item_seconds=int(extraction_data.get("max_extraction_item_seconds", _ed.max_extraction_item_seconds)),
+        dual_lane_enabled=bool(extraction_data.get("dual_lane_enabled", _ed.dual_lane_enabled)),
+        quick_lane_batch=int(extraction_data.get("quick_lane_batch", _ed.quick_lane_batch)),
+        slow_lane_batch=int(extraction_data.get("slow_lane_batch", _ed.slow_lane_batch)),
     )
 
     # --- daemon: Path construction ---
