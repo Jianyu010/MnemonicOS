@@ -63,4 +63,6 @@ or inspect file contents before choosing work.
 - Persisting a new priority column.
 - Precomputing token/window counts before projection.
 - Learned scheduling or adaptive runtime estimates.
-- Changing daemon job concurrency.
+- Changing daemon job concurrency. (Deferred to Phase 12: Dual-Lane Concurrent
+  Extraction, which uses the lane boundaries defined here as the split point
+  between its quick and slow subprocess lanes.)

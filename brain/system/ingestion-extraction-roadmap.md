@@ -49,7 +49,7 @@ Current test evidence:
 - `tests.test_extraction_layer` passes.
 - `tests.test_west_flange` passes.
 - `tests.test_session_capture` passes.
-- Full repository test suite passes: 198 tests.
+- Full repository test suite passes.
 
 ## Phase 1: Legacy Promotion Removal
 
@@ -580,3 +580,41 @@ Phase 9 adds passive feedback signal production: extraction sessions that includ
 retrieved notes in their raw material now annotate candidates with attribution
 evidence, closing the feedback loop between retrieval and ingestion without
 requiring a separate LLM attribution pass at maintenance time for those sessions.
+
+---
+
+## Phase 12: Dual-Lane Concurrent Extraction
+
+Status: **planned 2026-05-20**.
+
+Plan: `ingestion-extraction-plan-phase12.md`.
+
+### Summary
+
+Phase 11 ensured the right items appear first in each batch. Phase 12 ensures
+that while a slow item (PDF, DOCX) is being extracted, a quick item (episode,
+session) runs simultaneously rather than waiting.
+
+Two lane-specific queries split pending rows:
+
+- **Quick lane**: `pending_quick_items()` — `episode`, `session`, text artifacts.
+- **Slow lane**: `pending_slow_items()` — unknown and heavy artifacts.
+
+The worker fetches up to `quick_lane_batch` and `slow_lane_batch` items per job
+run, then processes pairs concurrently. A `_LaneHandle` abstraction wraps
+subprocess spawn + progress polling + join so each lane can be driven from a
+thread. The single-lane path remains the default (`dual_lane_enabled = false`).
+
+### Requires
+
+- `OLLAMA_NUM_PARALLEL=2` in the Ollama environment for true parallel inference.
+- Config opt-in: `dual_lane_enabled = true` in `[extraction]`.
+
+### Acceptance
+
+- Quick items are not blocked behind slow items when both are pending.
+- Both subprocesses are marked `processing` before either is spawned.
+- Failure in one lane does not cancel the other.
+- `daemon status` shows a dual-lane progress block when active.
+- Single-lane behaviour is unchanged when `dual_lane_enabled = false`.
+- Full test suite passes.
