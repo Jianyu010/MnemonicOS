@@ -201,6 +201,49 @@ LLM bundle → intra_source_relations_json (Phase 8)
     → graph_edges rows for same-source note pairs
 ```
 
+## Phase 6: Observation Model, Time-Weighted Conflict Resolution, Human Review Elimination
+
+Status: **complete 2026-05-20**.
+
+### Summary
+
+Replaces `wiki_conflict`-routes-to-human and `contested_lifecycle` review triggers with
+deterministic time-weighted resolution. Eliminates the human review queue under normal
+operation.
+
+**Time-weighted conflict resolution:**
+- Deterministic table keyed on `new_confidence`, `old_confidence`, `time_gap_days`.
+- Config: `conflict_stale_threshold_days` (default 30), `conflict_glitch_threshold_days` (default 1).
+- `high/high + gap>30d` → `update conflict_supersedes_stale` (lifecycle → stale).
+- `medium/high` → `confirm conflict_corroborates` (no lifecycle change).
+- `low/any` → `new conflict_low_confidence_new` (standalone note).
+
+**Human review elimination:**
+- `low_confidence` → auto-reject in `decide()` (was `review`); `worker.py` records `rejection_reason`.
+- `wiki_conflict` and `contested_lifecycle` removed as review triggers.
+- LLM arbitration fallback < threshold → auto-reject, not human queue.
+- `type_collision` removed: same slug + different type = different note ID, no collision.
+
+**`rejection_reason` audit column:**
+- `migrations/030_rejection_reason.sql` — `ALTER TABLE extraction_candidates ADD COLUMN rejection_reason TEXT`.
+- Propagated through `write_rejected` → `writer.py` → `auto_resolver.py` → `review_ops.py`.
+
+**Dry-run infinite loop fix:**
+- `process_promotion_queue` pagination switched to cursor-based `ec.id > last_id`.
+- Prevents infinite loop in dry_run mode (no writes → NOT EXISTS never satisfied).
+
+### Deliverables
+
+- `migrations/030_rejection_reason.sql`
+- `src/second_brain/promotion/decisions.py` — `_time_weighted_conflict()`, remove `type_collision`/`contested_lifecycle`
+- `src/second_brain/promotion/renderer.py` — conflict-aware lifecycle/confidence mutations, `corroborates` relation
+- `src/second_brain/promotion/worker.py` — `rejected` decision handling, cursor-based pagination
+- `src/second_brain/promotion/writer.py` — `rejection_reason` parameter
+- `src/second_brain/promotion/review_ops.py` — `rejection_reason` parameter
+- `src/second_brain/promotion/auto_resolver.py` — human_fallback → auto-reject
+- `src/second_brain/ingest.py` — `corroborates` → `corroboration` RELATION_BUCKET
+- `src/second_brain/config.py` — `conflict_stale_threshold_days`, `conflict_glitch_threshold_days`
+
 ## Remaining Work
 
 **Integration test gaps:**

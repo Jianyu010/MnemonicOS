@@ -14,7 +14,7 @@ class GateResult:
 
 @dataclass(slots=True)
 class PromotionDecision:
-    decision: str  # 'new' | 'confirm' | 'update' | 'review'
+    decision: str  # 'new' | 'confirm' | 'update' | 'review' | 'rejected'
     target_note_id: str | None
     reason: str
     conflict_note_ids: list[str] = field(default_factory=list)

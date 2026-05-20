@@ -80,7 +80,9 @@ def process_promotion_queue(
         # queue_id → {candidate_index → note_id} for successfully promoted candidates
         promoted_by_queue: dict[int, dict[int, str]] = {}
 
-        _FETCH_CHUNK = 200
+        # Cursor-based pagination: use last seen id so dry_run (no writes) doesn't
+        # loop forever on the same rows (NOT EXISTS never satisfied in dry_run).
+        _last_id = 0
         while True:
             rows = conn.execute(
                 """
@@ -97,16 +99,18 @@ def process_promotion_queue(
                 FROM extraction_candidates ec
                 JOIN extraction_queue eq ON eq.id = ec.queue_id
                 WHERE ec.promotion_state = 'promotion_ready'
+                  AND ec.id > ?
                   AND NOT EXISTS (
                       SELECT 1 FROM promotion_decisions pd WHERE pd.candidate_id = ec.id
                   )
                 ORDER BY ec.id ASC
                 LIMIT ?
                 """,
-                (_FETCH_CHUNK,),
+                (_last_id, _FETCH_CHUNK),
             ).fetchall()
             if not rows:
                 break
+            _last_id = int(rows[-1]["candidate_id"])
 
             for row in rows:
                 candidate_id = int(row["candidate_id"])
@@ -148,8 +152,23 @@ def process_promotion_queue(
                     _report_dry_run(candidate_id, decision)
                     if decision.decision == "review":
                         result.review_routed += 1
+                    elif decision.decision == "rejected":
+                        result.rejected += 1
                     else:
                         result.promoted += 1
+                    continue
+
+                # Phase 2b: Decision is rejected (e.g. low_confidence) → record and skip
+                if decision.decision == "rejected":
+                    with conn:
+                        write_rejected(
+                            conn,
+                            candidate_id,
+                            [f"auto:{decision.reason}"],
+                            _DEFAULT_BRIDGE_ID,
+                            rejection_reason=decision.reason,
+                        )
+                    result.rejected += 1
                     continue
 
                 # Phase 3: Render

@@ -145,6 +145,10 @@ def _render_new(
     return metadata, rendered
 
 
+_CONFIDENCE_RANK: dict[str, int] = {"low": 0, "medium": 1, "high": 2}
+_CONFIDENCE_LEVELS = ["low", "medium", "high"]
+
+
 def _render_existing(
     candidate: dict[str, Any],
     *,
@@ -169,18 +173,49 @@ def _render_existing(
     # Increment corroboration count
     metadata["corroboration_count"] = int(metadata.get("corroboration_count") or 1) + 1
 
-    # Advance lifecycle_state on corroboration threshold
+    # Determine if this is a conflict-driven decision (from time-weighted resolution)
+    reason = str(decision.reason or "")
+    is_conflict = reason.startswith("conflict_")
+
     current_lc = str(metadata.get("lifecycle_state") or "draft").strip()
     count = int(metadata["corroboration_count"])
-    if current_lc == "draft" and count >= 2:
-        metadata["lifecycle_state"] = "verified"
-    elif current_lc == "verified" and count >= 4:
-        metadata["lifecycle_state"] = "canonical"
+
+    if not is_conflict:
+        # Standard lifecycle advancement on corroboration threshold
+        if current_lc == "draft" and count >= 2:
+            metadata["lifecycle_state"] = "verified"
+        elif current_lc == "verified" and count >= 4:
+            metadata["lifecycle_state"] = "canonical"
+    else:
+        # Conflict-driven lifecycle mutations based on time-weighted resolution reason
+        if "supersedes_stale" in reason:
+            metadata["lifecycle_state"] = "stale"
+        elif "supersedes_contested" in reason:
+            if current_lc not in {"contested", "stale", "archived"}:
+                metadata["lifecycle_state"] = "contested"
+            # Decrement confidence by one level
+            old_conf = str(metadata.get("confidence") or "medium").strip()
+            old_rank = _CONFIDENCE_RANK.get(old_conf, 1)
+            if old_rank > 0:
+                metadata["confidence"] = _CONFIDENCE_LEVELS[old_rank - 1]
+        elif "supersedes_archive" in reason:
+            metadata["lifecycle_state"] = "archived"
+        # conflict_corroborates: no lifecycle change, just timestamp refresh
+
+        # Write corroborates/supersedes relation on the canonical note
+        # pointing to the incoming archive source (enables reverse_corroborates via recall.py)
+        archive_ref = next((r for r in source_refs if r.startswith("archive:")), None)
+        if archive_ref:
+            rel_type = "supersedes" if "supersedes" in reason else "corroborates"
+            existing_relations: list[Any] = list(metadata.get("relations") or [])
+            rel_entry: dict[str, str] = {"type": rel_type, "target": archive_ref}
+            if rel_entry not in existing_relations:
+                existing_relations.append(rel_entry)
+            metadata["relations"] = existing_relations
 
     if decision.decision == "confirm":
         # Confirm: update confidence if incoming is stronger; do not rewrite body
         incoming_confidence = str(candidate.get("confidence") or "").strip()
-        _CONFIDENCE_RANK = {"low": 0, "medium": 1, "high": 2}
         existing_conf = str(metadata.get("confidence") or "medium").strip()
         if _CONFIDENCE_RANK.get(incoming_confidence, 0) > _CONFIDENCE_RANK.get(existing_conf, 1):
             metadata["confidence"] = incoming_confidence
@@ -195,7 +230,6 @@ def _render_existing(
             body = existing_body
         # Update confidence if stronger
         incoming_confidence = str(candidate.get("confidence") or "").strip()
-        _CONFIDENCE_RANK = {"low": 0, "medium": 1, "high": 2}
         existing_conf = str(metadata.get("confidence") or "medium").strip()
         if _CONFIDENCE_RANK.get(incoming_confidence, 0) > _CONFIDENCE_RANK.get(existing_conf, 1):
             metadata["confidence"] = incoming_confidence

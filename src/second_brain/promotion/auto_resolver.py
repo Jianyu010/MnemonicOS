@@ -112,6 +112,14 @@ def _process_one(
     duplicate_state = str(row["duplicate_state"] or "") if row else None
 
     decision = decide(payload, duplicate_state=duplicate_state, conn=conn, config=config)
+
+    # Step 2b: decide() returned rejected directly (e.g. low_confidence) → auto-reject
+    if decision.decision == "rejected":
+        if not dry_run:
+            _safe_reject(config, item.filename, reason=decision.reason)
+        result.rejected += 1
+        return
+
     if decision.decision != "review":
         if not dry_run:
             try:
@@ -125,39 +133,43 @@ def _process_one(
 
     # Step 3: LLM resolution — skip in dry_run to avoid blocking on real LLM calls
     if dry_run:
-        result.human_fallback += 1
+        # Under Phase 6, human_fallback is gone; anything left here auto-rejects.
+        result.rejected += 1
+        return
+
+    # Short-circuit low_confidence legacy items before LLM
+    if str(decision.reason or "").split(":")[0] == "low_confidence":
+        _safe_reject(config, item.filename, reason="low_confidence_extraction")
+        result.rejected += 1
         return
 
     llm_result = _resolve_with_llm(item, payload, decision, conn, config, llm_fn)
 
     if float(llm_result.get("confidence", 0.0)) >= _CONFIDENCE_THRESHOLD and llm_result.get("action") != "human":
-        if not dry_run:
-            if llm_result["action"] == "approve":
-                try:
-                    approve_review_item(
-                        config,
-                        item.filename,
-                        target_note_id=llm_result.get("target_note_id") or None,
-                    )
-                except FileExistsError:
-                    _safe_reject(config, item.filename)
-                except FileNotFoundError:
-                    pass
-            else:
-                _safe_reject(config, item.filename)
         if llm_result["action"] == "approve":
+            try:
+                approve_review_item(
+                    config,
+                    item.filename,
+                    target_note_id=llm_result.get("target_note_id") or None,
+                )
+            except FileExistsError:
+                _safe_reject(config, item.filename, reason="file_exists_conflict")
+            except FileNotFoundError:
+                pass
             result.approved += 1
         else:
+            _safe_reject(config, item.filename, reason=f"llm_rejected:{decision.reason}")
             result.rejected += 1
     else:
-        if not dry_run:
-            _append_llm_analysis(item, llm_result)
-        result.human_fallback += 1
+        # LLM uncertain — auto-reject instead of human fallback
+        _safe_reject(config, item.filename, reason=f"{decision.reason}_llm_uncertain")
+        result.rejected += 1
 
 
-def _safe_reject(config: "AppConfig", filename: str) -> None:
+def _safe_reject(config: "AppConfig", filename: str, *, reason: str | None = None) -> None:
     try:
-        reject_review_item(config, filename)
+        reject_review_item(config, filename, rejection_reason=reason)
     except FileNotFoundError:
         pass
 

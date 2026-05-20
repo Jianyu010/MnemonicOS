@@ -157,6 +157,8 @@ def write_rejected(
     candidate_id: int,
     gate_errors: list[str],
     bridge_id: str,
+    *,
+    rejection_reason: str | None = None,
 ) -> None:
     """Record a gate-rejected candidate in the ledger without touching wiki."""
     existing = conn.execute(
@@ -165,7 +167,7 @@ def write_rejected(
     ).fetchone()
     if existing is not None:
         return
-    _mark_rejected(conn, candidate_id, gate_errors, bridge_id)
+    _mark_rejected(conn, candidate_id, gate_errors, bridge_id, rejection_reason=rejection_reason)
 
 
 def _mark_rejected(
@@ -173,6 +175,8 @@ def _mark_rejected(
     candidate_id: int,
     errors: list[str],
     bridge_id: str,
+    *,
+    rejection_reason: str | None = None,
 ) -> None:
     try:
         conn.execute(
@@ -188,6 +192,11 @@ def _mark_rejected(
             "UPDATE extraction_candidates SET promotion_state = 'rejected' WHERE id = ?",
             (candidate_id,),
         )
+        if rejection_reason is not None:
+            conn.execute(
+                "UPDATE extraction_candidates SET rejection_reason = ? WHERE id = ?",
+                (rejection_reason, candidate_id),
+            )
     except Exception:
         pass  # Never let ledger errors mask the original exception
 

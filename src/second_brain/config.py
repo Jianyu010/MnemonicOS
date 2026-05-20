@@ -160,6 +160,8 @@ class PromotionConfig:
     min_confidence_for_direct_write: str = "medium"
     auto_review_on_conflict: bool = True
     retry_after_hours: int = 24
+    conflict_stale_threshold_days: int = 30
+    conflict_glitch_threshold_days: int = 1
 
 
 @dataclass(slots=True)
