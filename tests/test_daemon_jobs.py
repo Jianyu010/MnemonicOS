@@ -228,8 +228,10 @@ class DaemonJobsTest(unittest.TestCase):
                 "storage": {
                     "db_bytes": 1536,
                     "vault_bytes": 4096,
-                    "vectors_bytes": 8192,
-                    "graph_bytes": 512,
+                    "note_vectors_count": 42,
+                    "chunk_vectors_count": 17,
+                    "graph_nodes_count": 100,
+                    "graph_edges_count": 83,
                 },
                 "recent_job_runs": [
                     {"job_name": "status_report", "status": "ok", "finished_at": "2026-04-17 11:00:00"},
@@ -241,7 +243,7 @@ class DaemonJobsTest(unittest.TestCase):
         self.assertIn("next extraction run: unknown", text)
         self.assertIn("oldest pending age: 2 hr 5 min", text)
         self.assertIn("db: 1.5 KB", text)
-        self.assertIn("vectors: 8.0 KB", text)
+        self.assertIn("vectors: 42 notes · 17 chunks", text)
 
     def test_daemon_defaults_include_maintenance_jobs_without_legacy_rollups(self) -> None:
         expected = {

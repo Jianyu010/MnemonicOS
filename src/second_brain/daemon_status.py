@@ -119,8 +119,10 @@ def daemon_status_summary(response: dict[str, object]) -> str:
     warnings = queue.get("warnings") if isinstance(queue, dict) and isinstance(queue.get("warnings"), list) else []
     db_bytes = storage.get("db_bytes") if isinstance(storage, dict) else None
     vault_bytes = storage.get("vault_bytes") if isinstance(storage, dict) else None
-    vectors_bytes = storage.get("vectors_bytes") if isinstance(storage, dict) else None
-    graph_bytes = storage.get("graph_bytes") if isinstance(storage, dict) else None
+    note_vectors_count = storage.get("note_vectors_count") if isinstance(storage, dict) else None
+    chunk_vectors_count = storage.get("chunk_vectors_count") if isinstance(storage, dict) else None
+    graph_nodes_count = storage.get("graph_nodes_count") if isinstance(storage, dict) else None
+    graph_edges_count = storage.get("graph_edges_count") if isinstance(storage, dict) else None
     next_extraction_run = None
     next_promotion_run = None
     if isinstance(scheduled_jobs, list):
@@ -162,8 +164,8 @@ def daemon_status_summary(response: dict[str, object]) -> str:
         "Storage",
         f"  db: {format_bytes(db_bytes if isinstance(db_bytes, int) else None)}",
         f"  vault: {format_bytes(vault_bytes if isinstance(vault_bytes, int) else None)}",
-        f"  vectors: {format_bytes(vectors_bytes if isinstance(vectors_bytes, int) else None)}",
-        f"  graph: {format_bytes(graph_bytes if isinstance(graph_bytes, int) else None)}",
+        f"  vectors: {note_vectors_count if isinstance(note_vectors_count, int) else '—'} notes · {chunk_vectors_count if isinstance(chunk_vectors_count, int) else '—'} chunks",
+        f"  graph: {graph_nodes_count if isinstance(graph_nodes_count, int) else '—'} nodes · {graph_edges_count if isinstance(graph_edges_count, int) else '—'} edges",
         "",
         "Recent Activity",
         f"  last completed job: {last_job_line}",
