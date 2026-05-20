@@ -31,7 +31,17 @@ mnemonicos daemon start
 mnemonicos daemon stop
 ```
 
-Sends SIGTERM to the PID. The daemon finishes any running job before exiting.
+Requests cooperative shutdown, then escalates until the daemon and all its child processes are gone:
+
+1. Read PID from `config.daemon.pid_path`.
+2. Send `{"cmd": "shutdown"}` over the daemon socket (cooperative drain — daemon sets `shutdown_event`, joins job threads, runs registry cleanup).
+3. If socket is unreachable, send `SIGTERM` to the daemon PID directly.
+4. Wait until the PID is gone and the socket file is removed.
+5. If still alive, send `SIGTERM` to the daemon process group.
+6. If still alive, send `SIGKILL` to the daemon process group.
+7. Print `daemon_stopped` only when PID, socket, and process group are all gone. Print `daemon_stop_timeout` otherwise.
+
+`daemon_stopped` is a guarantee: no MnemonicOS daemon process, extraction subprocess, or daemon-managed provider process remains. External providers MnemonicOS did not start (e.g. the macOS `Ollama.app`) are not killed unless `ollama_managed = true` is set.
 
 ### Status
 
@@ -157,6 +167,24 @@ echo '{"cmd":"status"}' | nc -U ~/.local/share/mnemonicos/daemon.sock
 
 ---
 
+### Command: `shutdown`
+
+Ask the daemon to initiate cooperative teardown. Equivalent to `daemon stop` sending the stop signal; use when you need the daemon to drain cleanly from inside another process.
+
+**Request:**
+```json
+{ "cmd": "shutdown" }
+```
+
+**Response:**
+```json
+{ "status": "ok", "message": "shutdown_started" }
+```
+
+The daemon sets `shutdown_event` immediately upon receiving this command. It then joins all running job threads (up to 30 s each), calls `process_registry.stop_all()` to terminate registered extraction subprocesses and daemon-managed provider processes, closes the socket, and removes the PID file.
+
+---
+
 ### Command: `run-job`
 
 Ask the daemon to run a job immediately (outside its normal schedule).
@@ -195,6 +223,29 @@ Ask the daemon to run a job immediately (outside its normal schedule).
   "error": "unsupported job: bad_name"
 }
 ```
+
+---
+
+## Daemon-Owned Providers
+
+By default, MnemonicOS calls an already-running Ollama HTTP service at `127.0.0.1:11434` and does not start or stop it. This is correct for the macOS `Ollama.app` workflow.
+
+To make Ollama part of the daemon lifecycle, opt in via config:
+
+```toml
+[daemon]
+# If true, the daemon starts this command at startup and owns its lifetime.
+# Leave false when using the macOS Ollama.app or any shared Ollama server.
+ollama_managed = true
+ollama_command = "/usr/local/bin/ollama serve"
+```
+
+When `ollama_managed = true`:
+- The daemon starts the command with `start_new_session=True` at the top of `Daemon.run()`.
+- The process is registered in `DaemonProcessRegistry` with label `"ollama"` as a process-group owner.
+- `daemon stop` terminates the Ollama process group as part of its normal teardown; `daemon_stopped` will not print until Ollama has exited.
+
+When `ollama_managed = false` (default), `daemon stop` does not touch any Ollama process, and leaving Ollama running is correct behavior.
 
 ---
 

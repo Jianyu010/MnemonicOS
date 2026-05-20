@@ -177,6 +177,8 @@ class DaemonConfig:
     max_pending: int = 200
     max_oldest_age_minutes: int = 1440
     stale_episode_threshold_hours: int = 2
+    ollama_managed: bool = False
+    ollama_command: str = ""
 
 
 @dataclass(slots=True)
@@ -457,6 +459,8 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
         max_pending=int(daemon_data.get("max_pending", DaemonConfig.__dataclass_fields__["max_pending"].default)),
         max_oldest_age_minutes=int(daemon_data.get("max_oldest_age_minutes", DaemonConfig.__dataclass_fields__["max_oldest_age_minutes"].default)),
         stale_episode_threshold_hours=int(daemon_data.get("stale_episode_threshold_hours", DaemonConfig.__dataclass_fields__["stale_episode_threshold_hours"].default)),
+        ollama_managed=bool(daemon_data.get("ollama_managed", DaemonConfig.__dataclass_fields__["ollama_managed"].default)),
+        ollama_command=str(daemon_data.get("ollama_command", DaemonConfig.__dataclass_fields__["ollama_command"].default)),
     )
 
     # --- per-bridge config: dynamic keys ---

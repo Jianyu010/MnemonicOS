@@ -101,6 +101,10 @@ log_path = "brain/logs/daemon.log"
 max_pending = 200
 max_oldest_age_minutes = 1440
 stale_episode_threshold_hours = 2
+# If true, the daemon starts this Ollama command and owns its lifetime.
+# Leave false when using the macOS Ollama.app or any shared Ollama server.
+ollama_managed = false
+ollama_command = ""
 
 [daemon.schedules]
 process_extraction_queue = "*/5 * * * *"

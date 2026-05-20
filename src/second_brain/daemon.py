@@ -8,21 +8,31 @@ from logging.handlers import RotatingFileHandler
 import os
 from pathlib import Path
 import signal
+import shlex
 import socket
+import subprocess
 import threading
 from typing import Any
 
 from .config import AppConfig, default_config_path, load_config
 from .daemon_jobs import JobRegistry, build_registry
+from .daemon_processes import DaemonProcessRegistry
 from .jobs import collect_status_snapshot
 from .models import JobRunResult
 
 
 class Scheduler:
-    def __init__(self, config: AppConfig, registry: JobRegistry, shutdown_event: threading.Event) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        registry: JobRegistry,
+        shutdown_event: threading.Event,
+        process_registry: DaemonProcessRegistry | None = None,
+    ) -> None:
         self.config = config
         self.registry = registry
         self.shutdown_event = shutdown_event
+        self.process_registry = process_registry or DaemonProcessRegistry()
         self.logger = logging.getLogger("mnemonicos.daemon.scheduler")
 
         # Per-job locks — prevent the same job from running twice concurrently.
@@ -50,7 +60,12 @@ class Scheduler:
             with self._state_lock:
                 self._job_progress[job_name] = progress
         try:
-            result = self.registry.run(self.config, job_name, progress=progress)
+            result = self.registry.run(
+                self.config,
+                job_name,
+                progress=progress,
+                process_registry=self.process_registry,
+            )
             payload: dict[str, Any] = {
                 "status": "ok",
                 "job": job_name,
@@ -116,7 +131,12 @@ class Scheduler:
             with self._state_lock:
                 self._job_progress[job_name] = progress
         try:
-            result = self.registry.run(self.config, job_name, progress=progress)
+            result = self.registry.run(
+                self.config,
+                job_name,
+                progress=progress,
+                process_registry=self.process_registry,
+            )
             payload: dict[str, Any] = {
                 "status": "ok",
                 "job": job_name,
@@ -207,6 +227,9 @@ class SocketServer:
         if cmd == "run-job":
             job_name = str(payload.get("job", "")).strip()
             return self.scheduler.run_job_now(job_name)
+        if cmd == "shutdown":
+            self.shutdown_event.set()
+            return {"status": "ok", "message": "shutdown_started"}
         return {"status": "error", "error": f"unsupported command: {cmd}"}
 
     def serve(self) -> None:
@@ -266,7 +289,8 @@ class Daemon:
         self.config = config
         self.registry = registry or build_registry(config)
         self.shutdown_event = threading.Event()
-        self.scheduler = Scheduler(config, self.registry, self.shutdown_event)
+        self.process_registry = DaemonProcessRegistry()
+        self.scheduler = Scheduler(config, self.registry, self.shutdown_event, self.process_registry)
         self.socket_server = SocketServer(config, self.scheduler, self.shutdown_event)
         self.scheduler_thread = threading.Thread(target=self.scheduler.run, name="mnemonicos-scheduler", daemon=True)
         self.socket_thread = threading.Thread(target=self.socket_server.serve, name="mnemonicos-socket", daemon=True)
@@ -336,12 +360,32 @@ class Daemon:
         signal.signal(signal.SIGTERM, _handler)
         signal.signal(signal.SIGINT, _handler)
 
+    def _start_managed_ollama(self) -> None:
+        daemon_config = self.config.daemon
+        if daemon_config is None or not daemon_config.ollama_managed:
+            return
+        command = daemon_config.ollama_command.strip()
+        if not command:
+            self.logger.warning("ollama_managed is true but ollama_command is empty; not starting Ollama")
+            return
+        proc = subprocess.Popen(
+            shlex.split(command),
+            cwd=str(self.config.paths.workspace_root),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        self.process_registry.register(proc, label="ollama", process_group=True)
+        self.logger.info("started managed Ollama process pid=%s", proc.pid)
+
     def run(self) -> int:
         self._setup_logging()
         self._write_pid()
         if threading.current_thread() is threading.main_thread():
             self._install_signal_handlers()
         self.logger.info("mnemonicos daemon starting")
+        self._start_managed_ollama()
         try:
             self.scheduler_thread.start()
             self.socket_thread.start()
@@ -350,8 +394,10 @@ class Daemon:
         finally:
             self.shutdown_event.set()
             self.scheduler_thread.join(timeout=5.0)
+            self.process_registry.stop_all(grace_seconds=5.0, kill_seconds=5.0)
             # Wait for in-flight job threads before cleaning up DB state.
             self.scheduler.join_running_jobs(timeout=30.0)
+            self.process_registry.stop_all(grace_seconds=5.0, kill_seconds=5.0)
             self.socket_server.close()
             self.socket_thread.join(timeout=2.0)
             self._mark_processing_items_as_error()

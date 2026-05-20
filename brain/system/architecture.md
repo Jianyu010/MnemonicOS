@@ -165,6 +165,14 @@ details too early.
 - [East Flange Roadmap — Stage 1](retrieval-east-flange-roadmap.md): phase status
   for the query parsing stage.
 
+### Daemon Process Lifecycle
+
+- [Daemon Process Lifecycle Plan](daemon-lifecycle-plan.md): governing design for
+  `DaemonProcessRegistry`, extraction subprocess process-group ownership, the 7-step CLI
+  stop escalation sequence, the `daemon_stopped` postcondition contract, and opt-in
+  provider ownership (`ollama_managed`). Authoritative over `daemon.py`, `daemon_processes.py`,
+  `cli.py` stop path, and `extraction/worker.py`.
+
 ### Runtime Protocol and Agent Bridges
 
 - [Runtime Protocol](runtime-protocol.md): canonical protocol contract for

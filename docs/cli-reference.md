@@ -45,7 +45,7 @@ mnemonicos daemon {start|stop|status|run-job}
 
 **`daemon start`** — Start the daemon (runs scheduled jobs).
 
-**`daemon stop`** — Send SIGTERM to the daemon.
+**`daemon stop`** — Request cooperative shutdown over the daemon socket; escalates to PID and process-group signals if the socket is unreachable. Prints `daemon_stopped` only after verifying the daemon PID, Unix socket, and process group are all gone. Prints `daemon_stop_timeout` if the daemon does not exit within the escalation window.
 
 **`daemon status [--json]`** — Show daemon liveness, scheduled jobs, next-run times, and last job result. `--json` emits raw JSON.
 

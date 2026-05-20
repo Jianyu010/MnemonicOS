@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import asdict
 import json
 import logging
+import os
+import signal
 import subprocess
 import sys
 from typing import Any, Iterator
@@ -36,6 +38,7 @@ def process_extraction_queue(
     dry_run: bool = False,
     limit: int | None = None,
     progress: dict[str, Any] | None = None,
+    process_registry: Any | None = None,
 ) -> ExtractionProcessResult:
     connection = connect_db(config.paths.db_path)
     run_migrations(connection, _migrations_dir(config))
@@ -90,6 +93,7 @@ def process_extraction_queue(
                 item_index=item_index,
                 total_items=total_items,
                 item_name=_progress_name(item),
+                process_registry=process_registry,
             )
             if timed_out:
                 stats.errors += 1
@@ -117,6 +121,7 @@ def _run_item_subprocess(
     item_index: int,
     total_items: int,
     item_name: str,
+    process_registry: Any | None = None,
 ) -> bool:
     """Spawn a subprocess to extract one item. Returns True if timed out."""
     import tempfile
@@ -147,7 +152,14 @@ def _run_item_subprocess(
     ]
     if config_path:
         cmd.extend(["--config", config_path])
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    if process_registry is not None:
+        process_registry.register(proc, label=f"extraction-item-{item_id}", process_group=True)
 
     # Poll progress file in background thread and forward into parent's progress dict.
     stop_poll = threading.Event()
@@ -178,13 +190,18 @@ def _run_item_subprocess(
         return False
     except subprocess.TimeoutExpired:
         _log.warning("extraction subprocess for item %s timed out after %ss — killing", item_id, timeout_seconds)
-        proc.kill()
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
         proc.communicate()
         return True
     finally:
         stop_poll.set()
         if poll_thread is not None:
             poll_thread.join(timeout=2.0)
+        if process_registry is not None:
+            process_registry.unregister(proc)
         try:
             progress_file.unlink()
         except FileNotFoundError:
