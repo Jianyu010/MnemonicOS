@@ -565,6 +565,106 @@ class ExtractionLayerTest(unittest.TestCase):
         self.assertTrue(timed_out)
         self.assertIsNotNone(proc.poll())
 
+    def test_lane_handle_timeout_reaps_process_group(self) -> None:
+        import os
+        import signal
+        import subprocess
+        import threading
+        import time
+        from second_brain.extraction.worker import _LaneHandle
+
+        progress_file = Path(tempfile.gettempdir()) / "mnemo_test_lane_handle_reap.json"
+        try:
+            progress_file.unlink()
+        except FileNotFoundError:
+            pass
+
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        handle = _LaneHandle(
+            proc=proc,
+            poll_thread=None,
+            stop_poll=threading.Event(),
+            progress_file=progress_file,
+            timeout_seconds=1,
+            process_registry=None,
+        )
+
+        timed_out = handle.join()
+
+        self.assertTrue(timed_out)
+        deadline = time.monotonic() + 3.0
+        while proc.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertIsNotNone(proc.poll())
+        with self.assertRaises(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGTERM)
+
+    def test_lane_handle_timeout_terminates_before_killing_process_group(self) -> None:
+        import signal
+        import subprocess
+        import threading
+        from second_brain.extraction import worker
+        from second_brain.extraction.worker import _LaneHandle
+
+        class SlowProc:
+            pid = 424242
+            returncode = None
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def communicate(self, timeout=None):
+                self.calls += 1
+                if self.calls <= 2:
+                    raise subprocess.TimeoutExpired(cmd="slow", timeout=timeout)
+                self.returncode = -signal.SIGKILL
+                return (b"", b"")
+
+        progress_file = Path(tempfile.gettempdir()) / "mnemo_test_lane_handle_escalate.json"
+        proc = SlowProc()
+        handle = _LaneHandle(
+            proc=proc,  # type: ignore[arg-type]
+            poll_thread=None,
+            stop_poll=threading.Event(),
+            progress_file=progress_file,
+            timeout_seconds=1,
+            process_registry=None,
+        )
+
+        with mock.patch.object(worker.os, "killpg") as killpg:
+            timed_out = handle.join()
+
+        self.assertTrue(timed_out)
+        self.assertEqual(
+            killpg.call_args_list,
+            [
+                mock.call(proc.pid, signal.SIGTERM),
+                mock.call(proc.pid, signal.SIGKILL),
+            ],
+        )
+
+    def test_file_progress_flushes_item_assignment(self) -> None:
+        from second_brain.extraction._subprocess_entry import _FileProgress
+
+        progress_file = Path(tempfile.gettempdir()) / "mnemo_test_file_progress_assignment.json"
+        try:
+            progress_file.unlink()
+        except FileNotFoundError:
+            pass
+
+        progress = _FileProgress(str(progress_file))
+        progress["phase"] = "llm"
+        progress["window"] = 2
+
+        payload = json.loads(progress_file.read_text())
+        self.assertEqual(payload["phase"], "llm")
+        self.assertEqual(payload["window"], 2)
+
     def test_dual_lane_process_respects_per_run_batch_caps(self) -> None:
         from second_brain.extraction import worker
 

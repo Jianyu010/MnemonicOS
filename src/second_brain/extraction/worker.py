@@ -38,6 +38,23 @@ from .validation import parse_candidate_bundle, parse_intra_source_relations, pr
 _log = logging.getLogger(__name__)
 
 
+def _terminate_process_group(proc: subprocess.Popen, *, grace_seconds: float = 2.0) -> None:
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        proc.communicate(timeout=grace_seconds)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    proc.communicate()
+
+
 @dataclass
 class _LaneHandle:
     """Non-blocking handle for a single extraction subprocess lane.
@@ -71,11 +88,7 @@ class _LaneHandle:
                 self.progress_file.name,
                 self.timeout_seconds,
             )
-            try:
-                os.killpg(self.proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            self.proc.communicate()
+            _terminate_process_group(self.proc)
             return True
         finally:
             self.stop_poll.set()

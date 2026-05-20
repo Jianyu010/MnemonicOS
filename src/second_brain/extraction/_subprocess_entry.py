@@ -26,6 +26,14 @@ class _FileProgress(dict):
         super().update(*args, **kwargs)
         self._flush()
 
+    def __setitem__(self, key, value) -> None:  # type: ignore[override]
+        super().__setitem__(key, value)
+        self._flush()
+
+    def __delitem__(self, key) -> None:  # type: ignore[override]
+        super().__delitem__(key)
+        self._flush()
+
     def clear(self) -> None:
         super().clear()
         self._flush()

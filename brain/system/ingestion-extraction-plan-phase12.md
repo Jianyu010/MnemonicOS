@@ -101,6 +101,16 @@ is active. Sub-dicts `"quick"` and `"slow"` carry per-lane state:
 ```
 
 `daemon status` and `daemon watch` render both lanes as a "dual lane" block.
+Child subprocess progress must flush on both mapping assignment and bulk
+updates. `_process_item()` mutates `progress["phase"]`, `progress["window"]`,
+and `progress["total_windows"]` directly, so the file-backed progress dict used
+by `_subprocess_entry.py` must write through `__setitem__`; otherwise the parent
+keeps showing the spawn-time `preparing` state while Ollama is actually running.
+
+Timeout cleanup must also reap the whole subprocess process group before the
+lane is considered complete. A timed-out child that remains alive can keep DB
+handles and Ollama connections open after its queue row has already been marked
+`error`.
 
 ## Implementation Scope
 
