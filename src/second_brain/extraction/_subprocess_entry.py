@@ -43,7 +43,7 @@ class _FileProgress(dict):
             pass
 
 
-def _run(item_id: int, progress_file: str | None = None) -> int:
+def _run(item_id: int, *, config_path: str | None = None, progress_file: str | None = None) -> int:
     from second_brain.config import load_config
     from second_brain.db import connect_db, run_migrations
     from second_brain.ingest import _migrations_dir
@@ -52,7 +52,7 @@ def _run(item_id: int, progress_file: str | None = None) -> int:
     from .queue import _row_to_item, mark_error
     from .worker import _process_item
 
-    config = load_config()
+    config = load_config(config_path) if config_path else load_config()
     connection = connect_db(config.paths.db_path)
     run_migrations(connection, _migrations_dir(config))
     connection.row_factory = sqlite3.Row
@@ -86,10 +86,11 @@ def _run(item_id: int, progress_file: str | None = None) -> int:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Extract a single queue item in a subprocess")
+    parser.add_argument("--config", default=None, help="Path to the MnemonicOS config file")
     parser.add_argument("--item-id", type=int, required=True)
     parser.add_argument("--progress-file", default=None, help="Path to write progress JSON for parent process")
     args = parser.parse_args()
-    sys.exit(_run(args.item_id, progress_file=args.progress_file))
+    sys.exit(_run(args.item_id, config_path=args.config, progress_file=args.progress_file))
 
 
 if __name__ == "__main__":

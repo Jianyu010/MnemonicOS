@@ -65,6 +65,11 @@ Currently the prompt has no guidance for this pattern.
 **`src/second_brain/extraction/worker.py`** — `_process_item()`:
 - Remove `existing_knowledge_context = _existing_knowledge_context(item.revisit_context_json)`.
 - Remove `existing_knowledge_context=existing_knowledge_context` from `make_llm_packet(...)`.
+- Ensure extraction subprocesses receive the active parent config path. A
+  subprocess must never fall back to default config when the parent daemon or
+  test harness is running with an explicit config.
+- After a subprocess exits, read `status`, projection counts, candidate count,
+  and promotion-ready count back from SQLite instead of assuming success.
 
 **`src/second_brain/maintenance.py`**:
 - Remove `requeue_context_enabled` and `requeue_context_top_k` from
@@ -148,6 +153,12 @@ No DB schema changes (leave `revisit_context_json` column as historical record).
 ## Acceptance Criteria
 
 - `make_llm_packet()` has no `existing_knowledge_context` parameter.
+- `_process_item()` does not pass `existing_knowledge_context` to
+  `make_llm_packet()`.
+- `_subprocess_entry` accepts `--config` and loads that config for the child
+  extraction process.
+- Parent extraction stats reflect the child-updated queue row and candidate
+  table.
 - Fresh extraction and revisit extraction produce identical prompt structure for
   identical source content.
 - Extraction prompt contains explicit `"high"` / `"medium"` / `"low"` definitions
@@ -157,3 +168,16 @@ No DB schema changes (leave `revisit_context_json` column as historical record).
 - `run_raw_revisitation` does not call `retrieve_fn` or build `context_payload`.
 - All existing tests pass; fixture providers produce `"medium"` confidence for
   inferred candidates, `"high"` for directly stated claims.
+
+## 2026-05-20 Incident
+
+Expected-time queue scheduling moved sessions and episodes ahead of large PDFs.
+This exposed a partial Phase 10 implementation: `make_llm_packet()` no longer
+accepted `existing_knowledge_context`, but the worker still passed that keyword.
+The daemon tombstoned many lightweight rows quickly because the error occurred
+before any model call. The repaired contract is:
+
+- extraction packets never include `existing_knowledge_context`;
+- worker and provider signatures are kept in lockstep;
+- subprocess extraction receives the same config as the parent daemon;
+- parent job stats are loaded from SQLite after the subprocess updates the queue.

@@ -83,6 +83,7 @@ def process_extraction_queue(
                 mark_processing(connection, item.id)
 
             timed_out = _run_item_subprocess(
+                config_path=str(config.config_path) if config.config_path is not None else None,
                 item_id=item.id,
                 timeout_seconds=max_item_seconds,
                 progress=progress,
@@ -99,9 +100,7 @@ def process_extraction_queue(
                         error=f"timeout: item exceeded {max_item_seconds}s per-item limit",
                     )
             else:
-                # Subprocess handled mark_finished / mark_error itself.
-                # Count as processed; accurate stats would need IPC but not worth it.
-                stats.processed += 1
+                _accumulate_subprocess_result(connection, stats, item.id)
     finally:
         if progress is not None:
             progress.clear()
@@ -111,6 +110,7 @@ def process_extraction_queue(
 
 def _run_item_subprocess(
     *,
+    config_path: str | None,
     item_id: int,
     timeout_seconds: int,
     progress: dict[str, Any] | None,
@@ -145,6 +145,8 @@ def _run_item_subprocess(
         "--item-id", str(item_id),
         "--progress-file", str(progress_file),
     ]
+    if config_path:
+        cmd.extend(["--config", config_path])
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     # Poll progress file in background thread and forward into parent's progress dict.
@@ -187,6 +189,52 @@ def _run_item_subprocess(
             progress_file.unlink()
         except FileNotFoundError:
             pass
+
+
+def _accumulate_subprocess_result(
+    connection,
+    stats: ExtractionProcessResult,
+    queue_id: int,
+) -> None:
+    row = connection.execute(
+        """
+        SELECT status, window_count, artifact_count, visual_snippet_count,
+               candidate_count, validation_error_count
+        FROM extraction_queue
+        WHERE id = ?
+        """,
+        (queue_id,),
+    ).fetchone()
+    if row is None:
+        stats.errors += 1
+        return
+    status = str(row["status"])
+    if status == "processed":
+        stats.processed += 1
+    elif status == "skipped":
+        stats.skipped += 1
+    elif status == "error":
+        stats.errors += 1
+    else:
+        stats.errors += 1
+        return
+    stats.windows += int(row["window_count"] or 0)
+    stats.artifacts += int(row["artifact_count"] or 0)
+    stats.visual_snippets += int(row["visual_snippet_count"] or 0)
+    stats.candidates += int(row["candidate_count"] or 0)
+    stats.promotion_ready += _promotion_ready_count(connection, queue_id)
+
+
+def _promotion_ready_count(connection, queue_id: int) -> int:
+    row = connection.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM extraction_candidates
+        WHERE queue_id = ? AND validation_status = 'promotion_ready'
+        """,
+        (queue_id,),
+    ).fetchone()
+    return int(row["count"] or 0) if row is not None else 0
 
 
 def _progress_name(item) -> str:
@@ -281,7 +329,6 @@ def _process_item(
             visual_snippets = [vlm.describe(artifact) for artifact in artifacts]
 
         llm = build_llm_provider(config)
-        existing_knowledge_context = _existing_knowledge_context(item.revisit_context_json)
         retrieval_context_note_ids = _parse_memory_context_note_ids(windows)
 
         # Send windows in batches to avoid LLM context overflow.
@@ -318,7 +365,6 @@ def _process_item(
                 projection_metadata=projection_metadata,
                 windows=batch_windows,
                 visual_snippets=batch_snippets,
-                existing_knowledge_context=existing_knowledge_context,
                 retrieval_context_note_ids=retrieval_context_note_ids or None,
             )
             raw_output = llm.extract_candidates(packet)
@@ -432,28 +478,6 @@ def _parse_memory_context_note_ids(windows: list[Any]) -> list[str]:
                             seen.add(nid)
                             note_ids.append(nid)
     return note_ids
-
-
-def _existing_knowledge_context(raw_context: str | None) -> str | None:
-    if not raw_context:
-        return None
-    try:
-        payload = json.loads(raw_context)
-    except json.JSONDecodeError:
-        return None
-    related = payload.get("related_notes") if isinstance(payload, dict) else None
-    if not isinstance(related, list):
-        return None
-    lines = []
-    for item in related:
-        if not isinstance(item, dict):
-            continue
-        note_id = str(item.get("note_id") or "").strip()
-        title = str(item.get("title") or "").strip()
-        summary = str(item.get("summary") or "").strip()
-        if note_id:
-            lines.append(f"[{note_id}] {title}\n{summary}".strip())
-    return "\n\n".join(lines) or None
 
 
 def _iter_batches(items: list[Any], batch_size: int) -> Iterator[list[Any]]:

@@ -218,7 +218,13 @@ lazy_pdf_ingest = false
 | Key | Default | Description |
 |-----|---------|-------------|
 | `max_windows_per_batch` | `1` | Windows sent per LLM call. Keep at `1` for models with ≤ 32 K context. Increase only if your model handles larger inputs. |
-| `max_queue_batch` | `10` | Artifacts processed per daemon tick (every 5 min). |
+| `max_queue_batch` | `10` | Queue rows processed per daemon tick (every 5 min). |
+
+The daemon orders pending extraction rows by coarse expected processing time:
+episodes and sessions first, lightweight text/markdown artifacts next, unknown
+artifact formats next, and known-heavy PDFs/DOCX/PPTX last. FIFO order is
+preserved within each lane, so large documents still drain when no lighter work
+is waiting.
 
 Large textbooks produce many windows (a 566-page PDF ≈ 17 windows). At `max_windows_per_batch = 1` the daemon processes one window per LLM call, serialised within each artifact, emitting N candidates per window (one candidate per discrete knowledge piece: theorem, definition, proof, procedure). All candidates across windows are merged before promotion.
 

@@ -455,16 +455,14 @@ west-flange projections, inspect files, or persist a new priority column.
 Verification note:
 
 - Focused queue-ordering test passes.
-- Full `tests.test_extraction_layer` currently fails in live subprocess fixture
-  extraction because the subprocess path returns zero candidate stats / rows.
-  That failure is outside the queue selector change and is tracked separately by
-  the existing subprocess/checkpoint worktree changes.
+- Full `tests.test_extraction_layer` passes after the subprocess config
+  propagation and result-accounting fix documented in Phase 10.
 
 ---
 
 ## Phase 10: Confidence Signal Clarification and Context Injection Removal
 
-Status: **not started**.
+Status: **partially implemented 2026-05-20**.
 
 Plan: `ingestion-extraction-plan-phase10.md`.
 
@@ -475,8 +473,10 @@ Three targeted changes to the extraction layer:
 **1. Remove `existing_knowledge_context` from extraction pipeline.**
 - `make_llm_packet()` drops the parameter; worker stops injecting wiki notes into
   extraction packets.
-- `MaintenanceConfig` loses `requeue_context_enabled` and `requeue_context_top_k`.
-- `_revisit_context_payload` and context retrieval removed from `run_raw_revisitation`.
+- `src/second_brain/extraction/worker.py` no longer passes
+  `existing_knowledge_context` to `make_llm_packet()`.
+- Raw re-visitation may still store historical `revisit_context_json`, but the
+  extraction worker ignores it when building LLM packets.
 - Rationale: wiki comparison is the promotion layer's job. Injecting old wiki state
   contaminates the `confidence` signal and causes inconsistent behaviour between
   fresh and revisit extractions on identical source content.
@@ -497,12 +497,23 @@ Three targeted changes to the extraction layer:
 
 ### Deliverables
 
-- `src/second_brain/extraction/providers.py` — remove `existing_knowledge_context` from
-  `make_llm_packet`; add confidence definitions and correction rules to prompt
-- `src/second_brain/extraction/worker.py` — remove context injection call
-- `src/second_brain/maintenance.py` — remove `_revisit_context_payload`, context retrieval
-- `src/second_brain/config.py` — remove two `MaintenanceConfig` fields
-- `config/memory.example.toml` — remove two `[maintenance]` keys
+- Done: `src/second_brain/extraction/providers.py` removes
+  `existing_knowledge_context` from `make_llm_packet`.
+- Done: `src/second_brain/extraction/worker.py` removes the stale context
+  injection call.
+- Done: extraction subprocesses receive the active config path from the parent
+  worker and parent stats are read back from the queue row after subprocess
+  completion.
+- Remaining cleanup: remove context retrieval/storage knobs from raw
+  re-visitation if Phase 10 is completed fully.
+
+### Incident Note
+
+On 2026-05-20, expected-time queue scheduling surfaced a half-applied Phase 10
+change: sessions and episodes ran before large PDFs and rapidly failed with
+`make_llm_packet() got an unexpected keyword argument 'existing_knowledge_context'`.
+The fix removed the stale worker argument, propagated the active config to
+subprocess extraction, and read subprocess result counts from SQLite.
 
 ---
 

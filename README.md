@@ -296,6 +296,13 @@ mnemonicos retrieve "what do we know about raw re-visitation?" --include-body --
 mnemonicos server --host 127.0.0.1 --port 8000
 ```
 
+Extraction queue processing is mostly FIFO, but the daemon now uses a coarse
+expected-time ordering so sessions and episodes are not stuck behind large
+textbooks. It drains sessions/episodes first, then lightweight text/markdown
+artifacts, then unknown artifact formats, then known-heavy PDFs/DOCX/PPTX. FIFO
+is preserved within each lane. Extraction subprocesses receive the same config
+path as the parent daemon so they operate on the same database.
+
 Useful job names:
 
 ```text

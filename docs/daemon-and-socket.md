@@ -73,6 +73,12 @@ Default schedule (all times UTC, cron format `minute hour day month weekday`):
 | `retry_failed_extractions` | `55 * * * *` | hourly :55 |
 | `wiki_raw_revisitation` | `0 2 * * *` | daily 02:00 |
 
+`process_extraction_queue` uses expected-time queue ordering rather than strict
+FIFO: sessions and episodes run before lightweight text artifacts, then unknown
+artifact formats, then known-heavy PDFs/DOCX/PPTX. The extraction worker spawns
+one subprocess per queue row and passes the active config path into that child;
+the child must operate on the same database as the parent daemon.
+
 Override a schedule in `config/memory.toml`:
 
 ```toml
