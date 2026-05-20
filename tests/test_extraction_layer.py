@@ -460,6 +460,52 @@ class ExtractionLayerTest(unittest.TestCase):
         self.assertIn("/v1/extraction/queue", _POST_ROUTES)
         self.assertIn("/v1/extraction/process", _POST_ROUTES)
 
+    def test_pending_quick_items_returns_only_lanes_0_and_1(self) -> None:
+        from second_brain.extraction.queue import pending_quick_items, pending_slow_items
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            config = _config(workspace)
+            connection = connect_db(config.paths.db_path)
+            try:
+                with connection:
+                    for archive_id, source_format in [
+                        ("artifact/a-pdf", "pdf"),
+                        ("artifact/a-md", "md"),
+                    ]:
+                        connection.execute(
+                            "INSERT INTO archive(id, type, path, ingested_at, tags, source_format) "
+                            "VALUES (?, 'doc', ?, '2026-05-20 08:00:00', '[]', ?)",
+                            (archive_id, str(workspace / f"{archive_id.replace('/', '-')}.raw"), source_format),
+                        )
+                    connection.execute(
+                        "INSERT INTO extraction_queue(source_kind, archive_id, status, queued_at) "
+                        "VALUES ('artifact', 'artifact/a-pdf', 'pending', '2026-05-20 08:00:00')"
+                    )
+                    connection.execute(
+                        "INSERT INTO extraction_queue(source_kind, archive_id, status, queued_at) "
+                        "VALUES ('artifact', 'artifact/a-md', 'pending', '2026-05-20 08:01:00')"
+                    )
+                    connection.execute(
+                        "INSERT INTO extraction_queue(source_kind, conversation_id, episode_id, status, queued_at) "
+                        "VALUES ('episode', 'conv', 'ep1', 'pending', '2026-05-20 08:02:00')"
+                    )
+
+                quick = pending_quick_items(connection, limit=10)
+                slow = pending_slow_items(connection, limit=10)
+
+                quick_kinds = [(i.source_kind, i.archive_id, i.episode_id) for i in quick]
+                slow_kinds = [(i.source_kind, i.archive_id, i.episode_id) for i in slow]
+
+                self.assertEqual(quick_kinds, [
+                    ("episode", None, "ep1"),
+                    ("artifact", "artifact/a-md", None),
+                ])
+                self.assertEqual(slow_kinds, [
+                    ("artifact", "artifact/a-pdf", None),
+                ])
+            finally:
+                connection.close()
+
 
 if __name__ == "__main__":
     unittest.main()
