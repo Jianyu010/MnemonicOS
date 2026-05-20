@@ -329,6 +329,7 @@ def _render_watch(
     recent = health.get("recent_job_runs") or []
 
     running_job = service.get("running_job")
+    running_jobs: list[str] = service.get("running_jobs") or ([running_job] if running_job else [])
     job_progress: dict = service.get("job_progress") or {}
     counts = queue.get("queue_counts") or {}
     n_processed = int(counts.get("processed", 0))
@@ -339,7 +340,10 @@ def _render_watch(
     fraction = n_processed / n_total if n_total > 0 else 0.0
 
     status_dot = f"{_GREEN}●{_RESET}" if response.get("status") == "ok" else f"{_YELLOW}●{_RESET}"
-    job_str = f"{_CYAN}{running_job}{_RESET}" if running_job else f"{_DIM}idle{_RESET}"
+    if running_jobs:
+        job_str = ", ".join(f"{_CYAN}{j}{_RESET}" for j in running_jobs)
+    else:
+        job_str = f"{_DIM}idle{_RESET}"
     lines.append(f"{status_dot} ONLINE   running: {job_str}")
     lines.append("")
 

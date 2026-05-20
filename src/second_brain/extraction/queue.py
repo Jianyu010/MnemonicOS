@@ -152,10 +152,23 @@ def extraction_status(
 def pending_items(connection: sqlite3.Connection, *, limit: int) -> list[ExtractionQueueItem]:
     rows = connection.execute(
         """
-        SELECT *
-        FROM extraction_queue
-        WHERE status = 'pending'
-        ORDER BY queued_at ASC, id ASC
+        SELECT q.*
+        FROM extraction_queue q
+        LEFT JOIN archive a ON a.id = q.archive_id
+        WHERE q.status = 'pending'
+        ORDER BY
+            CASE
+                WHEN q.source_kind IN ('episode', 'session') THEN 0
+                WHEN q.source_kind = 'artifact'
+                 AND lower(ltrim(COALESCE(a.source_format, ''), '.')) IN ('md', 'markdown', 'txt', 'text', 'plain_text', 'log')
+                    THEN 1
+                WHEN q.source_kind = 'artifact'
+                 AND lower(ltrim(COALESCE(a.source_format, ''), '.')) IN ('pdf', 'docx', 'pptx')
+                    THEN 3
+                ELSE 2
+            END ASC,
+            q.queued_at ASC,
+            q.id ASC
         LIMIT ?
         """,
         (limit,),
@@ -178,7 +191,7 @@ def mark_processing(connection: sqlite3.Connection, queue_id: int) -> None:
     )
 
 
-CURRENT_SCHEMA_VERSION = "1.0"
+CURRENT_SCHEMA_VERSION = "1.1"
 
 
 def mark_finished(

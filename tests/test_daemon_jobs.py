@@ -127,11 +127,13 @@ class DaemonJobsTest(unittest.TestCase):
             self.assertEqual(response["status"], "ok")
             self.assertEqual(response["result"]["status"], "ok")
 
-            daemon.job_lock.acquire()
+            # Simulate a concurrent run by holding the per-job lock.
+            job_lock = daemon.scheduler._get_job_lock("status_report")
+            job_lock.acquire()
             try:
                 busy = daemon.scheduler.run_job_now("status_report")
             finally:
-                daemon.job_lock.release()
+                job_lock.release()
             self.assertEqual(busy["status"], "busy")
 
     def test_daemon_status_summary_includes_units_and_extraction_schedule(self) -> None:

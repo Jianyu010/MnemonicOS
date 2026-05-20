@@ -119,16 +119,53 @@ def _run_item_subprocess(
     item_name: str,
 ) -> bool:
     """Spawn a subprocess to extract one item. Returns True if timed out."""
+    import tempfile
+    import threading
+    from pathlib import Path
+
+    progress_file = Path(tempfile.gettempdir()) / f"mnemo_progress_{item_id}.json"
+    try:
+        progress_file.unlink()
+    except FileNotFoundError:
+        pass
+
     if progress is not None:
         progress.update({
             "item_id": item_id,
             "item_name": item_name,
             "item_index": item_index,
             "total_items": total_items,
-            "phase": "subprocess",
+            "phase": "preparing",
+            "window": 0,
+            "total_windows": 0,
         })
-    cmd = [sys.executable, "-m", "second_brain.extraction._subprocess_entry", "--item-id", str(item_id)]
+
+    cmd = [
+        sys.executable, "-m", "second_brain.extraction._subprocess_entry",
+        "--item-id", str(item_id),
+        "--progress-file", str(progress_file),
+    ]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    # Poll progress file in background thread and forward into parent's progress dict.
+    stop_poll = threading.Event()
+
+    def _poll() -> None:
+        while not stop_poll.is_set():
+            if progress is not None and progress_file.exists():
+                try:
+                    data = json.loads(progress_file.read_text())
+                    progress.update(data)
+                except Exception:
+                    pass
+            stop_poll.wait(1.5)
+
+    if progress is not None:
+        poll_thread = threading.Thread(target=_poll, daemon=True)
+        poll_thread.start()
+    else:
+        poll_thread = None
+
     try:
         _, stderr = proc.communicate(timeout=timeout_seconds)
         if proc.returncode != 0:
@@ -142,6 +179,14 @@ def _run_item_subprocess(
         proc.kill()
         proc.communicate()
         return True
+    finally:
+        stop_poll.set()
+        if poll_thread is not None:
+            poll_thread.join(timeout=2.0)
+        try:
+            progress_file.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _progress_name(item) -> str:
