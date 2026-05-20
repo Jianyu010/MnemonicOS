@@ -273,9 +273,6 @@ class DaemonJobsTest(unittest.TestCase):
         self.assertEqual(cfg.slow_lane_batch, 5)
 
     def test_extraction_config_dual_lane_toml(self) -> None:
-        import tempfile, textwrap
-        from pathlib import Path
-        from second_brain.config import load_config
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "config").mkdir()
