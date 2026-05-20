@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from itertools import zip_longest
 import json
 import logging
 import os
@@ -315,14 +316,19 @@ def _process_dual_lane(
     if progress is not None:
         progress.update({"mode": "dual_lane", "quick": {}, "slow": {}})
 
-    while True:
-        quick_candidates = pending_quick_items(connection, limit=config.extraction.quick_lane_batch)
-        slow_candidates = pending_slow_items(connection, limit=config.extraction.slow_lane_batch)
-        if not quick_candidates and not slow_candidates:
-            break
+    quick_candidates = pending_quick_items(connection, limit=config.extraction.quick_lane_batch)
+    slow_candidates = pending_slow_items(connection, limit=config.extraction.slow_lane_batch)
+    quick_total = len(quick_candidates)
+    slow_total = len(slow_candidates)
 
-        quick_item = quick_candidates[0] if quick_candidates else None
-        slow_item = slow_candidates[0] if slow_candidates else None
+    for pair_index, (quick_item, slow_item) in enumerate(zip_longest(quick_candidates, slow_candidates)):
+        if progress is not None:
+            progress.update({
+                "mode": "dual_lane",
+                "pair_index": pair_index,
+                "quick_total": quick_total,
+                "slow_total": slow_total,
+            })
 
         # Invariant: mark both processing before spawning any subprocess.
         with connection:
@@ -340,8 +346,8 @@ def _process_dual_lane(
                 item_id=quick_item.id,
                 timeout_seconds=max_item_seconds,
                 progress=progress,
-                item_index=0,
-                total_items=1,
+                item_index=quick_candidates.index(quick_item),
+                total_items=quick_total,
                 item_name=_progress_name(quick_item),
                 process_registry=process_registry,
                 progress_key="quick",
@@ -352,8 +358,8 @@ def _process_dual_lane(
                 item_id=slow_item.id,
                 timeout_seconds=max_item_seconds,
                 progress=progress,
-                item_index=0,
-                total_items=1,
+                item_index=slow_candidates.index(slow_item),
+                total_items=slow_total,
                 item_name=_progress_name(slow_item),
                 process_registry=process_registry,
                 progress_key="slow",

@@ -143,7 +143,7 @@ details too early.
   promotion ledger.
 - [Promotion Layer Development Roadmap](ingestion-promotion-roadmap.md):
   implementation status and remaining integration-test gaps.
-- [Auto-Resolve Daemon Spec](../../docs/superpowers/specs/2026-05-18-auto-resolve-review-design.md):
+- [Auto-Resolve Daemon](INGESTION-PATH-GOVERNANCE-DESIGN.md#side-path--auto-resolve-daemon):
   LLM-arbitrated resolution of review-routed candidates; enriches files for human when confidence < 0.75.
 - [Review Command Development Plan](ingestion-review-plan.md): human
   approval/rejection path for review items the auto-resolve daemon could not resolve.

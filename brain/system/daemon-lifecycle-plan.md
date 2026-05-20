@@ -174,5 +174,6 @@ ollama_command = "/usr/local/bin/ollama serve"
 
 ## Implementation Plan
 
-See `docs/superpowers/plans/2026-05-20-complete-daemon-stop.md` for the full TDD
-task breakdown (Tasks 1–5 with failing-test-first steps).
+This file is the governing implementation plan for the daemon shutdown lifecycle,
+including the TDD task breakdown for process registry, socket shutdown, CLI stop
+escalation, and provider ownership.

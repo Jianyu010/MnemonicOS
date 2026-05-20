@@ -6,6 +6,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -563,6 +564,70 @@ class ExtractionLayerTest(unittest.TestCase):
         timed_out = handle.join()
         self.assertTrue(timed_out)
         self.assertIsNotNone(proc.poll())
+
+    def test_dual_lane_process_respects_per_run_batch_caps(self) -> None:
+        from second_brain.extraction import worker
+
+        class FakeHandle:
+            def join(self) -> bool:
+                return False
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            config = _config(workspace)
+            config.extraction.dual_lane_enabled = True
+            config.extraction.quick_lane_batch = 2
+            config.extraction.slow_lane_batch = 1
+
+            connection = connect_db(config.paths.db_path)
+            try:
+                with connection:
+                    for index in range(2):
+                        archive_id = f"artifact/slow-{index}"
+                        connection.execute(
+                            "INSERT INTO archive(id, type, path, ingested_at, tags, source_format) "
+                            "VALUES (?, 'doc', ?, '2026-05-20 08:00:00', '[]', 'pdf')",
+                            (archive_id, str(workspace / f"slow-{index}.pdf")),
+                        )
+                        connection.execute(
+                            "INSERT INTO extraction_queue(source_kind, archive_id, status, queued_at) "
+                            "VALUES ('artifact', ?, 'pending', ?)",
+                            (archive_id, f"2026-05-20 08:0{index}:00"),
+                        )
+                    for index in range(3):
+                        connection.execute(
+                            "INSERT INTO extraction_queue(source_kind, archive_id, status, queued_at) "
+                            "VALUES ('session', ?, 'pending', ?)",
+                            (f"session/quick-{index}", f"2026-05-20 08:1{index}:00"),
+                        )
+            finally:
+                connection.close()
+
+            def finish_item(conn, stats, queue_id):
+                stats.processed += 1
+                with conn:
+                    conn.execute(
+                        "UPDATE extraction_queue SET status = 'processed', finished_at = datetime('now') WHERE id = ?",
+                        (queue_id,),
+                    )
+
+            with (
+                mock.patch.object(worker, "_spawn_item_subprocess", return_value=FakeHandle()) as spawn,
+                mock.patch.object(worker, "_accumulate_subprocess_result", side_effect=finish_item),
+            ):
+                result = process_extraction_queue(config, dry_run=False)
+
+            self.assertEqual(result.processed, 3)
+            self.assertEqual(spawn.call_count, 3)
+
+            connection = connect_db(config.paths.db_path)
+            try:
+                pending_count = connection.execute(
+                    "SELECT COUNT(*) AS count FROM extraction_queue WHERE status = 'pending'"
+                ).fetchone()
+            finally:
+                connection.close()
+            self.assertEqual(int(pending_count["count"]), 2)
 
 
 if __name__ == "__main__":

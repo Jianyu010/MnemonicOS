@@ -110,13 +110,14 @@ Files modified:
 |---|---|
 | `src/second_brain/config.py` | `dual_lane_enabled`, `quick_lane_batch`, `slow_lane_batch` in `ExtractionConfig` + TOML loading |
 | `src/second_brain/extraction/queue.py` | Add `pending_quick_items()` and `pending_slow_items()` |
-| `src/second_brain/extraction/worker.py` | Add `_LaneHandle`, `_make_extraction_proc()`, `_spawn_item_subprocess()`, `_run_lane_pair()`, `_process_single_lane()`, `_process_dual_lane()`; refactor `process_extraction_queue` |
+| `src/second_brain/extraction/worker.py` | Add `_LaneHandle`, `_make_extraction_proc()`, `_spawn_item_subprocess()`, `_join_lane_pair()`, `_process_single_lane()`, `_process_dual_lane()`; refactor `process_extraction_queue` |
 | `src/second_brain/daemon_status.py` | Render dual-lane progress in `daemon_status_summary()` and `_render_watch()` |
 | `tests/test_extraction_layer.py` | Lane-split query tests, `_LaneHandle` test |
 | `tests/test_daemon_jobs.py` | Dual-lane progress display test |
 | `config/memory.example.toml` | Document new keys |
 
-Implementation plan: `docs/superpowers/plans/2026-05-20-dual-lane-extraction.md`.
+This file is the governing implementation plan. Roadmap summary:
+[ingestion-extraction-roadmap.md](ingestion-extraction-roadmap.md).
 
 ## Verification
 
