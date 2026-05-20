@@ -25,6 +25,8 @@ from .queue import (
     mark_finished,
     mark_processing,
     pending_items,
+    pending_quick_items,
+    pending_slow_items,
     queue_row_to_source_ref,
     source_ref_id,
     update_window_checkpoint,
@@ -210,64 +212,221 @@ def process_extraction_queue(
         candidates=0,
         promotion_ready=0,
     )
-    max_item_seconds = config.extraction.max_extraction_item_seconds
     try:
-        items = pending_items(connection, limit=limit or config.extraction.max_queue_batch)
-        total_items = len(items)
-        for item_index, item in enumerate(items):
-            if progress is not None:
-                progress.clear()
-                progress.update({
-                    "item_id": item.id,
-                    "item_name": _progress_name(item),
-                    "item_index": item_index,
-                    "total_items": total_items,
-                    "window": 0,
-                    "total_windows": 0,
-                    "phase": "preparing",
-                })
-            if dry_run:
-                # Dry-run: use in-process path (no subprocess overhead, no DB writes)
-                service = ProjectionService(config)
-                try:
-                    item_result = _process_item(config, service, connection, item=item, dry_run=True, progress=progress)
-                    stats.processed += item_result["processed"]
-                    stats.skipped += item_result["skipped"]
-                    stats.windows += item_result["windows"]
-                    stats.artifacts += item_result["artifacts"]
-                except Exception as exc:
-                    _log.warning("dry-run item %s failed: %s", item.id, exc)
-                    stats.errors += 1
-                continue
-
-            with connection:
-                mark_processing(connection, item.id)
-
-            timed_out = _run_item_subprocess(
-                config_path=str(config.config_path) if config.config_path is not None else None,
-                item_id=item.id,
-                timeout_seconds=max_item_seconds,
+        if not dry_run and config.extraction.dual_lane_enabled:
+            _process_dual_lane(
+                config, connection, stats,
                 progress=progress,
-                item_index=item_index,
-                total_items=total_items,
-                item_name=_progress_name(item),
                 process_registry=process_registry,
             )
-            if timed_out:
-                stats.errors += 1
-                with connection:
-                    mark_error(
-                        connection,
-                        queue_id=item.id,
-                        error=f"timeout: item exceeded {max_item_seconds}s per-item limit",
-                    )
-            else:
-                _accumulate_subprocess_result(connection, stats, item.id)
+        else:
+            _process_single_lane(
+                config, connection, stats,
+                dry_run=dry_run,
+                limit=limit,
+                progress=progress,
+                process_registry=process_registry,
+            )
     finally:
         if progress is not None:
             progress.clear()
         connection.close()
     return stats
+
+
+def _process_single_lane(
+    config: AppConfig,
+    connection,
+    stats: ExtractionProcessResult,
+    *,
+    dry_run: bool,
+    limit: "int | None",
+    progress: "dict[str, Any] | None",
+    process_registry: "Any | None",
+) -> None:
+    """Process extraction queue sequentially (single-lane mode, original behaviour)."""
+    max_item_seconds = config.extraction.max_extraction_item_seconds
+    config_path = str(config.config_path) if config.config_path is not None else None
+    items = pending_items(connection, limit=limit or config.extraction.max_queue_batch)
+    total_items = len(items)
+    for item_index, item in enumerate(items):
+        if progress is not None:
+            progress.clear()
+            progress.update({
+                "item_id": item.id,
+                "item_name": _progress_name(item),
+                "item_index": item_index,
+                "total_items": total_items,
+                "window": 0,
+                "total_windows": 0,
+                "phase": "preparing",
+            })
+        if dry_run:
+            # Dry-run: use in-process path (no subprocess overhead, no DB writes)
+            service = ProjectionService(config)
+            try:
+                item_result = _process_item(config, service, connection, item=item, dry_run=True, progress=progress)
+                stats.processed += item_result["processed"]
+                stats.skipped += item_result["skipped"]
+                stats.windows += item_result["windows"]
+                stats.artifacts += item_result["artifacts"]
+            except Exception as exc:
+                _log.warning("dry-run item %s failed: %s", item.id, exc)
+                stats.errors += 1
+            continue
+
+        with connection:
+            mark_processing(connection, item.id)
+
+        timed_out = _run_item_subprocess(
+            config_path=config_path,
+            item_id=item.id,
+            timeout_seconds=max_item_seconds,
+            progress=progress,
+            item_index=item_index,
+            total_items=total_items,
+            item_name=_progress_name(item),
+            process_registry=process_registry,
+        )
+        if timed_out:
+            stats.errors += 1
+            with connection:
+                mark_error(
+                    connection,
+                    queue_id=item.id,
+                    error=f"timeout: item exceeded {max_item_seconds}s per-item limit",
+                )
+        else:
+            _accumulate_subprocess_result(connection, stats, item.id)
+
+
+def _process_dual_lane(
+    config: AppConfig,
+    connection,
+    stats: ExtractionProcessResult,
+    *,
+    progress: "dict[str, Any] | None",
+    process_registry: "Any | None",
+) -> None:
+    """Process extraction queue with one quick-lane and one slow-lane subprocess per round."""
+    max_item_seconds = config.extraction.max_extraction_item_seconds
+    config_path = str(config.config_path) if config.config_path is not None else None
+
+    if progress is not None:
+        progress.update({"mode": "dual_lane", "quick": {}, "slow": {}})
+
+    while True:
+        quick_candidates = pending_quick_items(connection, limit=config.extraction.quick_lane_batch)
+        slow_candidates = pending_slow_items(connection, limit=config.extraction.slow_lane_batch)
+        if not quick_candidates and not slow_candidates:
+            break
+
+        quick_item = quick_candidates[0] if quick_candidates else None
+        slow_item = slow_candidates[0] if slow_candidates else None
+
+        # Invariant: mark both processing before spawning any subprocess.
+        with connection:
+            if quick_item is not None:
+                mark_processing(connection, quick_item.id)
+            if slow_item is not None:
+                mark_processing(connection, slow_item.id)
+
+        quick_handle: "_LaneHandle | None" = None
+        slow_handle: "_LaneHandle | None" = None
+
+        if quick_item is not None:
+            quick_handle = _spawn_item_subprocess(
+                config_path=config_path,
+                item_id=quick_item.id,
+                timeout_seconds=max_item_seconds,
+                progress=progress,
+                item_index=0,
+                total_items=1,
+                item_name=_progress_name(quick_item),
+                process_registry=process_registry,
+                progress_key="quick",
+            )
+        if slow_item is not None:
+            slow_handle = _spawn_item_subprocess(
+                config_path=config_path,
+                item_id=slow_item.id,
+                timeout_seconds=max_item_seconds,
+                progress=progress,
+                item_index=0,
+                total_items=1,
+                item_name=_progress_name(slow_item),
+                process_registry=process_registry,
+                progress_key="slow",
+            )
+
+        _join_lane_pair(
+            connection=connection,
+            stats=stats,
+            quick_handle=quick_handle,
+            quick_item=quick_item,
+            slow_handle=slow_handle,
+            slow_item=slow_item,
+            max_item_seconds=max_item_seconds,
+        )
+
+
+def _join_lane_pair(
+    *,
+    connection,
+    stats: ExtractionProcessResult,
+    quick_handle: "_LaneHandle | None",
+    quick_item: "Any | None",
+    slow_handle: "_LaneHandle | None",
+    slow_item: "Any | None",
+    max_item_seconds: int,
+) -> None:
+    """Join quick + slow lane handles concurrently; accumulate results into stats."""
+    quick_timed_out: list[bool] = [False]
+    slow_timed_out: list[bool] = [False]
+
+    def _join_quick() -> None:
+        if quick_handle is not None:
+            quick_timed_out[0] = quick_handle.join()
+
+    def _join_slow() -> None:
+        if slow_handle is not None:
+            slow_timed_out[0] = slow_handle.join()
+
+    join_threads = []
+    if quick_handle is not None:
+        t = threading.Thread(target=_join_quick, daemon=True)
+        t.start()
+        join_threads.append(t)
+    if slow_handle is not None:
+        t = threading.Thread(target=_join_slow, daemon=True)
+        t.start()
+        join_threads.append(t)
+    for t in join_threads:
+        t.join()
+
+    if quick_item is not None:
+        if quick_timed_out[0]:
+            stats.errors += 1
+            with connection:
+                mark_error(
+                    connection,
+                    queue_id=quick_item.id,
+                    error=f"timeout: item exceeded {max_item_seconds}s per-item limit",
+                )
+        else:
+            _accumulate_subprocess_result(connection, stats, quick_item.id)
+
+    if slow_item is not None:
+        if slow_timed_out[0]:
+            stats.errors += 1
+            with connection:
+                mark_error(
+                    connection,
+                    queue_id=slow_item.id,
+                    error=f"timeout: item exceeded {max_item_seconds}s per-item limit",
+                )
+        else:
+            _accumulate_subprocess_result(connection, stats, slow_item.id)
 
 
 def _run_item_subprocess(
