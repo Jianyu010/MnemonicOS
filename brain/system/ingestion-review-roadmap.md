@@ -140,3 +140,27 @@ Fix — add two guards in `_parse_review_file` after frontmatter parse:
 
 When `approve_review_item` hits `FileExistsError` (slug collision), a `--force`
 flag could run `renderer._render_existing` to merge the two notes. Deferred.
+
+---
+
+## Planned Scope Reduction: Human Review to Type Collision Only
+
+After Promotion Phase 6 ships, the human review queue will shrink dramatically.
+
+Current routing reasons that produce human review items:
+- `low_confidence` → will become **auto-reject** before LLM step
+- `wiki_conflict` → will become **time-weighted auto-resolve** (no human)
+- `contested_lifecycle` → will become **time-weighted auto-resolve** (no human)
+- `type_collision` → **removed entirely** — same slug + different type = different note ID,
+  no real collision; promote as-is; risk analysis accepted (see `ingestion-promotion-plan-phase6.md`)
+- LLM arbitration fallback (< 0.75 confidence) → will become **auto-reject**
+
+After Phase 6: human review queue is **empty under normal operation**. No automated
+routing to `brain/wiki/review/` under any normal path.
+
+**Implications for this layer:**
+- Phase 4 hardening still merited for robustness (stale files in review/, manual use).
+- TUI and CLI review commands remain available for operator-initiated manual review.
+- `wiki_auto_resolve_review` daemon job becomes a no-op in normal operation; can be
+  retained as a safety net or removed.
+- No removal of review infrastructure — just nothing flowing through it automatically.

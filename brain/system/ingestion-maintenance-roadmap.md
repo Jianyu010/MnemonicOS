@@ -94,6 +94,9 @@ Deliverables shipped:
   duplicate revisits, and preserves the historical ledger
 - `MaintenanceConfig`: requeue_enabled, requeue_min_age_days, requeue_context_enabled,
   requeue_context_top_k, requeue_max_per_run; all parsed by `load_config`
+  (**NOTE**: `requeue_context_enabled` and `requeue_context_top_k` are scheduled
+  for removal in Extraction Phase 10 — context injection into extraction packets
+  is being removed; see `ingestion-extraction-plan-phase10.md`)
 - `wiki_raw_revisitation` job in `jobs.py` and CLI
 - Revisitation tests cover fresh-row requeue, current-schema skip, cap
   enforcement, dry-run immutability, context injection, job stat keys, and

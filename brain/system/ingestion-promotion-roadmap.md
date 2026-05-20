@@ -213,6 +213,59 @@ LLM bundle → intra_source_relations_json (Phase 8)
 
 - Intra-source relation application (blocked on LLM/VLM Phase 8).
 
+---
+
+## Phase 6: Observation Model, Time-Weighted Conflict Resolution, Human Review Elimination
+
+Status: **not started**.
+
+Plan: `ingestion-promotion-plan-phase6.md`.
+
+### Summary
+
+Replaces the current `confirm`-as-counter and `wiki_conflict`-routes-to-human
+behaviour with a principled model: raw observations are immutable, notes morph.
+
+**Observe-and-relate model (replaces `confirm`):**
+- Every non-conflict match promotes the new candidate as a standalone observation note.
+- New note gets `corroborates → old_note_id` relation.
+- Old note: `last_seen` refreshed, `corroboration_count++`, body merged if new
+  content, confidence raised if new confidence is higher.
+- `confirm` and `update` collapse into the same handler; only body-merge extent differs.
+
+**New relation type `corroborates`:**
+- Direction: new → old.
+- Added to `RELATION_BUCKETS` as `"corroboration"` bucket.
+- `recall.py` auto-generates `reverse_corroborates` (old → new).
+
+**Time-weighted conflict resolution (replaces `wiki_conflict` → human):**
+- Deterministic table based on `new_confidence`, `old_confidence`, and `time_gap_days`.
+- Config: `conflict_stale_threshold_days` (default 30), `conflict_glitch_threshold_days` (default 1).
+- Large gap + conflicting → old becomes `stale`; small gap → old becomes `contested`.
+- New `low_confidence` + any old → promote new as `contested`, old untouched.
+
+**Human review elimination:**
+- `low_confidence` → auto-reject in `auto_resolver.py` before LLM step.
+- `wiki_conflict` and `contested_lifecycle` → time-weighted auto-resolve, never routed to human.
+- LLM arbitration fallback (< threshold confidence) → auto-reject, not human queue.
+- `type_collision` **removed**: same slug + different type = different note ID, no real collision.
+  Risk analysis (retrieval noise, type error decay, generic title flood) accepted — see plan for detail.
+  Human review queue is **empty under normal operation** after Phase 6.
+
+**`rejection_reason` column:**
+- `migrations/030_rejection_reason.sql` — `ALTER TABLE extraction_candidates ADD COLUMN rejection_reason TEXT`.
+- Structured reasons: `low_confidence_extraction`, `gate_failure:<check>`, `type_collision_llm_uncertain`.
+
+### Deliverables
+
+- `src/second_brain/promotion/decisions.py` — remove `wiki_conflict` / `contested_lifecycle` as `review` outcomes
+- `src/second_brain/promotion/auto_resolver.py` — short-circuit `low_confidence`; replace human fallback with auto-reject
+- `src/second_brain/promotion/renderer.py` — observe-and-relate for `confirm`/`update`; write `corroborates` relation; refresh old note timestamp and confidence
+- `src/second_brain/ingest.py` — add `corroborates` to `RELATION_BUCKETS`
+- `src/second_brain/config.py` — add two `PromotionConfig` threshold fields
+- `src/second_brain/promotion/review_ops.py` and `writer.py` — pass `rejection_reason` through
+- `migrations/030_rejection_reason.sql`
+
 ## Amendment: Passive Attribution Ledger Write
 
 Status: **complete 2026-05-13**.

@@ -20,6 +20,9 @@ implementation details live in the phase files:
 6. [Phase 6: Deterministic Candidate Validation](ingestion-extraction-plan-phase6.md)
 7. [Phase 7: Daemon and Admin Surfaces](ingestion-extraction-plan-phase7.md)
 8. [Phase 8: Intra-Source Relation Extraction](ingestion-extraction-plan-phase8.md)
+9. [Phase 9: Retrieval Attribution in Session Extraction](ingestion-extraction-roadmap.md#phase-9-retrieval-attribution-in-session-extraction)
+10. [Phase 10: Confidence Signal Clarification and Context Injection Removal](ingestion-extraction-plan-phase10.md)
+11. [Phase 11: Expected-Time Queue Scheduling](ingestion-extraction-plan-phase11.md)
 
 ## Verified Breakpoint
 
@@ -116,6 +119,9 @@ warning, not an invented description.
 - Normal north-flange retrieval does not call the extraction daemon.
 - East retrieval reads canonical notes and indexes; it does not read usable raw
   or unvalidated extraction candidates as normal memory.
+- Extraction queue scheduling may reorder pending rows by coarse expected
+  processing time. It must preserve FIFO order within the same lane and must not
+  require opening a west-flange projection just to choose the next row.
 
 ## High-Level Flow
 

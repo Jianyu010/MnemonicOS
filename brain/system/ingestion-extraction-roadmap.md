@@ -425,6 +425,87 @@ Acceptance:
 - Provider failure never creates promoted candidates.
 - All degraded behavior is visible in extraction status and daemon status.
 
+## Phase 11: Expected-Time Queue Scheduling
+
+Status: **implemented 2026-05-20**.
+
+Plan: `ingestion-extraction-plan-phase11.md`.
+
+### Summary
+
+Extraction queue selection should be "mostly FIFO" but not let slow document
+formats monopolize daemon batches. Pending rows are ordered by a coarse expected
+processing lane before FIFO:
+
+- `episode` and `session`;
+- lightweight text artifacts (`md`, `markdown`, `txt`, `text`, `plain_text`, `log`);
+- other artifacts;
+- known-heavy artifacts (`pdf`, `docx`, `pptx`).
+
+The selector uses existing `archive.source_format` metadata. It does not open
+west-flange projections, inspect files, or persist a new priority column.
+
+### Acceptance
+
+- New session/episode work is selected before older pending PDFs/DOCX/PPTX.
+- Markdown and text artifacts are not penalized as heavy documents.
+- FIFO order is preserved within each scheduling lane.
+- Heavy artifacts still process when no lightweight pending work exists.
+
+Verification note:
+
+- Focused queue-ordering test passes.
+- Full `tests.test_extraction_layer` currently fails in live subprocess fixture
+  extraction because the subprocess path returns zero candidate stats / rows.
+  That failure is outside the queue selector change and is tracked separately by
+  the existing subprocess/checkpoint worktree changes.
+
+---
+
+## Phase 10: Confidence Signal Clarification and Context Injection Removal
+
+Status: **not started**.
+
+Plan: `ingestion-extraction-plan-phase10.md`.
+
+### Summary
+
+Three targeted changes to the extraction layer:
+
+**1. Remove `existing_knowledge_context` from extraction pipeline.**
+- `make_llm_packet()` drops the parameter; worker stops injecting wiki notes into
+  extraction packets.
+- `MaintenanceConfig` loses `requeue_context_enabled` and `requeue_context_top_k`.
+- `_revisit_context_payload` and context retrieval removed from `run_raw_revisitation`.
+- Rationale: wiki comparison is the promotion layer's job. Injecting old wiki state
+  contaminates the `confidence` signal and causes inconsistent behaviour between
+  fresh and revisit extractions on identical source content.
+
+**2. Add explicit confidence level definitions to extraction prompt.**
+- `"high"`: claim directly and explicitly stated; evidence quote alone convinces.
+- `"medium"`: requires inference across windows, or an initially stated claim later
+  corrected within the session.
+- `"low"`: speculative, ambiguous, weakly evidenced, or source itself uncertain.
+- NOTE added: confidence measures source evidence quality only — not "novelty vs wiki".
+
+**3. Add INTRA-SESSION CORRECTION RULES to extraction prompt.**
+- When statement B follows A and supersedes it (more evidence, direct correction):
+  produce only B, assign confidence based on B's evidence.
+- If A and B are both extractable facts: produce both with `supersedes` intra-source
+  relation.
+- Never produce A alone when B clearly supersedes it within the same session.
+
+### Deliverables
+
+- `src/second_brain/extraction/providers.py` — remove `existing_knowledge_context` from
+  `make_llm_packet`; add confidence definitions and correction rules to prompt
+- `src/second_brain/extraction/worker.py` — remove context injection call
+- `src/second_brain/maintenance.py` — remove `_revisit_context_payload`, context retrieval
+- `src/second_brain/config.py` — remove two `MaintenanceConfig` fields
+- `config/memory.example.toml` — remove two `[maintenance]` keys
+
+---
+
 ## Phase 9: Retrieval Attribution in Session Extraction
 
 Status: **complete 2026-05-13**.
