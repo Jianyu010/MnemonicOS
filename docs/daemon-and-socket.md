@@ -89,6 +89,14 @@ artifact formats, then known-heavy PDFs/DOCX/PPTX. The extraction worker spawns
 one subprocess per queue row and passes the active config path into that child;
 the child must operate on the same database as the parent daemon.
 
+When dual-lane extraction is enabled, the worker processes one quick-lane item
+and one slow-lane item at the same time. `mnemonicos daemon watch` treats the
+socket `job_progress` dict as the primary source of lane progress, but it also
+falls back to live `processing` rows and `/tmp/mnemo_progress_<queue_id>.json`
+child progress files when a lane is empty in socket progress. This prevents a
+live slow PDF subprocess from being displayed as `idle` after overlapping or
+stale extraction-job bookkeeping.
+
 Override a schedule in `config/memory.toml`:
 
 ```toml

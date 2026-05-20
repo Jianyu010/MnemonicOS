@@ -300,8 +300,13 @@ Extraction queue processing is mostly FIFO, but the daemon now uses a coarse
 expected-time ordering so sessions and episodes are not stuck behind large
 textbooks. It drains sessions/episodes first, then lightweight text/markdown
 artifacts, then unknown artifact formats, then known-heavy PDFs/DOCX/PPTX. FIFO
-is preserved within each lane. Extraction subprocesses receive the same config
-path as the parent daemon so they operate on the same database.
+is preserved within each lane. In dual-lane mode the worker runs one quick item
+and one slow/heavy artifact item concurrently per pair. `mnemonicos daemon watch`
+renders lane progress from the daemon socket and reconciles empty lane progress
+against live `processing` rows plus child progress files, so a live PDF
+subprocess is not shown as an idle slow lane if job bookkeeping lags behind.
+Extraction subprocesses receive the same config path as the parent daemon so
+they operate on the same database.
 
 Useful job names:
 

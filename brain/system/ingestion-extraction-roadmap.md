@@ -609,6 +609,14 @@ flush direct dict assignment as well as bulk updates, because the extraction loo
 updates phase/window fields with `progress[...] = ...`. Timeout handling must
 terminate and reap the subprocess process group before the parent advances to
 the next pair.
+Progress phases are emitted before long blocking operations: `projecting`,
+`vlm`, `llm`, and `storing`. Artifact-heavy slow-lane rows expose artifact
+counters so the watch view no longer reports `preparing` while the VLM is
+actively describing figures.
+`daemon watch` also reconciles empty per-lane socket progress against live
+`processing` rows and child progress files, so a slow PDF subprocess remains
+visible even if the daemon's current job progress dict is stale or belongs to an
+overlapping extraction invocation.
 
 ### Requires
 
