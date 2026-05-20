@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 import json
 import logging
 import os
 import signal
 import subprocess
 import sys
+import tempfile
+import threading
+from pathlib import Path
 from typing import Any, Iterator
 
 from second_brain.config import AppConfig
@@ -30,6 +33,161 @@ from .store import append_candidates, candidate_counts, replace_candidates, repl
 from .validation import parse_candidate_bundle, parse_intra_source_relations, projection_evidence_ids, validate_candidate
 
 _log = logging.getLogger(__name__)
+
+
+@dataclass
+class _LaneHandle:
+    """Non-blocking handle for a single extraction subprocess lane.
+
+    Caller spawns the subprocess, receives a handle, and later calls
+    ``join()`` to block until completion or timeout.
+    """
+
+    proc: subprocess.Popen
+    poll_thread: "threading.Thread | None"
+    stop_poll: threading.Event
+    progress_file: Path
+    timeout_seconds: int
+    process_registry: "Any | None"
+
+    def join(self) -> bool:
+        """Block until subprocess completes or times out. Returns True if timed out."""
+        try:
+            _, stderr = self.proc.communicate(timeout=self.timeout_seconds)
+            if self.proc.returncode != 0:
+                _log.warning(
+                    "extraction subprocess (progress_file=%s) exited %s: %s",
+                    self.progress_file.name,
+                    self.proc.returncode,
+                    (stderr or b"").decode("utf-8", errors="replace")[:300],
+                )
+            return False
+        except subprocess.TimeoutExpired:
+            _log.warning(
+                "extraction subprocess (progress_file=%s) timed out after %ss — killing",
+                self.progress_file.name,
+                self.timeout_seconds,
+            )
+            try:
+                os.killpg(self.proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            self.proc.communicate()
+            return True
+        finally:
+            self.stop_poll.set()
+            if self.poll_thread is not None:
+                self.poll_thread.join(timeout=2.0)
+            if self.process_registry is not None:
+                self.process_registry.unregister(self.proc)
+            try:
+                self.progress_file.unlink()
+            except FileNotFoundError:
+                pass
+
+
+def _make_extraction_proc(
+    *,
+    config_path: str | None,
+    item_id: int,
+    progress_file: Path,
+) -> subprocess.Popen:
+    """Build and launch extraction subprocess. Returns Popen (not waited)."""
+    cmd = [
+        sys.executable, "-m", "second_brain.extraction._subprocess_entry",
+        "--item-id", str(item_id),
+        "--progress-file", str(progress_file),
+    ]
+    if config_path:
+        cmd.extend(["--config", config_path])
+    return subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+
+
+def _spawn_item_subprocess(
+    *,
+    config_path: str | None,
+    item_id: int,
+    timeout_seconds: int,
+    progress: "dict[str, Any] | None",
+    item_index: int,
+    total_items: int,
+    item_name: str,
+    process_registry: "Any | None" = None,
+    progress_key: "str | None" = None,
+) -> _LaneHandle:
+    """Spawn extraction subprocess; return handle immediately (non-blocking).
+
+    ``progress_key`` routes progress updates into a sub-dict of *progress*
+    (e.g. ``"quick"`` or ``"slow"`` for dual-lane mode).  ``None`` means
+    flat/single-lane mode — updates go directly into *progress*.
+    """
+    progress_file = Path(tempfile.gettempdir()) / f"mnemo_progress_{item_id}.json"
+    try:
+        progress_file.unlink()
+    except FileNotFoundError:
+        pass
+
+    if progress is not None:
+        update: dict[str, Any] = {
+            "item_id": item_id,
+            "item_name": item_name,
+            "item_index": item_index,
+            "total_items": total_items,
+            "phase": "preparing",
+            "window": 0,
+            "total_windows": 0,
+        }
+        if progress_key is not None:
+            if not isinstance(progress.get(progress_key), dict):
+                progress[progress_key] = {}
+            progress[progress_key].update(update)
+        else:
+            progress.update(update)
+
+    proc = _make_extraction_proc(
+        config_path=config_path,
+        item_id=item_id,
+        progress_file=progress_file,
+    )
+    if process_registry is not None:
+        process_registry.register(proc, label=f"extraction-item-{item_id}", process_group=True)
+
+    stop_poll = threading.Event()
+
+    def _poll() -> None:
+        while not stop_poll.is_set():
+            if progress_file.exists():
+                try:
+                    data = json.loads(progress_file.read_text())
+                    if progress_key is not None and progress is not None:
+                        if not isinstance(progress.get(progress_key), dict):
+                            progress[progress_key] = {}
+                        progress[progress_key].update(data)
+                    elif progress is not None:
+                        progress.update(data)
+                except Exception:
+                    pass
+            stop_poll.wait(1.5)
+
+    if progress is not None:
+        poll_thread = threading.Thread(target=_poll, daemon=True)
+        poll_thread.start()
+    else:
+        poll_thread = None
+
+    return _LaneHandle(
+        proc=proc,
+        poll_thread=poll_thread,
+        stop_poll=stop_poll,
+        progress_file=progress_file,
+        timeout_seconds=timeout_seconds,
+        process_registry=process_registry,
+    )
 
 
 def process_extraction_queue(
@@ -124,88 +282,18 @@ def _run_item_subprocess(
     process_registry: Any | None = None,
 ) -> bool:
     """Spawn a subprocess to extract one item. Returns True if timed out."""
-    import tempfile
-    import threading
-    from pathlib import Path
-
-    progress_file = Path(tempfile.gettempdir()) / f"mnemo_progress_{item_id}.json"
-    try:
-        progress_file.unlink()
-    except FileNotFoundError:
-        pass
-
-    if progress is not None:
-        progress.update({
-            "item_id": item_id,
-            "item_name": item_name,
-            "item_index": item_index,
-            "total_items": total_items,
-            "phase": "preparing",
-            "window": 0,
-            "total_windows": 0,
-        })
-
-    cmd = [
-        sys.executable, "-m", "second_brain.extraction._subprocess_entry",
-        "--item-id", str(item_id),
-        "--progress-file", str(progress_file),
-    ]
-    if config_path:
-        cmd.extend(["--config", config_path])
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
+    handle = _spawn_item_subprocess(
+        config_path=config_path,
+        item_id=item_id,
+        timeout_seconds=timeout_seconds,
+        progress=progress,
+        item_index=item_index,
+        total_items=total_items,
+        item_name=item_name,
+        process_registry=process_registry,
+        progress_key=None,
     )
-    if process_registry is not None:
-        process_registry.register(proc, label=f"extraction-item-{item_id}", process_group=True)
-
-    # Poll progress file in background thread and forward into parent's progress dict.
-    stop_poll = threading.Event()
-
-    def _poll() -> None:
-        while not stop_poll.is_set():
-            if progress is not None and progress_file.exists():
-                try:
-                    data = json.loads(progress_file.read_text())
-                    progress.update(data)
-                except Exception:
-                    pass
-            stop_poll.wait(1.5)
-
-    if progress is not None:
-        poll_thread = threading.Thread(target=_poll, daemon=True)
-        poll_thread.start()
-    else:
-        poll_thread = None
-
-    try:
-        _, stderr = proc.communicate(timeout=timeout_seconds)
-        if proc.returncode != 0:
-            _log.warning(
-                "extraction subprocess for item %s exited %s: %s",
-                item_id, proc.returncode, (stderr or b"").decode("utf-8", errors="replace")[:300],
-            )
-        return False
-    except subprocess.TimeoutExpired:
-        _log.warning("extraction subprocess for item %s timed out after %ss — killing", item_id, timeout_seconds)
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        proc.communicate()
-        return True
-    finally:
-        stop_poll.set()
-        if poll_thread is not None:
-            poll_thread.join(timeout=2.0)
-        if process_registry is not None:
-            process_registry.unregister(proc)
-        try:
-            progress_file.unlink()
-        except FileNotFoundError:
-            pass
+    return handle.join()
 
 
 def _accumulate_subprocess_result(

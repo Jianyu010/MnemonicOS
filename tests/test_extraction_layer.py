@@ -506,6 +506,64 @@ class ExtractionLayerTest(unittest.TestCase):
             finally:
                 connection.close()
 
+    def test_lane_handle_join_returns_false_on_success(self) -> None:
+        import subprocess
+        import threading
+        from second_brain.extraction.worker import _LaneHandle
+
+        progress_file = Path(tempfile.gettempdir()) / "mnemo_test_lane_handle_ok.json"
+        try:
+            progress_file.unlink()
+        except FileNotFoundError:
+            pass
+
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(0.05)"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        handle = _LaneHandle(
+            proc=proc,
+            poll_thread=None,
+            stop_poll=threading.Event(),
+            progress_file=progress_file,
+            timeout_seconds=10,
+            process_registry=None,
+        )
+        timed_out = handle.join()
+        self.assertFalse(timed_out)
+        self.assertIsNotNone(proc.poll())
+
+    def test_lane_handle_join_returns_true_on_timeout(self) -> None:
+        import subprocess
+        import threading
+        from second_brain.extraction.worker import _LaneHandle
+
+        progress_file = Path(tempfile.gettempdir()) / "mnemo_test_lane_handle_timeout.json"
+        try:
+            progress_file.unlink()
+        except FileNotFoundError:
+            pass
+
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        handle = _LaneHandle(
+            proc=proc,
+            poll_thread=None,
+            stop_poll=threading.Event(),
+            progress_file=progress_file,
+            timeout_seconds=1,
+            process_registry=None,
+        )
+        timed_out = handle.join()
+        self.assertTrue(timed_out)
+        self.assertIsNotNone(proc.poll())
+
 
 if __name__ == "__main__":
     unittest.main()
