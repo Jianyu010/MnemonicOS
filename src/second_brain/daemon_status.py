@@ -6,6 +6,7 @@ import signal
 import socket
 import sqlite3
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -107,11 +108,20 @@ def _format_lane_progress(lane: dict) -> str:
     """One-line summary of a single dual-lane extraction progress dict."""
     name = str(lane.get("item_name") or "—")
     phase = str(lane.get("phase") or "")
+    item_index = int(lane.get("item_index") or 0)
+    total_items = int(lane.get("total_items") or 0)
     window = int(lane.get("window") or 0)
     total = int(lane.get("total_windows") or 0)
+    artifact = int(lane.get("artifact") or 0)
+    total_artifacts = int(lane.get("total_artifacts") or 0)
+    item_part = f"  item {item_index + 1}/{total_items}" if total_items > 0 else ""
+    artifact_part = f"  artifact {artifact}/{total_artifacts}" if total_artifacts > 0 else ""
     if total > 0:
-        return f"{name}  window {window}/{total}  {phase}"
-    return f"{name}  {phase}" if phase else name
+        if phase in {"llm", "vlm"} and window < total:
+            active_window = min(total, window + 1)
+            return f"{name}{item_part}  window {active_window}/{total} active{artifact_part}  {phase}"
+        return f"{name}{item_part}  window {window}/{total}{artifact_part}  {phase}"
+    return f"{name}{item_part}{artifact_part}  {phase}" if phase else f"{name}{item_part}{artifact_part}"
 
 
 def daemon_status_summary(response: dict[str, object]) -> str:
@@ -311,14 +321,84 @@ def _short_archive_id(archive_id: str | None) -> str:
     return name[:52]
 
 
+_TEXT_ARTIFACT_FORMATS = {"md", "markdown", "txt", "text", "plain_text", "log"}
+
+
+def _item_lane(item: dict) -> str:
+    source_kind = str(item.get("source_kind") or "")
+    if source_kind in {"episode", "session"}:
+        return "quick"
+    source_format = str(item.get("source_format") or "").lstrip(".").lower()
+    if source_kind == "artifact" and source_format in _TEXT_ARTIFACT_FORMATS:
+        return "quick"
+    return "slow"
+
+
+def _read_progress_file(item_id: object) -> dict:
+    try:
+        path = Path(tempfile.gettempdir()) / f"mnemo_progress_{int(item_id)}.json"
+        if not path.exists():
+            return {}
+        data = json.loads(path.read_text())
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _processing_item_to_lane_progress(item: dict, *, item_index: int = 0, total_items: int = 0) -> dict:
+    progress = _read_progress_file(item.get("id"))
+    archive_id = item.get("archive_id")
+    name = (
+        str(item.get("original_filename") or "")[:52]
+        if item.get("original_filename")
+        else (_short_archive_id(str(archive_id)) if archive_id else f"episode/{item.get('episode_id', '?')}")
+    )
+    lane = {
+        "item_id": item.get("id"),
+        "item_name": name,
+        "item_index": item_index,
+        "total_items": total_items,
+        "phase": progress.get("phase") or "processing",
+        "window": progress.get("window") or item.get("completed_window_count") or 0,
+        "total_windows": progress.get("total_windows") or item.get("window_count") or 0,
+        "artifact": progress.get("artifact") or 0,
+        "total_artifacts": progress.get("total_artifacts") or 0,
+    }
+    return lane
+
+
+def _fill_empty_lane_from_processing(
+    lane_label: str,
+    lane_progress: object,
+    processing_items: list[dict],
+    represented_ids: set[str],
+) -> dict:
+    if isinstance(lane_progress, dict) and lane_progress:
+        return lane_progress
+    lane_items = [
+        item for item in processing_items
+        if _item_lane(item) == lane_label and str(item.get("id")) not in represented_ids
+    ]
+    if not lane_items:
+        return {}
+    return _processing_item_to_lane_progress(lane_items[0], item_index=0, total_items=len(lane_items))
+
+
 def _query_processing_items(db_path: Path) -> list[dict]:
     try:
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT id, source_kind, archive_id, conversation_id, episode_id, "
-            "started_at, attempt_count, window_count, candidate_count "
-            "FROM extraction_queue WHERE status='processing' ORDER BY started_at"
+            """
+            SELECT q.id, q.source_kind, q.archive_id, q.conversation_id, q.episode_id,
+                   q.started_at, q.attempt_count, q.window_count,
+                   q.completed_window_count, q.candidate_count,
+                   a.source_format, a.original_filename
+            FROM extraction_queue q
+            LEFT JOIN archive a ON a.id = q.archive_id
+            WHERE q.status='processing'
+            ORDER BY q.started_at
+            """
         ).fetchall()
         conn.close()
         return [dict(r) for r in rows]
@@ -392,24 +472,57 @@ def _render_watch(
     )
     if is_dual_lane:
         lines.append(f"  {_BOLD}Mode: dual-lane{_RESET}")
+        represented_ids = {
+            str(lane.get("item_id"))
+            for lane in (job_progress.get("quick"), job_progress.get("slow"))
+            if isinstance(lane, dict) and lane.get("item_id") is not None
+        }
         for lane_label in ("quick", "slow"):
-            lane_p = job_progress.get(lane_label)
-            if not isinstance(lane_p, dict) or not lane_p:
+            lane_p = _fill_empty_lane_from_processing(
+                lane_label,
+                job_progress.get(lane_label),
+                processing_items,
+                represented_ids,
+            )
+            if not lane_p:
                 lines.append(f"  {lane_label} lane: {_DIM}idle{_RESET}")
                 continue
             name = str(lane_p.get("item_name") or "—")
             phase = str(lane_p.get("phase") or "preparing")
+            item_index = int(lane_p.get("item_index") or 0)
+            total_items = int(lane_p.get("total_items") or 0)
             window = int(lane_p.get("window") or 0)
             total = int(lane_p.get("total_windows") or 0)
+            artifact = int(lane_p.get("artifact") or 0)
+            total_artifacts = int(lane_p.get("total_artifacts") or 0)
             lines.append(
                 f"  {_CYAN}{lane_label} lane{_RESET}: {name}  {_DIM}{phase}…{_RESET}"
             )
-            if total > 0:
-                frac = window / total
+            if total_items > 0:
+                item_frac = (item_index + 1) / total_items
                 lines.append(
-                    f"    window {_CYAN}{window}/{total}{_RESET}  "
-                    f"{_bar(frac, 28)}  {_DIM}{phase}{_RESET}"
+                    f"    item {_CYAN}{item_index + 1}/{total_items}{_RESET}  "
+                    f"{_bar(item_frac, 28)}"
                 )
+            if total_artifacts > 0:
+                art_frac = artifact / total_artifacts
+                lines.append(
+                    f"    artifact {_CYAN}{artifact}/{total_artifacts}{_RESET}  "
+                    f"{_bar(art_frac, 28)}  {_DIM}{phase}{_RESET}"
+                )
+            if total > 0:
+                if phase in {"llm", "vlm"} and window < total:
+                    active_window = min(total, window + 1)
+                    lines.append(
+                        f"    window {_CYAN}{active_window}/{total}{_RESET}  "
+                        f"{_DIM}active {phase}{_RESET}"
+                    )
+                else:
+                    frac = window / total
+                    lines.append(
+                        f"    window {_CYAN}{window}/{total}{_RESET}  "
+                        f"{_bar(frac, 28)}  {_DIM}{phase}{_RESET}"
+                    )
     elif processing_items:
         lines.append(f"  {_BOLD}Currently processing:{_RESET}")
         for item in processing_items:

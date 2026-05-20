@@ -665,6 +665,131 @@ class ExtractionLayerTest(unittest.TestCase):
         self.assertEqual(payload["phase"], "llm")
         self.assertEqual(payload["window"], 2)
 
+    def test_process_item_reports_vlm_phase_before_describing_artifacts(self) -> None:
+        from datetime import datetime, timedelta
+        from second_brain.extraction import worker
+        from second_brain.extraction.models import ExtractionQueueItem, VisualSnippet
+        from second_brain.projection.pipeline_models import (
+            ArtifactMarker,
+            ProjectionLease,
+            SourceRef,
+            SourceSpan,
+            TextWindow,
+        )
+
+        class FakeService:
+            def open_projection(self, source_ref, options):
+                now = datetime.now()
+                return ProjectionLease(
+                    lease_id="lease-1",
+                    source_ref=source_ref,
+                    duplicate_state="new",
+                    canonical_source_ref=None,
+                    opened_at=now,
+                    expires_at=now + timedelta(minutes=5),
+                    warnings=[],
+                    projection_metadata={},
+                )
+
+            def iter_text_windows(self, lease_id):
+                return [
+                    TextWindow(
+                        window_id="w1",
+                        text="A source window with enough content to extract.",
+                        source_spans=[
+                            SourceSpan(
+                                source_kind="artifact",
+                                source_locator="page 1",
+                                char_start=0,
+                                char_end=20,
+                            )
+                        ],
+                        artifact_markers=[
+                            ArtifactMarker(
+                                artifact_id="fig-1",
+                                kind="figure",
+                                marker_text="[figure]",
+                                char_offset=0,
+                            )
+                        ],
+                        token_estimate=10,
+                    )
+                ]
+
+            def iter_artifacts(self, lease_id):
+                return [
+                    ArtifactView(
+                        artifact_id="fig-1",
+                        kind="figure",
+                        mime_type="image/png",
+                        payload=b"not-real-image",
+                        source_attachment_path=None,
+                        source_locator="page 1",
+                        marker="[figure]",
+                    )
+                ]
+
+            def close_projection(self, lease_id):
+                pass
+
+        class AssertingVLM:
+            provider_name = "asserting-vlm"
+            model_name = "asserting-vlm"
+
+            def __init__(self, progress):
+                self.progress = progress
+
+            def describe(self, artifact):
+                self.progress_snapshot = dict(self.progress)
+                if self.progress.get("phase") != "vlm":
+                    raise AssertionError(f"expected vlm progress, got {self.progress!r}")
+                return VisualSnippet(
+                    artifact_id=artifact.artifact_id,
+                    marker=artifact.marker,
+                    source_locator=artifact.source_locator,
+                    visual_description="figure description",
+                    visible_text="",
+                    warnings=[],
+                )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            config = _config(workspace)
+            connection = connect_db(config.paths.db_path)
+            try:
+                with connection:
+                    connection.execute(
+                        "INSERT INTO extraction_queue(id, source_kind, archive_id, status) "
+                        "VALUES (42, 'artifact', 'artifact/progress-test', 'processing')"
+                    )
+                item = ExtractionQueueItem(
+                    id=42,
+                    source_kind="artifact",
+                    archive_id="artifact/progress-test",
+                    conversation_id=None,
+                    episode_id=None,
+                    bridge_id="test",
+                    session_id=None,
+                    task_id=None,
+                    duplicate_state=None,
+                    status="processing",
+                    attempt_count=1,
+                    last_error=None,
+                )
+                progress: dict[str, object] = {}
+                with mock.patch.object(worker, "build_vlm_provider", return_value=AssertingVLM(progress)):
+                    worker._process_item(
+                        config,
+                        FakeService(),
+                        connection,
+                        item=item,
+                        dry_run=False,
+                        progress=progress,
+                    )
+                self.assertEqual(progress["phase"], "storing")
+            finally:
+                connection.close()
+
     def test_dual_lane_process_respects_per_run_batch_caps(self) -> None:
         from second_brain.extraction import worker
 

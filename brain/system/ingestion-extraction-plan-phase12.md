@@ -90,17 +90,34 @@ is active. Sub-dicts `"quick"` and `"slow"` carry per-lane state:
     "quick": {
         "item_id": N, "item_name": "episode/2026-05-20T…",
         "lane_index": 0, "lane_total": 5,
-        "window": 7, "total_windows": 10, "phase": "extracting",
+        "window": 7, "total_windows": 10,
+        "artifact": 0, "total_artifacts": 0,
+        "phase": "llm",
     },
     "slow": {
         "item_id": M, "item_name": "artifact/large.pdf",
         "lane_index": 0, "lane_total": 5,
-        "window": 2, "total_windows": 50, "phase": "extracting",
+        "window": 2, "total_windows": 50,
+        "artifact": 4, "total_artifacts": 30,
+        "phase": "vlm",
     },
 }
 ```
 
 `daemon status` and `daemon watch` render both lanes as a "dual lane" block.
+Long child phases are reported before the blocking work starts: `projecting`
+while the source projection opens, `vlm` while artifact snippets are described,
+`llm` while text windows are extracted, and `storing` while results are written.
+For artifact-heavy slow-lane work, status includes both window and artifact
+progress counters.
+
+`daemon watch` must not trust an empty per-lane progress dict as proof that a
+lane is idle. If socket progress says `"slow": {}` or `"quick": {}` while the
+database has matching live `processing` rows, the watch renderer falls back to
+those rows and reads the child progress file (`mnemo_progress_<queue_id>.json`)
+when present. This makes the dashboard resilient to stale or overlapping
+extraction-job bookkeeping.
+
 Child subprocess progress must flush on both mapping assignment and bulk
 updates. `_process_item()` mutates `progress["phase"]`, `progress["window"]`,
 and `progress["total_windows"]` directly, so the file-backed progress dict used

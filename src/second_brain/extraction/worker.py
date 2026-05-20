@@ -543,10 +543,26 @@ def _process_item(
         max_embedded_images=config.extraction.max_embedded_images,
         min_embedded_image_px=config.extraction.min_embedded_image_px,
     )
+    if progress is not None:
+        progress.update({
+            "phase": "projecting",
+            "window": 0,
+            "total_windows": 0,
+            "artifact": 0,
+            "total_artifacts": 0,
+        })
     lease = service.open_projection(source_ref, options=projection_options)
     try:
         windows = list(service.iter_text_windows(lease.lease_id))
         artifacts = list(service.iter_artifacts(lease.lease_id))
+        if progress is not None:
+            progress.update({
+                "phase": "vlm" if artifacts else "llm",
+                "window": 0,
+                "total_windows": len(windows) if windows else 1,
+                "artifact": 0,
+                "total_artifacts": len(artifacts),
+            })
         projection_metadata: dict[str, Any] = {
             **lease.projection_metadata,
             "lease_warnings": list(lease.warnings),
@@ -609,7 +625,15 @@ def _process_item(
             vlm = None
         else:
             vlm = build_vlm_provider(config)
-            visual_snippets = [vlm.describe(artifact) for artifact in artifacts]
+            visual_snippets = []
+            for artifact_index, artifact in enumerate(artifacts):
+                if progress is not None:
+                    progress.update({
+                        "phase": "vlm",
+                        "artifact": artifact_index,
+                        "total_artifacts": len(artifacts),
+                    })
+                visual_snippets.append(vlm.describe(artifact))
 
         llm = build_llm_provider(config)
         retrieval_context_note_ids = _parse_memory_context_note_ids(windows)

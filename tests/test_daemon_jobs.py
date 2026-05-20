@@ -14,7 +14,7 @@ if str(SRC) not in sys.path:
 from second_brain.config import load_config
 from second_brain.daemon import Daemon
 from second_brain.daemon_jobs import _DEFAULT_SCHEDULES, build_registry
-from second_brain.daemon_status import daemon_status_summary
+from second_brain.daemon_status import _render_watch, daemon_status_summary
 from second_brain.db import connect_db, run_migrations
 from second_brain.ingest import ingest_session
 from second_brain.jobs import run_job
@@ -299,16 +299,22 @@ class DaemonJobsTest(unittest.TestCase):
                     "quick": {
                         "item_id": 1,
                         "item_name": "episode/quick-item",
+                        "item_index": 0,
+                        "total_items": 5,
                         "phase": "llm",
-                        "window": 2,
+                        "window": 0,
                         "total_windows": 5,
                     },
                     "slow": {
                         "item_id": 2,
                         "item_name": "artifact/big.pdf",
-                        "phase": "llm",
+                        "item_index": 1,
+                        "total_items": 4,
+                        "phase": "vlm",
                         "window": 0,
-                        "total_windows": 0,
+                        "total_windows": 5,
+                        "artifact": 1,
+                        "total_artifacts": 4,
                     },
                 },
             },
@@ -335,6 +341,85 @@ class DaemonJobsTest(unittest.TestCase):
         self.assertIn("slow lane", text)
         self.assertIn("episode/quick-item", text)
         self.assertIn("artifact/big.pdf", text)
+        self.assertIn("item 1/5", text)
+        self.assertIn("item 2/4", text)
+        self.assertIn("window 1/5 active", text)
+        self.assertIn("artifact 1/4", text)
+
+    def test_daemon_watch_falls_back_to_processing_pdf_when_slow_progress_is_empty(self) -> None:
+        import json
+        from datetime import datetime, timezone
+
+        progress_file = Path(tempfile.gettempdir()) / "mnemo_progress_840.json"
+        try:
+            progress_file.write_text(
+                json.dumps({
+                    "phase": "vlm",
+                    "window": 0,
+                    "total_windows": 1,
+                    "artifact": 11,
+                    "total_artifacts": 50,
+                })
+            )
+            response = {
+                "status": "ok",
+                "service": {
+                    "running_job": "process_extraction_queue",
+                    "running_jobs": ["process_extraction_queue"],
+                    "job_progress": {
+                        "mode": "dual_lane",
+                        "quick": {
+                            "item_id": 1628,
+                            "item_name": "1628",
+                            "item_index": 4,
+                            "total_items": 10,
+                            "phase": "llm",
+                            "window": 0,
+                            "total_windows": 1,
+                        },
+                        "slow": {},
+                    },
+                },
+                "health": {
+                    "queue": {
+                        "queue_counts": {
+                            "pending": 271,
+                            "processing": 3,
+                            "error": 127,
+                            "processed": 1371,
+                        },
+                        "oldest_pending_age_minutes": 8882,
+                    },
+                    "promotion": {},
+                    "recent_job_runs": [],
+                },
+            }
+            processing_items = [
+                {
+                    "id": 840,
+                    "source_kind": "artifact",
+                    "archive_id": "artifact/2026-05-14-204616-999788-gasiorowicz-s-quantum-physics",
+                    "source_format": "pdf",
+                    "original_filename": "Gasiorowicz S. - Quantum Physics.pdf",
+                    "started_at": "2026-05-20 15:30:17",
+                    "attempt_count": 18,
+                    "window_count": 0,
+                    "candidate_count": 0,
+                },
+            ]
+
+            text = _render_watch(response, processing_items, datetime.now(timezone.utc), 3)
+
+            self.assertIn("slow lane", text)
+            self.assertIn("Gasiorowicz S. - Quantum Physics.pdf", text)
+            self.assertIn("vlm", text)
+            self.assertIn("artifact", text)
+            self.assertNotIn("slow lane: \x1b[2midle", text)
+        finally:
+            try:
+                progress_file.unlink()
+            except FileNotFoundError:
+                pass
 
 
 if __name__ == "__main__":
