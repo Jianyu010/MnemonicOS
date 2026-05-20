@@ -390,7 +390,6 @@ def make_llm_packet(
     projection_metadata: dict[str, Any],
     windows: list[TextWindow],
     visual_snippets: list[VisualSnippet],
-    existing_knowledge_context: str | None = None,
     retrieval_context_note_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     packet = {
@@ -409,8 +408,6 @@ def make_llm_packet(
         ],
         "visual_snippets": [snippet.to_payload() for snippet in visual_snippets],
     }
-    if existing_knowledge_context:
-        packet["existing_knowledge_context"] = existing_knowledge_context
     if retrieval_context_note_ids:
         packet["retrieval_context_note_ids"] = list(retrieval_context_note_ids)
     return packet
@@ -518,7 +515,15 @@ def _candidate_extraction_prompt(packet: dict[str, Any]) -> str:
         "- Each candidate: type, title, summary, body, confidence, source_refs, evidence, components\n"
         "- Candidate titles should be clear and descriptive; relation resolution uses candidate indices.\n"
         f'- type MUST be one of: "source", "concept", "procedure", "decision", "incident"\n'
-        f'- confidence MUST be one of: "low", "medium", "high"\n'
+        '- confidence MUST be one of: "low", "medium", "high"\n'
+        '  - "high": claim directly and explicitly stated in source windows; '
+        'evidence quote alone would convince a sceptical reader\n'
+        '  - "medium": claim requires inference or synthesis across multiple windows, '
+        'or was initially stated but later corrected within this session\n'
+        '  - "low": claim is speculative, ambiguous, weakly evidenced, or the source '
+        'itself expresses uncertainty\n'
+        '  NOTE: confidence measures source evidence quality only. Do NOT factor in '
+        'whether the claim seems "already known" or "novel" — that is not your concern.\n'
         f'- source_refs MUST include "{source_ref}"\n'
         "- evidence: array of objects, each with an \"id\" field matching a window_id from the packet\n"
         f"  Available window_ids: [{ids_str}]\n\n"
@@ -546,6 +551,14 @@ def _candidate_extraction_prompt(packet: dict[str, Any]) -> str:
         "- Both indices must be valid positions in the candidates array (0 to N-1).\n"
         "- Only assert relations the source explicitly supports. Do not invent connections.\n"
         "- If no clear intra-source relations exist, emit an empty array.\n\n"
+        "INTRA-SESSION CORRECTION RULES:\n"
+        "- Sessions may contain self-corrections: an early statement (A) followed by a\n"
+        "  later statement (B) that contradicts or refines A based on more evidence.\n"
+        "- When you detect this pattern: produce B as the candidate, not A.\n"
+        "- Assign B's confidence based on the quality of B's source evidence, ignoring A.\n"
+        "- If A and B are both extractable as distinct facts (not a simple correction),\n"
+        "  produce both and assert an intra-source relation: B supersedes A.\n"
+        "- Do not produce A alone when B clearly supersedes it within the same session.\n\n"
         + retrieval_section
         + "Use only the provided packet as evidence. Reject nothing silently — "
         "if a window has usable content, extract it.\n\n"

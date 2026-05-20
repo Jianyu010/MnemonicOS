@@ -13,7 +13,7 @@ import time
 from typing import Any
 
 from .config import default_config_path, load_config
-from .daemon_status import daemon_status_summary, daemon_unreachable_summary, read_pid, socket_send
+from .daemon_status import daemon_status_summary, daemon_unreachable_summary, read_pid, socket_send, watch_daemon
 from .db import connect_db, run_migrations
 from .extraction import enqueue_extraction, extraction_status
 from .ingest import (
@@ -277,6 +277,8 @@ def _build_parser() -> argparse.ArgumentParser:
     daemon_subparsers.add_parser("stop", help="Stop the daemon.")
     daemon_status = daemon_subparsers.add_parser("status", help="Show daemon status.")
     daemon_status.add_argument("--json", action="store_true", help="Emit raw JSON output.")
+    daemon_watch = daemon_subparsers.add_parser("watch", help="Live updating daemon status dashboard.")
+    daemon_watch.add_argument("--interval", type=int, default=3, metavar="SECS", help="Refresh interval in seconds (default: 3).")
     daemon_run_job = daemon_subparsers.add_parser("run-job", help="Ask the daemon to run a job immediately.")
     daemon_run_job.add_argument("job_name")
 
@@ -1554,6 +1556,10 @@ def _server_start(config_path: str, host: str, port: int) -> int:
 
 def _daemon_is_alive(pid_path: os.PathLike[str] | str) -> bool:
     pid = read_pid(pid_path)
+    return _pid_alive(pid)
+
+
+def _pid_alive(pid: int | None) -> bool:
     if pid is None:
         return False
     try:
@@ -1561,6 +1567,107 @@ def _daemon_is_alive(pid_path: os.PathLike[str] | str) -> bool:
     except OSError:
         return False
     return True
+
+
+def _process_group_id(pid: int | None) -> int | None:
+    if pid is None:
+        return None
+    try:
+        return os.getpgid(pid)
+    except OSError:
+        return None
+
+
+def _process_group_alive(pgid: int | None) -> bool:
+    if pgid is None:
+        return False
+    try:
+        os.killpg(pgid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _descendant_process_groups(pid: int) -> list[int]:
+    try:
+        completed = subprocess.run(
+            ["ps", "-axo", "pid=,ppid=,pgid="],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return []
+    children: dict[int, list[tuple[int, int]]] = {}
+    for line in completed.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        try:
+            child_pid = int(parts[0])
+            parent_pid = int(parts[1])
+            child_pgid = int(parts[2])
+        except ValueError:
+            continue
+        children.setdefault(parent_pid, []).append((child_pid, child_pgid))
+    found: set[int] = set()
+    stack = [pid]
+    while stack:
+        parent = stack.pop()
+        for child_pid, child_pgid in children.get(parent, []):
+            found.add(child_pgid)
+            stack.append(child_pid)
+    return sorted(found)
+
+
+def _signal_process_group(pgid: int | None, sig: signal.Signals) -> None:
+    if pgid is None:
+        return
+    try:
+        os.killpg(pgid, sig)
+    except ProcessLookupError:
+        return
+    except OSError:
+        return
+
+
+def _daemon_stop_postcondition_met(
+    pid: int | None,
+    process_group_ids: list[int],
+    socket_path: os.PathLike[str] | str,
+) -> bool:
+    if _pid_alive(pid):
+        return False
+    if Path(socket_path).exists():
+        return False
+    return not any(_process_group_alive(pgid) for pgid in process_group_ids)
+
+
+def _remove_stale_daemon_socket(
+    pid: int | None,
+    process_group_ids: list[int],
+    socket_path: os.PathLike[str] | str,
+) -> None:
+    if _pid_alive(pid) or any(_process_group_alive(pgid) for pgid in process_group_ids):
+        return
+    try:
+        Path(socket_path).unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+
+def _refresh_daemon_process_groups(pid: int | None, process_group_ids: list[int]) -> list[int]:
+    if pid is None or not _pid_alive(pid):
+        return process_group_ids
+    refreshed = set(process_group_ids)
+    daemon_pgid = _process_group_id(pid)
+    if daemon_pgid is not None:
+        refreshed.add(daemon_pgid)
+    refreshed.update(_descendant_process_groups(pid))
+    return sorted(refreshed)
 
 
 def _daemon_start(config_path: str) -> int:
@@ -1592,19 +1699,39 @@ def _daemon_stop(config_path: str) -> int:
     if config.daemon is None:
         raise SystemExit("daemon configuration is not available")
     pid = read_pid(config.daemon.pid_path)
-    if pid is None or not _daemon_is_alive(config.daemon.pid_path):
+    if pid is None or not _pid_alive(pid):
         print("daemon_not_running")
         return 0
-    os.kill(pid, signal.SIGTERM)
+    daemon_pgid = _process_group_id(pid)
+    child_pgids = _descendant_process_groups(pid)
+    process_group_ids = sorted({pgid for pgid in [daemon_pgid, *child_pgids] if pgid is not None})
+
+    response = socket_send(config.daemon.socket_path, {"cmd": "shutdown"})
+    if response is None or response.get("status") != "ok":
+        os.kill(pid, signal.SIGTERM)
     for _ in range(700):
         time.sleep(0.1)
-        if not _daemon_is_alive(config.daemon.pid_path):
+        process_group_ids = _refresh_daemon_process_groups(pid, process_group_ids)
+        if _daemon_stop_postcondition_met(pid, process_group_ids, config.daemon.socket_path):
             print("daemon_stopped")
             return 0
-    os.kill(pid, signal.SIGKILL)
+
+    for pgid in process_group_ids:
+        _signal_process_group(pgid, signal.SIGTERM)
+    for _ in range(50):
+        time.sleep(0.1)
+        process_group_ids = _refresh_daemon_process_groups(pid, process_group_ids)
+        _remove_stale_daemon_socket(pid, process_group_ids, config.daemon.socket_path)
+        if _daemon_stop_postcondition_met(pid, process_group_ids, config.daemon.socket_path):
+            print("daemon_stopped")
+            return 0
+
+    for pgid in process_group_ids:
+        _signal_process_group(pgid, signal.SIGKILL)
     for _ in range(20):
         time.sleep(0.1)
-        if not _daemon_is_alive(config.daemon.pid_path):
+        _remove_stale_daemon_socket(pid, process_group_ids, config.daemon.socket_path)
+        if _daemon_stop_postcondition_met(pid, process_group_ids, config.daemon.socket_path):
             print("daemon_stopped")
             return 0
     print("daemon_stop_timeout")
@@ -1629,6 +1756,11 @@ def _daemon_status(config_path: str, emit_json: bool) -> int:
     else:
         print(daemon_status_summary(response))
     return 0 if response.get("status") == "ok" else 1
+
+
+def _daemon_watch(config_path: str, interval: int) -> int:
+    watch_daemon(config_path, interval=interval)
+    return 0
 
 
 def _daemon_run_job(config_path: str, job_name: str) -> int:
@@ -1825,6 +1957,8 @@ def main(argv: list[str] | None = None) -> int:
             return _daemon_stop(args.config)
         if args.daemon_command == "status":
             return _daemon_status(args.config, args.json)
+        if args.daemon_command == "watch":
+            return _daemon_watch(args.config, args.interval)
         if args.daemon_command == "run-job":
             return _daemon_run_job(args.config, args.job_name)
     if args.command == "orchestrator":

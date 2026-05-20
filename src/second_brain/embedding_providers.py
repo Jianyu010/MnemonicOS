@@ -10,6 +10,15 @@ from urllib.parse import urlparse
 from .config import AppConfig
 from .semantics import encode_text
 
+import math
+
+
+def _l2_normalize(vector: list[float]) -> list[float]:
+    norm = math.sqrt(sum(v * v for v in vector))
+    if norm < 1e-9:
+        return vector
+    return [v / norm for v in vector]
+
 
 @dataclass(slots=True)
 class ProviderHealth:
@@ -67,19 +76,16 @@ class OllamaEmbeddingProvider:
         self.timeout_seconds = timeout_seconds
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
-        vectors = []
-        for text in texts:
-            payload = {"model": self.model_name, "prompt": text}
-            data = _json_request(
-                f"{self.base_url}/api/embeddings",
-                payload,
-                timeout_seconds=self.timeout_seconds,
-            )
-            vector = data.get("embedding")
-            if not isinstance(vector, list):
-                raise RuntimeError("ollama embedding response missing embedding")
-            vectors.append([float(value) for value in vector])
-        return vectors
+        payload = {"model": self.model_name, "input": texts}
+        data = _json_request(
+            f"{self.base_url}/api/embed",
+            payload,
+            timeout_seconds=self.timeout_seconds,
+        )
+        embeddings = data.get("embeddings")
+        if not isinstance(embeddings, list) or len(embeddings) != len(texts):
+            raise RuntimeError("ollama embed response missing or mismatched embeddings")
+        return [_l2_normalize([float(v) for v in vec]) for vec in embeddings]
 
     def healthcheck(self) -> ProviderHealth:
         try:

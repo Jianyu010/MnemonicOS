@@ -425,6 +425,98 @@ Acceptance:
 - Provider failure never creates promoted candidates.
 - All degraded behavior is visible in extraction status and daemon status.
 
+## Phase 11: Expected-Time Queue Scheduling
+
+Status: **implemented 2026-05-20**.
+
+Plan: `ingestion-extraction-plan-phase11.md`.
+
+### Summary
+
+Extraction queue selection should be "mostly FIFO" but not let slow document
+formats monopolize daemon batches. Pending rows are ordered by a coarse expected
+processing lane before FIFO:
+
+- `episode` and `session`;
+- lightweight text artifacts (`md`, `markdown`, `txt`, `text`, `plain_text`, `log`);
+- other artifacts;
+- known-heavy artifacts (`pdf`, `docx`, `pptx`).
+
+The selector uses existing `archive.source_format` metadata. It does not open
+west-flange projections, inspect files, or persist a new priority column.
+
+### Acceptance
+
+- New session/episode work is selected before older pending PDFs/DOCX/PPTX.
+- Markdown and text artifacts are not penalized as heavy documents.
+- FIFO order is preserved within each scheduling lane.
+- Heavy artifacts still process when no lightweight pending work exists.
+
+Verification note:
+
+- Focused queue-ordering test passes.
+- Full `tests.test_extraction_layer` passes after the subprocess config
+  propagation and result-accounting fix documented in Phase 10.
+
+---
+
+## Phase 10: Confidence Signal Clarification and Context Injection Removal
+
+Status: **partially implemented 2026-05-20**.
+
+Plan: `ingestion-extraction-plan-phase10.md`.
+
+### Summary
+
+Three targeted changes to the extraction layer:
+
+**1. Remove `existing_knowledge_context` from extraction pipeline.**
+- `make_llm_packet()` drops the parameter; worker stops injecting wiki notes into
+  extraction packets.
+- `src/second_brain/extraction/worker.py` no longer passes
+  `existing_knowledge_context` to `make_llm_packet()`.
+- Raw re-visitation may still store historical `revisit_context_json`, but the
+  extraction worker ignores it when building LLM packets.
+- Rationale: wiki comparison is the promotion layer's job. Injecting old wiki state
+  contaminates the `confidence` signal and causes inconsistent behaviour between
+  fresh and revisit extractions on identical source content.
+
+**2. Add explicit confidence level definitions to extraction prompt.**
+- `"high"`: claim directly and explicitly stated; evidence quote alone convinces.
+- `"medium"`: requires inference across windows, or an initially stated claim later
+  corrected within the session.
+- `"low"`: speculative, ambiguous, weakly evidenced, or source itself uncertain.
+- NOTE added: confidence measures source evidence quality only — not "novelty vs wiki".
+
+**3. Add INTRA-SESSION CORRECTION RULES to extraction prompt.**
+- When statement B follows A and supersedes it (more evidence, direct correction):
+  produce only B, assign confidence based on B's evidence.
+- If A and B are both extractable facts: produce both with `supersedes` intra-source
+  relation.
+- Never produce A alone when B clearly supersedes it within the same session.
+
+### Deliverables
+
+- Done: `src/second_brain/extraction/providers.py` removes
+  `existing_knowledge_context` from `make_llm_packet`.
+- Done: `src/second_brain/extraction/worker.py` removes the stale context
+  injection call.
+- Done: extraction subprocesses receive the active config path from the parent
+  worker and parent stats are read back from the queue row after subprocess
+  completion.
+- Remaining cleanup: remove context retrieval/storage knobs from raw
+  re-visitation if Phase 10 is completed fully.
+
+### Incident Note
+
+On 2026-05-20, expected-time queue scheduling surfaced a half-applied Phase 10
+change: sessions and episodes ran before large PDFs and rapidly failed with
+`make_llm_packet() got an unexpected keyword argument 'existing_knowledge_context'`.
+The fix removed the stale worker argument, propagated the active config to
+subprocess extraction, and read subprocess result counts from SQLite.
+
+---
+
 ## Phase 9: Retrieval Attribution in Session Extraction
 
 Status: **complete 2026-05-13**.

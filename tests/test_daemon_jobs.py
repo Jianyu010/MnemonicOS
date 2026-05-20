@@ -127,12 +127,92 @@ class DaemonJobsTest(unittest.TestCase):
             self.assertEqual(response["status"], "ok")
             self.assertEqual(response["result"]["status"], "ok")
 
-            daemon.job_lock.acquire()
+            # Simulate a concurrent run by holding the per-job lock.
+            job_lock = daemon.scheduler._get_job_lock("status_report")
+            job_lock.acquire()
             try:
                 busy = daemon.scheduler.run_job_now("status_report")
             finally:
-                daemon.job_lock.release()
+                job_lock.release()
             self.assertEqual(busy["status"], "busy")
+
+    def test_process_registry_terminates_registered_process_group(self) -> None:
+        from second_brain.daemon_processes import DaemonProcessRegistry
+        import os
+        import signal
+        import subprocess
+        import time
+
+        registry = DaemonProcessRegistry()
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        registry.register(proc, label="test-sleeper", process_group=True)
+        try:
+            stopped = registry.stop_all(grace_seconds=0.2, kill_seconds=1.0)
+            self.assertTrue(stopped)
+            for _ in range(20):
+                if proc.poll() is not None:
+                    break
+                time.sleep(0.05)
+            self.assertIsNotNone(proc.poll())
+        finally:
+            if proc.poll() is None:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.wait(timeout=2.0)
+
+    def test_daemon_scheduler_has_process_registry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = self._prepare_workspace(Path(tmp_dir))
+            daemon = Daemon(config)
+            self.assertTrue(hasattr(daemon.scheduler, "process_registry"))
+            self.assertIs(daemon.scheduler.process_registry, daemon.process_registry)
+
+    def test_daemon_socket_shutdown_sets_shutdown_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = self._prepare_workspace(Path(tmp_dir))
+            daemon = Daemon(config)
+            response = daemon.socket_server._handle_request({"cmd": "shutdown"})
+            self.assertEqual(response["status"], "ok")
+            self.assertTrue(daemon.shutdown_event.is_set())
+
+    def test_daemon_owned_ollama_config_defaults_off(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = self._prepare_workspace(Path(tmp_dir))
+            self.assertFalse(config.daemon.ollama_managed)
+            self.assertEqual(config.daemon.ollama_command, "")
+
+    def test_daemon_stop_postcondition_requires_socket_removal(self) -> None:
+        from second_brain.cli import _daemon_stop_postcondition_met
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            socket_path = Path(tmp_dir) / "mnemonic.sock"
+            socket_path.write_text("", encoding="utf-8")
+            self.assertFalse(_daemon_stop_postcondition_met(None, [], socket_path))
+            socket_path.unlink()
+            self.assertTrue(_daemon_stop_postcondition_met(None, [], socket_path))
+
+    def test_daemon_stop_refreshes_process_group_for_live_pid(self) -> None:
+        from second_brain.cli import _refresh_daemon_process_groups
+        import os
+        import signal
+        import subprocess
+
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            self.assertIn(proc.pid, _refresh_daemon_process_groups(proc.pid, []))
+        finally:
+            if proc.poll() is None:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.wait(timeout=2.0)
 
     def test_daemon_status_summary_includes_units_and_extraction_schedule(self) -> None:
         response = {

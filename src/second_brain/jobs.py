@@ -229,7 +229,13 @@ def _status_report_job(config: AppConfig, *, dry_run: bool = False) -> JobRunRes
     return JobRunResult(job_name="status_report", status="ok", stats=stats, review_items_created=[])
 
 
-def _process_extraction_queue_job(config: AppConfig, *, dry_run: bool = False) -> JobRunResult:
+def _process_extraction_queue_job(
+    config: AppConfig,
+    *,
+    dry_run: bool = False,
+    progress: dict[str, Any] | None = None,
+    process_registry: Any | None = None,
+) -> JobRunResult:
     connection = connect_db(config.paths.db_path)
     run_migrations(connection, config.paths.workspace_root / "migrations")
     stats: dict[str, int] = {}
@@ -237,7 +243,7 @@ def _process_extraction_queue_job(config: AppConfig, *, dry_run: bool = False) -
         job_id = _open_job_run(connection, "process_extraction_queue", "dry-run" if dry_run else "live")
     connection.close()
     try:
-        result = process_extraction_queue(config, dry_run=dry_run)
+        result = process_extraction_queue(config, dry_run=dry_run, progress=progress, process_registry=process_registry)
         stats = result.to_stats()
         connection = connect_db(config.paths.db_path)
         with connection:
@@ -333,9 +339,21 @@ def _expire_stale_episodes_job(config: AppConfig, *, dry_run: bool = False) -> J
     )
 
 
-def run_job(config: AppConfig, *, job_name: str, dry_run: bool = False) -> JobRunResult:
+def run_job(
+    config: AppConfig,
+    *,
+    job_name: str,
+    dry_run: bool = False,
+    progress: dict[str, Any] | None = None,
+    process_registry: Any | None = None,
+) -> JobRunResult:
     if job_name == "process_extraction_queue":
-        return _process_extraction_queue_job(config, dry_run=dry_run)
+        return _process_extraction_queue_job(
+            config,
+            dry_run=dry_run,
+            progress=progress,
+            process_registry=process_registry,
+        )
     if job_name == "process_promotion_queue":
         return _process_promotion_queue_job(config, dry_run=dry_run)
     if job_name == "expire_stale_episodes":

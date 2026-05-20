@@ -15,6 +15,7 @@ if str(SRC) not in sys.path:
 from second_brain.config import load_config
 from second_brain.db import connect_db, run_migrations
 from second_brain.extraction import enqueue_extraction, extraction_status, process_extraction_queue
+from second_brain.extraction.queue import pending_items
 from second_brain.extraction.providers import FixtureVLMProvider
 from second_brain.extraction.validation import parse_candidate_bundle, validate_candidate
 from second_brain.ingest import ingest_artifact, ingest_session
@@ -100,6 +101,92 @@ class ExtractionLayerTest(unittest.TestCase):
                 enqueue_extraction(config, source_kind="artifact")
             with self.assertRaises(ValueError):
                 enqueue_extraction(config, source_kind="episode", archive_id=ingest.archive_id)
+
+    def test_pending_items_prefers_lightweight_sources_over_heavy_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            config = _config(workspace)
+            connection = connect_db(config.paths.db_path)
+            try:
+                with connection:
+                    for archive_id, source_format in [
+                        ("artifact/old-pdf", "pdf"),
+                        ("artifact/unknown-artifact", "unknown"),
+                        ("artifact/new-markdown", "md"),
+                        ("artifact/new-text", "plain_text"),
+                        ("artifact/old-docx", "docx"),
+                    ]:
+                        connection.execute(
+                            """
+                            INSERT INTO archive(id, type, path, ingested_at, tags, source_format)
+                            VALUES (?, 'doc', ?, '2026-05-20 08:00:00', '[]', ?)
+                            """,
+                            (archive_id, str(workspace / f"{archive_id.replace('/', '-')}.raw"), source_format),
+                        )
+                    connection.execute(
+                        """
+                        INSERT INTO extraction_queue(source_kind, archive_id, status, queued_at)
+                        VALUES ('artifact', 'artifact/old-pdf', 'pending', '2026-05-20 08:00:00')
+                        """
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO extraction_queue(source_kind, archive_id, status, queued_at)
+                        VALUES ('artifact', 'artifact/unknown-artifact', 'pending', '2026-05-20 08:04:00')
+                        """
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO extraction_queue(source_kind, archive_id, status, queued_at)
+                        VALUES ('artifact', 'artifact/new-markdown', 'pending', '2026-05-20 08:05:00')
+                        """
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO extraction_queue(source_kind, archive_id, status, queued_at)
+                        VALUES ('artifact', 'artifact/new-text', 'pending', '2026-05-20 08:05:30')
+                        """
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO extraction_queue(source_kind, archive_id, status, queued_at)
+                        VALUES ('session', 'session/new-session', 'pending', '2026-05-20 08:06:00')
+                        """
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO extraction_queue(
+                            source_kind, conversation_id, episode_id, status, queued_at
+                        )
+                        VALUES ('episode', 'conversation', 'episode', 'pending', '2026-05-20 08:07:00')
+                        """
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO extraction_queue(source_kind, archive_id, status, queued_at)
+                        VALUES ('artifact', 'artifact/old-docx', 'pending', '2026-05-20 08:10:00')
+                        """
+                    )
+
+                items = pending_items(connection, limit=10)
+
+                self.assertEqual(
+                    [
+                        (item.source_kind, item.archive_id, item.conversation_id, item.episode_id)
+                        for item in items
+                    ],
+                    [
+                        ("session", "session/new-session", None, None),
+                        ("episode", None, "conversation", "episode"),
+                        ("artifact", "artifact/new-markdown", None, None),
+                        ("artifact", "artifact/new-text", None, None),
+                        ("artifact", "artifact/unknown-artifact", None, None),
+                        ("artifact", "artifact/old-pdf", None, None),
+                        ("artifact", "artifact/old-docx", None, None),
+                    ],
+                )
+            finally:
+                connection.close()
 
     def test_dry_run_projection_reports_counts_without_mutating_queue_or_wiki(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

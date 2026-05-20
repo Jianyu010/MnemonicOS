@@ -88,10 +88,15 @@ same source. This lets the LLM:
   note now yields a `procedure` note because the wiki has an analogous procedure
   that provides framing).
 
-### Context retrieval
+### Historical Context Retrieval Design
 
-Before submitting a re-extraction, retrieve the top-K wiki notes related to the
-source's text using `retrieval.retrieve()`:
+This section records the original Phase 8 context-injection design. It is now
+superseded for extraction packet construction by
+`ingestion-extraction-plan-phase10.md`: extraction must read only the raw source
+projection, while cross-wiki comparison belongs to promotion/review.
+
+The earlier design retrieved the top-K wiki notes related to the source text
+using `retrieval.retrieve()`:
 
 ```python
 related_notes = retrieve(
@@ -105,8 +110,10 @@ context_block = "\n\n".join(
 )
 ```
 
-The context block is injected into the LLM packet as a new top-level key:
-`"existing_knowledge_context": context_block`.
+The context block was originally injected into the LLM packet as a top-level key
+named `"existing_knowledge_context"`. This packet key is no longer valid.
+Historical `revisit_context_json` may remain in queued rows, but the extraction
+worker must ignore it when building LLM packets.
 
 ### LLM prompt extension (Ollama provider)
 
@@ -123,8 +130,9 @@ Do NOT fabricate information not present in the source.
 {context_block}
 ```
 
-Context injection is suppressed when `context_block` is empty or when
-`config.maintenance.requeue_context_enabled = False`.
+Context injection is removed from the extraction path. Any future use of
+revisit context must happen outside `make_llm_packet()`, preferably in the
+promotion or review layer.
 
 ## New function in `maintenance.py`
 
@@ -137,8 +145,8 @@ def run_raw_revisitation(
 ) -> RevisitationResult:
     """
     Find eligible stale extraction_queue rows.
-    For each: retrieve related wiki context, inject into re-extraction trigger.
-    Returns: sources_requeued, sources_skipped, context_injected_count.
+    For each: enqueue a lineage-preserving re-extraction trigger.
+    Returns: sources_requeued, sources_skipped.
     """
 ```
 
@@ -149,7 +157,7 @@ def run_raw_revisitation(
 class RevisitationResult:
     sources_requeued: int = 0
     sources_skipped: int = 0
-    context_injected_count: int = 0
+    context_injected_count: int = 0  # historical metric; no longer used by extraction
 ```
 
 ## Wire-up in Layer 3 job (`jobs.py`)
@@ -180,8 +188,8 @@ Concrete implementation plan:
    original row.
 3. Add a helper such as `enqueue_revisit_extraction(conn, row, reason, context)`
    so revisit insertion is explicit and testable.
-4. Update extraction packet creation to include `revisit_context_json` as
-   `existing_knowledge_context` when present.
+4. Keep `revisit_context_json` as historical lineage metadata only; do not pass
+   it to extraction LLM packets.
 5. After the new row is inserted, trigger extraction/promotion through the normal
    pipeline or leave it pending for the scheduled queue job, depending on the
    caller's mode.
@@ -193,8 +201,8 @@ Acceptance tests:
   old candidates and promotion decisions still exist;
   new revisit queue row is processed;
   no foreign-key error occurs.
-- Seed context retrieval results and assert the new queue row stores
-  `revisit_context_json` and the LLM packet receives it.
+- Seed context retrieval results and assert the new queue row may store
+  `revisit_context_json`, but the LLM packet does not receive it.
 - Dry-run creates no new queue rows.
 
 ## Config additions to `MaintenanceConfig`

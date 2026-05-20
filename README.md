@@ -1,17 +1,59 @@
 # MnemonicOS
 
-> MnemonicOS is local-first memory infrastructure for agentic runtimes.
+[Chinese version](README.zh.md)
+
+MnemonicOS is a self-contained memory system for capturing and storing raw
+memory material, refining and governing canonical memory, and serving memory
+queries through one complete service path.
+
+```mermaid
+flowchart LR
+    subgraph sources["Raw data sources<br/>(external, pulled by MnemonicOS)"]
+        S1["📚 Books / documents"]
+        S2["💬 Agent Sessions"]
+        S3["🌐 Web records"]
+        S4["🎥 Meetings / calls"]
+        S5["📁 Files / code"]
+    end
+
+    subgraph mos["MnemonicOS"]
+        direction LR
+        ING["Ingestion<br/>capture · preserve · promote"]
+        MAINT["Maintenance<br/>refine · reorganize · govern"]
+        RET["Retrieval<br/>index · filter · serve"]
+        ING --> MAINT --> RET
+    end
+
+    H["👤 Human"]
+    A["🤖 Agent"]
+
+    S1 -.-> ING
+    S2 -.-> ING
+    S3 -.-> ING
+    S4 -.-> ING
+    S5 -.-> ING
+
+    RET -->|"bounded packet"| H
+    RET -->|"bounded packet"| A
+    H -->|"query"| RET
+    A -->|"query"| RET
+
+    style mos fill:#f0f4ff,stroke:#4a6fa5,stroke-width:2px
+    style sources fill:#fff9f0,stroke:#c9a84c,stroke-width:1px,stroke-dasharray:4
+    style H fill:#f0fff4,stroke:#4a9a5a
+    style A fill:#f0fff4,stroke:#4a9a5a
+```
 
 MnemonicOS gives agents a durable memory substrate that is independent of any
 one model, IDE, shell, or vendor. It captures raw work, turns useful material
 into governed notes, keeps those notes healthy, and returns bounded context to
 agents and humans through CLI, hooks, and HTTP.
 
-MnemonicOS is not an agent. It is the memory contract underneath agents.
+MnemonicOS is not an agent. It is the operating system for generic memory contents. 
 
 ## What It Is For
 
-- Preserve true raw material from agent sessions, files, and tool activity.
+- Capture and preserve true raw material from agent sessions, files, and tool activity.
 - Convert raw material into validated, provenance-bound memory.
 - Keep canonical memory useful through graph, lifecycle, importance, review,
   and re-visitation jobs.
@@ -105,11 +147,9 @@ flowchart LR
     E --> G["Validation<br/>schema + provenance"]
     F --> G
     G --> H["promotion_ready candidates"]
-    H --> I["Promotion<br/>new, confirm, update, review, reject"]
+    H --> I["Promotion<br/>new, corroborate, update, reject"]
     I --> J["brain/wiki"]
-    I --> K["brain/wiki/review"]
-    K --> AR["Auto-resolve daemon<br/>wiki_auto_resolve_review"]
-    AR --> R["Human review fallback<br/>mnemonic review"]
+    I --> K["brain/wiki/review<br/>(manual use only)"]
     J --> L["Maintenance jobs"]
 ```
 
@@ -120,7 +160,43 @@ Important invariants:
   model interpretation authoritative.
 - LLM/VLM output stops at validated candidates. It does not directly write wiki.
 - Promotion is software-gated and ledgered.
-- Ambiguous or conflicting material is first processed by the auto-resolve daemon (LLM arbitration); items it cannot resolve with confidence go to human review with LLM analysis attached.
+- Raw observations are immutable; wiki notes are the canonical knowledge holders and can morph.
+- Every non-rejected candidate is promoted as an observation record. Corroborating observations write a `corroborates` relation to the existing note and refresh its timestamp; conflicting observations are resolved deterministically by time-weighted confidence rules — no LLM required.
+- Human review queue is empty under normal operation. All conflicts resolved automatically: corroboration strengthens the canonical note, conflicts resolved by time-weighted confidence rules. The `mnemonic review` CLI remains for operator use but receives no automated routing.
+
+## Maintenance Flow
+
+Maintenance is the center path of MnemonicOS. It reads promoted wiki notes,
+keeps the canonical memory graph healthy, derives long-lived signals, and queues
+review or re-visitation work when memory starts to drift.
+
+```mermaid
+flowchart LR
+    A["Promoted wiki notes<br/>brain/wiki + SQLite indexes"] --> B["Cross-wiki linking<br/>embedding neighbors · pattern validation"]
+    B --> C["Graph rebuild<br/>typed relations · stale edge cleanup"]
+    C --> D["Lifecycle audit<br/>draft · verified · canonical · contested · archived"]
+    D --> E["Signal refresh<br/>trust · freshness · importance"]
+    E --> F["Wiki health<br/>orphans · duplicates · review items · overview"]
+    F --> G["Passive feedback<br/>retrieval outcome inference"]
+    G --> H["Raw re-visitation<br/>schema/model drift · cross-wiki context"]
+    H --> I["Extraction and promotion queues"]
+    I --> A
+```
+
+Important invariants:
+
+- Maintenance operates on the full wiki, not on individual extraction
+  candidates.
+- Maintenance jobs may update wiki metadata, graph edges, signal tables, review
+  items, health reports, and re-visitation queues.
+- Maintenance never rewrites true raw material and never mutates historical
+  extraction or promotion ledger rows.
+- Graph rebuild, lifecycle audit, and importance scoring are deterministic and
+  safe to rerun.
+- Semantic deduplication and conflict detection route to review; they do not
+  auto-merge canonical notes.
+- Raw re-visitation creates new extraction queue rows with lineage metadata,
+  preserving the original extraction history.
 
 ## Retrieval Flow
 
@@ -184,11 +260,17 @@ mnemonicos sync --mode full
 # daemon
 mnemonicos daemon start
 mnemonicos daemon status
+mnemonicos daemon status --json
+mnemonicos daemon watch --interval 3
 mnemonicos daemon run-job process_extraction_queue
+mnemonicos daemon stop
+mnemonicos run-job wiki_health_report --dry-run
 
 # raw artifact ingestion
 mnemonicos ingest-artifact --file ./docs/paper.pdf --tag research --json
 mnemonicos reprocess-artifact --failed --json
+mnemonicos ingest-dir ./docs --recursive --json
+mnemonicos migrate-raws ./brain/raw --dry-run --json
 
 # bridge capture
 mnemonicos capture begin-episode --bridge-id codex --conversation-id thread-001 --episode-id turn-001 --json
@@ -201,7 +283,10 @@ mnemonicos orchestrator mark-failure "pytest failed in retrieval tests" --bridge
 mnemonicos orchestrator finish-task --bridge-id codex --session-id s1 --task-id t1 --status success --outcome-type coding --summary "Fixed retrieval tests." --json
 
 # queues, review, retrieval
+mnemonicos queue-extraction --source-kind artifact --archive-id artifact/example --json
 mnemonicos extraction-status
+mnemonicos extraction-status --errors-only --json
+mnemonicos retry-extraction --all-errors --dry-run
 mnemonicos promote-status
 mnemonicos review list
 mnemonicos retrieve "what do we know about raw re-visitation?" --json
@@ -211,21 +296,33 @@ mnemonicos retrieve "what do we know about raw re-visitation?" --include-body --
 mnemonicos server --host 127.0.0.1 --port 8000
 ```
 
+Extraction queue processing is mostly FIFO, but the daemon now uses a coarse
+expected-time ordering so sessions and episodes are not stuck behind large
+textbooks. It drains sessions/episodes first, then lightweight text/markdown
+artifacts, then unknown artifact formats, then known-heavy PDFs/DOCX/PPTX. FIFO
+is preserved within each lane. Extraction subprocesses receive the same config
+path as the parent daemon so they operate on the same database.
+
 Useful job names:
 
 ```text
 process_extraction_queue
 process_promotion_queue
+wiki_auto_resolve_review
 expire_stale_episodes
 embed_backfill
+sync_vault_incremental
 wiki_embedding_neighbor_backfill
 wiki_cluster_validation
 wiki_pattern_discovery
 wiki_graph_rebuild
 wiki_lifecycle_audit
 wiki_importance_scoring
+rerank_training
 wiki_health_report
 wiki_raw_revisitation
+wiki_derive_passive_feedback
+retry_failed_extractions
 status_report
 ```
 

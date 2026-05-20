@@ -71,6 +71,41 @@ def replace_candidates(
         )
 
 
+def append_candidates(
+    connection: sqlite3.Connection,
+    *,
+    queue_id: int,
+    candidates: list[ModelCandidate],
+    model_provider: str,
+    model_name: str,
+    index_offset: int = 0,
+) -> None:
+    """Insert candidates without deleting existing rows. Used for resume runs."""
+    for index, candidate in enumerate(candidates):
+        connection.execute(
+            """
+            INSERT INTO extraction_candidates(
+                queue_id, candidate_index, candidate_type, title, payload_json,
+                validation_status, validation_errors_json, promotion_state,
+                model_provider, model_name
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                queue_id,
+                index_offset + index,
+                candidate.candidate_type,
+                candidate.title,
+                json.dumps(candidate.payload, sort_keys=True),
+                candidate.validation_status,
+                json.dumps(candidate.validation_errors, sort_keys=True),
+                "promotion_ready" if candidate.validation_status == "promotion_ready" else "not_ready",
+                model_provider,
+                model_name,
+            ),
+        )
+
+
 def candidate_counts(candidates: list[ModelCandidate]) -> dict[str, int]:
     invalid = sum(1 for candidate in candidates if candidate.validation_status == "invalid")
     promotion_ready = sum(1 for candidate in candidates if candidate.validation_status == "promotion_ready")

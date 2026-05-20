@@ -149,6 +149,7 @@ class ExtractionConfig:
     max_windows_per_batch: int = 1
     max_embedded_images: int = 100
     min_embedded_image_px: int = 64
+    max_extraction_item_seconds: int = 1800
 
 
 @dataclass(slots=True)
@@ -176,6 +177,8 @@ class DaemonConfig:
     max_pending: int = 200
     max_oldest_age_minutes: int = 1440
     stale_episode_threshold_hours: int = 2
+    ollama_managed: bool = False
+    ollama_command: str = ""
 
 
 @dataclass(slots=True)
@@ -442,6 +445,7 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
         max_windows_per_batch=int(extraction_data.get("max_windows_per_batch", _ed.max_windows_per_batch)),
         max_embedded_images=int(extraction_data.get("max_embedded_images", _ed.max_embedded_images)),
         min_embedded_image_px=int(extraction_data.get("min_embedded_image_px", _ed.min_embedded_image_px)),
+        max_extraction_item_seconds=int(extraction_data.get("max_extraction_item_seconds", _ed.max_extraction_item_seconds)),
     )
 
     # --- daemon: Path construction ---
@@ -455,6 +459,8 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
         max_pending=int(daemon_data.get("max_pending", DaemonConfig.__dataclass_fields__["max_pending"].default)),
         max_oldest_age_minutes=int(daemon_data.get("max_oldest_age_minutes", DaemonConfig.__dataclass_fields__["max_oldest_age_minutes"].default)),
         stale_episode_threshold_hours=int(daemon_data.get("stale_episode_threshold_hours", DaemonConfig.__dataclass_fields__["stale_episode_threshold_hours"].default)),
+        ollama_managed=bool(daemon_data.get("ollama_managed", DaemonConfig.__dataclass_fields__["ollama_managed"].default)),
+        ollama_command=str(daemon_data.get("ollama_command", DaemonConfig.__dataclass_fields__["ollama_command"].default)),
     )
 
     # --- per-bridge config: dynamic keys ---
