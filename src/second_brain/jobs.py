@@ -82,15 +82,34 @@ def collect_storage_stats(config: AppConfig) -> dict[str, Any]:
                 total += child.stat().st_size
         return total
 
+    def _count(conn, table: str) -> int:
+        try:
+            row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
+            return int(row[0]) if row else 0
+        except Exception:
+            return 0
+
     db_bytes = config.paths.db_path.stat().st_size if config.paths.db_path.exists() else 0
     vault_bytes = _dir_size(config.paths.vault_root)
-    vectors_bytes = _dir_size(config.paths.vectors_dir)
-    graph_bytes = _dir_size(config.paths.graph_dir)
+
+    try:
+        import sqlite3 as _sqlite3
+        _conn = _sqlite3.connect(str(config.paths.db_path))
+        note_vectors_count = _count(_conn, "note_vectors")
+        chunk_vectors_count = _count(_conn, "archive_chunk_vectors")
+        graph_nodes_count = _count(_conn, "graph_nodes")
+        graph_edges_count = _count(_conn, "graph_edges")
+        _conn.close()
+    except Exception:
+        note_vectors_count = chunk_vectors_count = graph_nodes_count = graph_edges_count = 0
+
     return {
         "db_bytes": db_bytes,
         "vault_bytes": vault_bytes,
-        "vectors_bytes": vectors_bytes,
-        "graph_bytes": graph_bytes,
+        "note_vectors_count": note_vectors_count,
+        "chunk_vectors_count": chunk_vectors_count,
+        "graph_nodes_count": graph_nodes_count,
+        "graph_edges_count": graph_edges_count,
     }
 
 
@@ -219,8 +238,10 @@ def _status_report_job(config: AppConfig, *, dry_run: bool = False) -> JobRunRes
         "warning_count": len(snapshot["queue"]["warnings"]),
         "db_bytes": int(snapshot["storage"]["db_bytes"]),
         "vault_bytes": int(snapshot["storage"]["vault_bytes"]),
-        "vectors_bytes": int(snapshot["storage"]["vectors_bytes"]),
-        "graph_bytes": int(snapshot["storage"]["graph_bytes"]),
+        "note_vectors_count": int(snapshot["storage"]["note_vectors_count"]),
+        "chunk_vectors_count": int(snapshot["storage"]["chunk_vectors_count"]),
+        "graph_nodes_count": int(snapshot["storage"]["graph_nodes_count"]),
+        "graph_edges_count": int(snapshot["storage"]["graph_edges_count"]),
     }
     with connection:
         job_id = _open_job_run(connection, "status_report", "dry-run" if dry_run else "live")
