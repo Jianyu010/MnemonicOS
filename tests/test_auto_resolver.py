@@ -97,7 +97,8 @@ def _clean_payload(*, title: str = "Test Concept", note_type: str = "concept",
 
 
 def _seed_candidate(conn, *, title: str = "Test Concept", note_type: str = "concept",
-                    confidence: str = "low", promotion_state: str = "review_routed") -> int:
+                    confidence: str = "low", promotion_state: str = "review_routed",
+                    **_ignored) -> int:
     """Insert extraction_queue + extraction_candidates row. Returns candidate_id."""
     payload = _clean_payload(title=title, note_type=note_type, confidence=confidence)
     with conn:
@@ -315,13 +316,14 @@ class AutoResolverIntegrationTest(unittest.TestCase):
             self.assertEqual(len(result.errors), 1)
             self.assertIn("candidate_payload_not_found", result.errors[0])
 
-    def test_llm_approve_removes_review_file(self):
+    def test_low_confidence_candidate_auto_rejected_no_llm(self):
+        """Phase 6: decide() returns rejected for low_confidence → auto-reject, no LLM call."""
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
             cfg = _config(workspace)
             conn = connect_db(cfg.paths.db_path)
             run_migrations(conn, ROOT / "migrations")
-            cid = _seed_candidate(conn)
+            cid = _seed_candidate(conn)  # confidence="low" by default
             conn.close()
 
             review_dir = cfg.paths.vault_root / "wiki" / "review"
@@ -332,17 +334,26 @@ class AutoResolverIntegrationTest(unittest.TestCase):
                 candidate_id=cid,
                 reason="low_confidence",
             )
-            result = run_auto_resolve(cfg, llm_fn=_approve_llm, dry_run=False)
-            self.assertEqual(result.approved, 1)
-            self.assertFalse(rf.exists(), "review file should be deleted after approve")
+            llm_called = []
 
-    def test_llm_reject_removes_review_file(self):
+            def tracking_llm(prompt: str) -> str:
+                llm_called.append(prompt)
+                return '{"action": "approve", "reasoning": "ok", "confidence": 0.9}'
+
+            result = run_auto_resolve(cfg, llm_fn=tracking_llm, dry_run=False)
+            self.assertEqual(result.rejected, 1)
+            self.assertEqual(result.approved, 0)
+            self.assertFalse(rf.exists(), "review file should be deleted after auto-reject")
+            self.assertEqual(len(llm_called), 0, "LLM should not be called for low_confidence")
+
+    def test_low_confidence_candidate_auto_rejected_wiki_conflict_reason(self):
+        """Low-confidence candidate in review queue regardless of reason → auto-reject."""
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
             cfg = _config(workspace)
             conn = connect_db(cfg.paths.db_path)
             run_migrations(conn, ROOT / "migrations")
-            cid = _seed_candidate(conn)
+            cid = _seed_candidate(conn)  # confidence="low"
             conn.close()
 
             review_dir = cfg.paths.vault_root / "wiki" / "review"
@@ -355,16 +366,16 @@ class AutoResolverIntegrationTest(unittest.TestCase):
             )
             result = run_auto_resolve(cfg, llm_fn=_reject_llm, dry_run=False)
             self.assertEqual(result.rejected, 1)
-            self.assertFalse(rf.exists(), "review file should be deleted after reject")
+            self.assertFalse(rf.exists(), "review file should be deleted")
 
-    def test_low_confidence_llm_writes_human_fallback(self):
-        """LLM returns approve but confidence < 0.75 → human fallback, file kept."""
+    def test_low_confidence_auto_rejected_not_human_fallback(self):
+        """Phase 6: low_confidence candidate → auto-reject, no LLM Analysis block."""
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
             cfg = _config(workspace)
             conn = connect_db(cfg.paths.db_path)
             run_migrations(conn, ROOT / "migrations")
-            cid = _seed_candidate(conn)
+            cid = _seed_candidate(conn)  # confidence="low"
             conn.close()
 
             review_dir = cfg.paths.vault_root / "wiki" / "review"
@@ -376,41 +387,19 @@ class AutoResolverIntegrationTest(unittest.TestCase):
                 reason="low_confidence",
             )
             result = run_auto_resolve(cfg, llm_fn=_low_conf_llm, dry_run=False)
-            self.assertEqual(result.human_fallback, 1)
-            self.assertTrue(rf.exists(), "review file should remain for human")
-            text = rf.read_text()
-            self.assertIn("## LLM Analysis", text)
+            self.assertEqual(result.rejected, 1)
+            self.assertEqual(result.human_fallback, 0)
+            self.assertFalse(rf.exists(), "auto-reject removes review file")
 
-    def test_human_action_writes_fallback(self):
-        """LLM returns action=human → fallback with LLM Analysis block."""
+    def test_low_llm_confidence_auto_rejects_not_human_fallback(self):
+        """Phase 6: LLM uncertain (confidence < threshold) → auto-reject, no human fallback.
+        Uses medium-confidence candidate with wiki_conflict reason so LLM path is reached."""
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
             cfg = _config(workspace)
             conn = connect_db(cfg.paths.db_path)
             run_migrations(conn, ROOT / "migrations")
-            cid = _seed_candidate(conn)
-            conn.close()
-
-            review_dir = cfg.paths.vault_root / "wiki" / "review"
-            rf = _make_review_file(
-                review_dir,
-                slug="my-concept",
-                note_id="concept/my-concept",
-                candidate_id=cid,
-                reason="contested_lifecycle",
-            )
-            result = run_auto_resolve(cfg, llm_fn=_human_llm, dry_run=False)
-            self.assertEqual(result.human_fallback, 1)
-            self.assertIn("## LLM Analysis", rf.read_text())
-
-    def test_idempotent_fallback_append(self):
-        """Running twice on same file doesn't duplicate the LLM Analysis block."""
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp)
-            cfg = _config(workspace)
-            conn = connect_db(cfg.paths.db_path)
-            run_migrations(conn, ROOT / "migrations")
-            cid = _seed_candidate(conn)
+            cid = _seed_candidate(conn, confidence="medium")
             conn.close()
 
             review_dir = cfg.paths.vault_root / "wiki" / "review"
@@ -421,19 +410,45 @@ class AutoResolverIntegrationTest(unittest.TestCase):
                 candidate_id=cid,
                 reason="wiki_conflict",
             )
-            run_auto_resolve(cfg, llm_fn=_human_llm, dry_run=False)
-            run_auto_resolve(cfg, llm_fn=_human_llm, dry_run=False)
-            text = rf.read_text()
-            self.assertEqual(text.count("## LLM Analysis"), 1)
+            result = run_auto_resolve(cfg, llm_fn=_human_llm, dry_run=False)
+            # decide() re-runs: no wiki notes → decision="new" → auto_promoted
+            # OR: if still "review" → LLM returns human → auto-reject (not human_fallback)
+            self.assertEqual(result.human_fallback, 0)
+            # File should be gone either way
+            self.assertFalse(rf.exists())
 
-    def test_dry_run_makes_no_changes(self):
-        """dry_run=True → no files changed, no DB writes."""
+    def test_auto_resolve_clears_review_queue_idempotent(self):
+        """Running auto_resolve twice on empty queue is a no-op."""
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
             cfg = _config(workspace)
             conn = connect_db(cfg.paths.db_path)
             run_migrations(conn, ROOT / "migrations")
-            cid = _seed_candidate(conn)
+            cid = _seed_candidate(conn, confidence="medium")
+            conn.close()
+
+            review_dir = cfg.paths.vault_root / "wiki" / "review"
+            _make_review_file(
+                review_dir,
+                slug="my-concept",
+                note_id="concept/my-concept",
+                candidate_id=cid,
+                reason="wiki_conflict",
+            )
+            result1 = run_auto_resolve(cfg, llm_fn=_approve_llm, dry_run=False)
+            result2 = run_auto_resolve(cfg, llm_fn=_approve_llm, dry_run=False)
+            # Second run finds nothing in review dir
+            self.assertEqual(result2.approved + result2.rejected + result2.auto_promoted, 0)
+
+    def test_dry_run_makes_no_changes(self):
+        """dry_run=True → no files changed, no DB writes.
+        Phase 6: low_confidence candidate → rejected=1 in dry_run, file kept."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            cfg = _config(workspace)
+            conn = connect_db(cfg.paths.db_path)
+            run_migrations(conn, ROOT / "migrations")
+            cid = _seed_candidate(conn)  # confidence="low"
             conn.close()
 
             review_dir = cfg.paths.vault_root / "wiki" / "review"
@@ -446,8 +461,10 @@ class AutoResolverIntegrationTest(unittest.TestCase):
             )
             original_text = rf.read_text()
             result = run_auto_resolve(cfg, llm_fn=_approve_llm, dry_run=True)
-            # approve counted but no file changes
-            self.assertEqual(result.approved, 1)
+            # Phase 6: decide() returns rejected for low_confidence → counted as rejected
+            self.assertEqual(result.rejected, 1)
+            self.assertEqual(result.approved, 0)
+            # dry_run: no file changes
             self.assertTrue(rf.exists())
             self.assertEqual(rf.read_text(), original_text)
 

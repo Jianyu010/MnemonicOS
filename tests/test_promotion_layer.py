@@ -272,17 +272,18 @@ class DecisionEngineTest(unittest.TestCase):
         decision = decide(p, duplicate_state=None, conn=self._conn, config=self._cfg)
         self.assertEqual(decision.decision, "new")
 
-    def test_low_confidence_routes_to_review(self) -> None:
+    def test_low_confidence_routes_to_rejected(self) -> None:
+        """Phase 6: low_confidence → rejected (not review)."""
         p = _clean_payload({"confidence": "low"})
         decision = decide(p, duplicate_state=None, conn=self._conn, config=self._cfg)
-        self.assertEqual(decision.decision, "review")
+        self.assertEqual(decision.decision, "rejected")
         self.assertEqual(decision.reason, "low_confidence")
 
     def test_low_confidence_fires_before_wiki_lookup(self) -> None:
         """Low-confidence guard fires even when no wiki notes exist."""
         p = _clean_payload({"confidence": "low"})
         decision = decide(p, duplicate_state=None, conn=self._conn, config=self._cfg)
-        self.assertEqual(decision.decision, "review")
+        self.assertEqual(decision.decision, "rejected")
 
     def test_confirm_for_near_duplicate_with_matching_note(self) -> None:
         """canonical_duplicate source + strong match → confirm."""
@@ -303,8 +304,92 @@ class DecisionEngineTest(unittest.TestCase):
         self.assertEqual(decision.decision, "confirm")
         self.assertIn("near_duplicate_corroboration", decision.reason)
 
-    def test_review_on_conflict_overrides_near_duplicate_prior(self) -> None:
-        """canonical_duplicate source but contested note → review."""
+    def test_time_weighted_conflict_high_high_stale(self) -> None:
+        """Phase 6: high/high conf, gap > stale_threshold → update (supersedes_stale)."""
+        from second_brain.promotion.decisions import _time_weighted_conflict
+        from second_brain.promotion.models import PromotionDecision
+
+        class _FakeMatch:
+            note_id = "concept/test-concept"
+            score = 0.75
+            reason = "token_overlap"
+
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO notes (id, type, title, summary, status, lifecycle_state,
+                                   confidence, source_refs, body_path, content_hash,
+                                   updated_at, created_at)
+                VALUES ('concept/test-concept', 'concept', 'Test Concept',
+                        'A test concept', 'active', 'canonical', 'high',
+                        '[]', 'body1.md', 'abc',
+                        datetime('now', '-40 days'), datetime('now', '-40 days'))
+                """,
+            )
+        candidate = _clean_payload({"confidence": "high"})
+        decision = _time_weighted_conflict(
+            candidate, _FakeMatch(), self._conn, self._cfg, "high"
+        )
+        self.assertEqual(decision.decision, "update")
+        self.assertIn("conflict_supersedes_stale", decision.reason)
+
+    def test_time_weighted_conflict_medium_high_corroborates(self) -> None:
+        """Phase 6: medium new, high old → confirm (corroborates)."""
+        from second_brain.promotion.decisions import _time_weighted_conflict
+
+        class _FakeMatch:
+            note_id = "concept/canonical-note"
+            score = 0.75
+            reason = "token_overlap"
+
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO notes (id, type, title, summary, status, lifecycle_state,
+                                   confidence, source_refs, body_path, content_hash,
+                                   updated_at, created_at)
+                VALUES ('concept/canonical-note', 'concept', 'Canonical Note',
+                        'Summary', 'active', 'canonical', 'high',
+                        '[]', 'body2.md', 'def', datetime('now'), datetime('now'))
+                """,
+            )
+        candidate = _clean_payload({"confidence": "medium"})
+        decision = _time_weighted_conflict(
+            candidate, _FakeMatch(), self._conn, self._cfg, "medium"
+        )
+        self.assertEqual(decision.decision, "confirm")
+        self.assertIn("conflict_corroborates", decision.reason)
+
+    def test_time_weighted_conflict_low_new_standalone(self) -> None:
+        """Phase 6: low new → new (standalone, no conflict applied)."""
+        from second_brain.promotion.decisions import _time_weighted_conflict
+
+        class _FakeMatch:
+            note_id = "concept/some-note"
+            score = 0.75
+            reason = "token_overlap"
+
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO notes (id, type, title, summary, status, lifecycle_state,
+                                   confidence, source_refs, body_path, content_hash,
+                                   updated_at, created_at)
+                VALUES ('concept/some-note', 'concept', 'Some Note',
+                        'Summary', 'active', 'draft', 'medium',
+                        '[]', 'body3.md', 'ghi', datetime('now'), datetime('now'))
+                """,
+            )
+        candidate = _clean_payload({"confidence": "low"})
+        decision = _time_weighted_conflict(
+            candidate, _FakeMatch(), self._conn, self._cfg, "low"
+        )
+        self.assertEqual(decision.decision, "new")
+        self.assertIn("conflict_low_confidence_new", decision.reason)
+
+    def test_contested_lifecycle_no_longer_routes_to_review(self) -> None:
+        """Phase 6: contested lifecycle removed as review trigger.
+        canonical_duplicate source + contested note → confirm (Rule 0 fires)."""
         with self._conn:
             self._conn.execute(
                 """
@@ -318,8 +403,9 @@ class DecisionEngineTest(unittest.TestCase):
             )
         p = _clean_payload({"title": "Test Concept", "confidence": "medium"})
         decision = decide(p, duplicate_state="canonical_duplicate", conn=self._conn, config=self._cfg)
-        self.assertEqual(decision.decision, "review")
-        self.assertEqual(decision.reason, "contested_lifecycle")
+        # Rule 0 fires: near_dup=True, top.score>=0.90 → confirm
+        self.assertEqual(decision.decision, "confirm")
+        self.assertIn("near_duplicate_corroboration", decision.reason)
 
 
 # ---------------------------------------------------------------------------
@@ -728,21 +814,29 @@ class WorkerTest(unittest.TestCase):
 
         self._conn = connect_db(self._cfg.paths.db_path)
 
-    def test_low_confidence_candidate_routes_to_review(self) -> None:
+    def test_low_confidence_candidate_auto_rejected(self) -> None:
+        """Phase 6: low_confidence → auto-rejected in worker (not review-routed)."""
         payload = _clean_payload({"confidence": "low"})
         _seed_candidate(self._conn, payload=payload)
         self._conn.close()
 
         result = process_promotion_queue(self._cfg)
-        self.assertEqual(result.review_routed, 1)
+        self.assertEqual(result.rejected, 1)
         self.assertEqual(result.promoted, 0)
+        self.assertEqual(result.review_routed, 0)
 
+        # wiki/review/ should be empty — nothing routed there
         review_dir = self._cfg.paths.vault_root / "wiki" / "review"
-        self.assertTrue(review_dir.exists())
-        review_files = list(review_dir.glob("*.md"))
-        self.assertTrue(len(review_files) >= 1)
+        review_files = list(review_dir.glob("*.md")) if review_dir.exists() else []
+        self.assertEqual(review_files, [])
 
         self._conn = connect_db(self._cfg.paths.db_path)
+
+        # rejection_reason column populated
+        row = self._conn.execute(
+            "SELECT rejection_reason FROM extraction_candidates"
+        ).fetchone()
+        self.assertEqual(str(row["rejection_reason"] or ""), "low_confidence")
 
     def test_gate_rejected_candidate_not_promoted(self) -> None:
         payload = _clean_payload({"type": "concept"})

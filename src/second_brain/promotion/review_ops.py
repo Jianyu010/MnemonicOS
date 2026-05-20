@@ -203,6 +203,7 @@ def reject_review_item(
     name: str,
     *,
     dry_run: bool = False,
+    rejection_reason: str | None = None,
 ) -> None:
     item = get_review_item(config, name)
 
@@ -222,6 +223,18 @@ def reject_review_item(
                 """,
                 (note_id,),
             )
+            if rejection_reason is not None:
+                # Update rejection_reason on the candidate via the decision row link
+                conn.execute(
+                    """
+                    UPDATE extraction_candidates SET rejection_reason = ?
+                    WHERE id IN (
+                        SELECT candidate_id FROM promotion_decisions
+                        WHERE target_note_id = ? AND promotion_state = 'rejected'
+                    )
+                    """,
+                    (rejection_reason, note_id),
+                )
     finally:
         conn.close()
 

@@ -194,6 +194,7 @@ RELATION_BUCKETS = {
     "before": "timeline",
     "after": "timeline",
     "supersedes": "timeline",
+    "corroborates": "corroboration",
     "similar_to": "similarity",
     "contrasts_with": "contrast",
 }
