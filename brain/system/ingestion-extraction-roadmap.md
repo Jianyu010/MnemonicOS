@@ -604,6 +604,11 @@ The worker fetches up to `quick_lane_batch` and `slow_lane_batch` items per job
 run, then processes pairs concurrently. A `_LaneHandle` abstraction wraps
 subprocess spawn + progress polling + join so each lane can be driven from a
 thread. The single-lane path remains the default (`dual_lane_enabled = false`).
+Lane progress is file-backed from the child process. The progress transport must
+flush direct dict assignment as well as bulk updates, because the extraction loop
+updates phase/window fields with `progress[...] = ...`. Timeout handling must
+terminate and reap the subprocess process group before the parent advances to
+the next pair.
 
 ### Requires
 
