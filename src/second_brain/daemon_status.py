@@ -309,6 +309,28 @@ def _elapsed(started_at_str: str | None) -> str:
     return f"{delta // 3600}h{(delta % 3600) // 60:02d}m"
 
 
+def _elapsed_seconds(started_at_str: str | None) -> int | None:
+    if not started_at_str:
+        return None
+    try:
+        started = datetime.fromisoformat(started_at_str).replace(tzinfo=timezone.utc)
+        return max(0, int((datetime.now(timezone.utc) - started).total_seconds()))
+    except ValueError:
+        return None
+
+
+def _eta_str(elapsed_seconds: int | None, fraction: float) -> str:
+    """Return formatted ETA like 'ETA 4m32s', or '' if not computable."""
+    if elapsed_seconds is None or elapsed_seconds < 5 or fraction <= 0.02 or fraction >= 1.0:
+        return ""
+    remaining = int(elapsed_seconds * (1.0 - fraction) / fraction)
+    if remaining < 60:
+        return f"ETA {remaining}s"
+    if remaining < 3600:
+        return f"ETA {remaining // 60}m{remaining % 60:02d}s"
+    return f"ETA {remaining // 3600}h{(remaining % 3600) // 60:02d}m"
+
+
 def _short_archive_id(archive_id: str | None) -> str:
     if not archive_id:
         return "unknown"
@@ -363,6 +385,7 @@ def _processing_item_to_lane_progress(item: dict, *, item_index: int = 0, total_
         "total_windows": progress.get("total_windows") or item.get("window_count") or 0,
         "artifact": progress.get("artifact") or 0,
         "total_artifacts": progress.get("total_artifacts") or 0,
+        "started_at": item.get("started_at"),
     }
     return lane
 
@@ -495,8 +518,21 @@ def _render_watch(
             total = int(lane_p.get("total_windows") or 0)
             artifact = int(lane_p.get("artifact") or 0)
             total_artifacts = int(lane_p.get("total_artifacts") or 0)
+
+            # Resolve started_at from lane dict or by matching processing_items by id
+            started_at = lane_p.get("started_at")
+            if not started_at:
+                item_id = lane_p.get("item_id")
+                for pi in processing_items:
+                    if item_id is not None and pi.get("id") == item_id:
+                        started_at = pi.get("started_at")
+                        break
+            elapsed_secs = _elapsed_seconds(started_at)
+            elapsed_str = _elapsed(started_at)
+            elapsed_part = f"  {_DIM}{elapsed_str} elapsed{_RESET}" if elapsed_str else ""
+
             lines.append(
-                f"  {_CYAN}{lane_label} lane{_RESET}: {name}  {_DIM}{phase}…{_RESET}"
+                f"  {_CYAN}{lane_label} lane{_RESET}: {name}  {_DIM}{phase}…{_RESET}{elapsed_part}"
             )
             if total_items > 0:
                 item_frac = (item_index + 1) / total_items
@@ -506,22 +542,29 @@ def _render_watch(
                 )
             if total_artifacts > 0:
                 art_frac = artifact / total_artifacts
+                eta = _eta_str(elapsed_secs, art_frac)
+                eta_part = f"  {_DIM}{eta}{_RESET}" if eta else ""
                 lines.append(
                     f"    artifact {_CYAN}{artifact}/{total_artifacts}{_RESET}  "
-                    f"{_bar(art_frac, 28)}  {_DIM}{phase}{_RESET}"
+                    f"{_bar(art_frac, 28)}  {_DIM}{phase}{_RESET}{eta_part}"
                 )
             if total > 0:
                 if phase in {"llm", "vlm"} and window < total:
                     active_window = min(total, window + 1)
+                    win_frac = (active_window - 1) / total
+                    eta = _eta_str(elapsed_secs, win_frac)
+                    eta_part = f"  {_DIM}{eta}{_RESET}" if eta else ""
                     lines.append(
                         f"    window {_CYAN}{active_window}/{total}{_RESET}  "
-                        f"{_DIM}active {phase}{_RESET}"
+                        f"{_DIM}active {phase}{_RESET}{eta_part}"
                     )
                 else:
                     frac = window / total
+                    eta = _eta_str(elapsed_secs, frac)
+                    eta_part = f"  {_DIM}{eta}{_RESET}" if eta else ""
                     lines.append(
                         f"    window {_CYAN}{window}/{total}{_RESET}  "
-                        f"{_bar(frac, 28)}  {_DIM}{phase}{_RESET}"
+                        f"{_bar(frac, 28)}  {_DIM}{phase}{_RESET}{eta_part}"
                     )
     elif processing_items:
         lines.append(f"  {_BOLD}Currently processing:{_RESET}")
@@ -537,6 +580,7 @@ def _render_watch(
                 jp_phase = str(job_progress.get("phase") or "")
                 jp_index = int(job_progress.get("item_index") or 0)
                 jp_items_total = int(job_progress.get("total_items") or 0)
+                elapsed_secs = _elapsed_seconds(item.get("started_at"))
                 batch_str = f"  batch {jp_index + 1}/{jp_items_total}" if jp_items_total > 0 else ""
                 lines.append(
                     f"    {_CYAN}{name}{_RESET}  attempt={attempt}  "
@@ -544,9 +588,11 @@ def _render_watch(
                 )
                 if jp_total > 0:
                     win_frac = jp_window / jp_total
+                    eta = _eta_str(elapsed_secs, win_frac)
+                    eta_part = f"  {_DIM}{eta}{_RESET}" if eta else ""
                     lines.append(
                         f"    window {_CYAN}{jp_window}/{jp_total}{_RESET}  "
-                        f"{_bar(win_frac, 32)}  {_DIM}{jp_phase}{_RESET}"
+                        f"{_bar(win_frac, 32)}  {_DIM}{jp_phase}{_RESET}{eta_part}"
                     )
                 elif jp_phase:
                     lines.append(f"    {_DIM}{jp_phase}…{_RESET}")

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from itertools import zip_longest
 import json
 import logging
 import os
@@ -10,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -61,6 +61,10 @@ class _LaneHandle:
 
     Caller spawns the subprocess, receives a handle, and later calls
     ``join()`` to block until completion or timeout.
+
+    The subprocess is killed when either:
+    - its progress file stops changing for ``stall_timeout_seconds`` (stall), or
+    - the absolute ``timeout_seconds`` deadline is exceeded (safety net).
     """
 
     proc: subprocess.Popen
@@ -68,28 +72,73 @@ class _LaneHandle:
     stop_poll: threading.Event
     progress_file: Path
     timeout_seconds: int
+    stall_timeout_seconds: int
     process_registry: "Any | None"
 
     def join(self) -> bool:
-        """Block until subprocess completes or times out. Returns True if timed out."""
+        """Block until subprocess completes or is killed. Returns True if killed."""
+        stderr_chunks: list[bytes] = []
+
+        def _drain_stderr() -> None:
+            if self.proc.stderr is not None:
+                while True:
+                    chunk = self.proc.stderr.read(4096)
+                    if not chunk:
+                        break
+                    stderr_chunks.append(chunk)
+
+        drain_thread = threading.Thread(target=_drain_stderr, daemon=True)
+        drain_thread.start()
+
+        last_progress_bytes: bytes = b""
+        last_progress_time = time.monotonic()
+        deadline = time.monotonic() + self.timeout_seconds
+
         try:
-            _, stderr = self.proc.communicate(timeout=self.timeout_seconds)
-            if self.proc.returncode != 0:
-                _log.warning(
-                    "extraction subprocess (progress_file=%s) exited %s: %s",
-                    self.progress_file.name,
-                    self.proc.returncode,
-                    (stderr or b"").decode("utf-8", errors="replace")[:300],
-                )
-            return False
-        except subprocess.TimeoutExpired:
-            _log.warning(
-                "extraction subprocess (progress_file=%s) timed out after %ss — killing",
-                self.progress_file.name,
-                self.timeout_seconds,
-            )
-            _terminate_process_group(self.proc)
-            return True
+            while True:
+                if self.proc.poll() is not None:
+                    drain_thread.join(timeout=2.0)
+                    stderr = b"".join(stderr_chunks)
+                    if self.proc.returncode != 0:
+                        _log.warning(
+                            "extraction subprocess (progress_file=%s) exited %s: %s",
+                            self.progress_file.name,
+                            self.proc.returncode,
+                            stderr.decode("utf-8", errors="replace")[:300],
+                        )
+                    return False
+
+                now = time.monotonic()
+
+                if now > deadline:
+                    _log.warning(
+                        "extraction subprocess (progress_file=%s) exceeded absolute limit %ss — killing",
+                        self.progress_file.name,
+                        self.timeout_seconds,
+                    )
+                    _terminate_process_group(self.proc)
+                    drain_thread.join(timeout=2.0)
+                    return True
+
+                try:
+                    cur = self.progress_file.read_bytes()
+                    if cur != last_progress_bytes:
+                        last_progress_bytes = cur
+                        last_progress_time = now
+                except FileNotFoundError:
+                    pass
+
+                if now - last_progress_time > self.stall_timeout_seconds:
+                    _log.warning(
+                        "extraction subprocess (progress_file=%s) stalled — no progress for %ss — killing",
+                        self.progress_file.name,
+                        self.stall_timeout_seconds,
+                    )
+                    _terminate_process_group(self.proc)
+                    drain_thread.join(timeout=2.0)
+                    return True
+
+                time.sleep(1.0)
         finally:
             self.stop_poll.set()
             if self.poll_thread is not None:
@@ -129,6 +178,7 @@ def _spawn_item_subprocess(
     config_path: str | None,
     item_id: int,
     timeout_seconds: int,
+    stall_timeout_seconds: int,
     progress: "dict[str, Any] | None",
     item_index: int,
     total_items: int,
@@ -202,6 +252,7 @@ def _spawn_item_subprocess(
         stop_poll=stop_poll,
         progress_file=progress_file,
         timeout_seconds=timeout_seconds,
+        stall_timeout_seconds=stall_timeout_seconds,
         process_registry=process_registry,
     )
 
@@ -296,6 +347,7 @@ def _process_single_lane(
             config_path=config_path,
             item_id=item.id,
             timeout_seconds=max_item_seconds,
+            stall_timeout_seconds=config.extraction.stall_timeout_seconds,
             progress=progress,
             item_index=item_index,
             total_items=total_items,
@@ -308,7 +360,11 @@ def _process_single_lane(
                 mark_error(
                     connection,
                     queue_id=item.id,
-                    error=f"timeout: item exceeded {max_item_seconds}s per-item limit",
+                    error=(
+                        f"timeout: item exceeded limit "
+                        f"(stall={config.extraction.stall_timeout_seconds}s, "
+                        f"max={max_item_seconds}s)"
+                    ),
                 )
         else:
             _accumulate_subprocess_result(connection, stats, item.id)
@@ -322,130 +378,106 @@ def _process_dual_lane(
     progress: "dict[str, Any] | None",
     process_registry: "Any | None",
 ) -> None:
-    """Process extraction queue with one quick-lane and one slow-lane subprocess per round."""
-    max_item_seconds = config.extraction.max_extraction_item_seconds
-    config_path = str(config.config_path) if config.config_path is not None else None
+    """Process extraction queue with independent quick-lane and slow-lane threads.
 
-    if progress is not None:
-        progress.update({"mode": "dual_lane", "quick": {}, "slow": {}})
+    Each thread processes its candidates serially using its own SQLite
+    connection. The two threads run concurrently, so a slow-lane stall or
+    timeout never blocks quick-lane progress.
+    """
+    max_item_seconds = config.extraction.max_extraction_item_seconds
+    stall_seconds = config.extraction.stall_timeout_seconds
+    config_path = str(config.config_path) if config.config_path is not None else None
 
     quick_candidates = pending_quick_items(connection, limit=config.extraction.quick_lane_batch)
     slow_candidates = pending_slow_items(connection, limit=config.extraction.slow_lane_batch)
     quick_total = len(quick_candidates)
     slow_total = len(slow_candidates)
 
-    for pair_index, (quick_item, slow_item) in enumerate(zip_longest(quick_candidates, slow_candidates)):
-        if progress is not None:
-            progress.update({
-                "mode": "dual_lane",
-                "pair_index": pair_index,
-                "quick_total": quick_total,
-                "slow_total": slow_total,
-            })
+    if progress is not None:
+        progress.update({
+            "mode": "dual_lane",
+            "quick": {},
+            "slow": {},
+            "quick_total": quick_total,
+            "slow_total": slow_total,
+        })
 
-        # Invariant: mark both processing before spawning any subprocess.
-        with connection:
-            if quick_item is not None:
-                mark_processing(connection, quick_item.id)
-            if slow_item is not None:
-                mark_processing(connection, slow_item.id)
+    quick_stats = ExtractionProcessResult(0, 0, 0, 0, 0, 0, 0, 0)
+    slow_stats = ExtractionProcessResult(0, 0, 0, 0, 0, 0, 0, 0)
 
-        quick_handle: "_LaneHandle | None" = None
-        slow_handle: "_LaneHandle | None" = None
+    def _run_lane(
+        candidates: list,
+        lane_stats: ExtractionProcessResult,
+        progress_key: str,
+        lane_total: int,
+    ) -> None:
+        conn = connect_db(config.paths.db_path)
+        run_migrations(conn, _migrations_dir(config))
+        try:
+            for idx, item in enumerate(candidates):
+                with conn:
+                    mark_processing(conn, item.id)
+                handle = _spawn_item_subprocess(
+                    config_path=config_path,
+                    item_id=item.id,
+                    timeout_seconds=max_item_seconds,
+                    stall_timeout_seconds=stall_seconds,
+                    progress=progress,
+                    item_index=idx,
+                    total_items=lane_total,
+                    item_name=_progress_name(item),
+                    process_registry=process_registry,
+                    progress_key=progress_key,
+                )
+                timed_out = handle.join()
+                if timed_out:
+                    lane_stats.errors += 1
+                    with conn:
+                        mark_error(
+                            conn,
+                            queue_id=item.id,
+                            error=(
+                                f"timeout: item exceeded limit "
+                                f"(stall={stall_seconds}s, max={max_item_seconds}s)"
+                            ),
+                        )
+                else:
+                    _accumulate_subprocess_result(conn, lane_stats, item.id)
+        finally:
+            conn.close()
 
-        if quick_item is not None:
-            quick_handle = _spawn_item_subprocess(
-                config_path=config_path,
-                item_id=quick_item.id,
-                timeout_seconds=max_item_seconds,
-                progress=progress,
-                item_index=quick_candidates.index(quick_item),
-                total_items=quick_total,
-                item_name=_progress_name(quick_item),
-                process_registry=process_registry,
-                progress_key="quick",
-            )
-        if slow_item is not None:
-            slow_handle = _spawn_item_subprocess(
-                config_path=config_path,
-                item_id=slow_item.id,
-                timeout_seconds=max_item_seconds,
-                progress=progress,
-                item_index=slow_candidates.index(slow_item),
-                total_items=slow_total,
-                item_name=_progress_name(slow_item),
-                process_registry=process_registry,
-                progress_key="slow",
-            )
-
-        _join_lane_pair(
-            connection=connection,
-            stats=stats,
-            quick_handle=quick_handle,
-            quick_item=quick_item,
-            slow_handle=slow_handle,
-            slow_item=slow_item,
-            max_item_seconds=max_item_seconds,
+    lane_threads: list[threading.Thread] = []
+    if quick_candidates:
+        t = threading.Thread(
+            target=_run_lane,
+            args=(quick_candidates, quick_stats, "quick", quick_total),
+            name="mnemonicos-extraction-quick",
+            daemon=True,
         )
-
-
-def _join_lane_pair(
-    *,
-    connection,
-    stats: ExtractionProcessResult,
-    quick_handle: "_LaneHandle | None",
-    quick_item: "Any | None",
-    slow_handle: "_LaneHandle | None",
-    slow_item: "Any | None",
-    max_item_seconds: int,
-) -> None:
-    """Join quick + slow lane handles concurrently; accumulate results into stats."""
-    quick_timed_out: list[bool] = [False]
-    slow_timed_out: list[bool] = [False]
-
-    def _join_quick() -> None:
-        if quick_handle is not None:
-            quick_timed_out[0] = quick_handle.join()
-
-    def _join_slow() -> None:
-        if slow_handle is not None:
-            slow_timed_out[0] = slow_handle.join()
-
-    join_threads = []
-    if quick_handle is not None:
-        t = threading.Thread(target=_join_quick, daemon=True)
         t.start()
-        join_threads.append(t)
-    if slow_handle is not None:
-        t = threading.Thread(target=_join_slow, daemon=True)
+        lane_threads.append(t)
+    if slow_candidates:
+        t = threading.Thread(
+            target=_run_lane,
+            args=(slow_candidates, slow_stats, "slow", slow_total),
+            name="mnemonicos-extraction-slow",
+            daemon=True,
+        )
         t.start()
-        join_threads.append(t)
-    for t in join_threads:
+        lane_threads.append(t)
+
+    for t in lane_threads:
         t.join()
 
-    if quick_item is not None:
-        if quick_timed_out[0]:
-            stats.errors += 1
-            with connection:
-                mark_error(
-                    connection,
-                    queue_id=quick_item.id,
-                    error=f"timeout: item exceeded {max_item_seconds}s per-item limit",
-                )
-        else:
-            _accumulate_subprocess_result(connection, stats, quick_item.id)
-
-    if slow_item is not None:
-        if slow_timed_out[0]:
-            stats.errors += 1
-            with connection:
-                mark_error(
-                    connection,
-                    queue_id=slow_item.id,
-                    error=f"timeout: item exceeded {max_item_seconds}s per-item limit",
-                )
-        else:
-            _accumulate_subprocess_result(connection, stats, slow_item.id)
+    for lane in (quick_stats, slow_stats):
+        stats.processed += lane.processed
+        stats.skipped += lane.skipped
+        stats.errors += lane.errors
+        stats.windows += lane.windows
+        stats.artifacts += lane.artifacts
+        stats.visual_snippets += lane.visual_snippets
+        stats.candidates += lane.candidates
+        stats.promotion_ready += lane.promotion_ready
 
 
 def _run_item_subprocess(
@@ -453,6 +485,7 @@ def _run_item_subprocess(
     config_path: str | None,
     item_id: int,
     timeout_seconds: int,
+    stall_timeout_seconds: int,
     progress: dict[str, Any] | None,
     item_index: int,
     total_items: int,
@@ -464,6 +497,7 @@ def _run_item_subprocess(
         config_path=config_path,
         item_id=item_id,
         timeout_seconds=timeout_seconds,
+        stall_timeout_seconds=stall_timeout_seconds,
         progress=progress,
         item_index=item_index,
         total_items=total_items,
