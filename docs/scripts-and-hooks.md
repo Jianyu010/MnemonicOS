@@ -56,17 +56,25 @@ Also callable directly if the Stop hook is unavailable.
 
 ### `mnemonic_stop_hook.sh`
 
-**When:** Claude Code `Stop` hook (alternative to `mnemonic_postflight.sh`).
+**When:** Claude Code `Stop` hook — fires after Claude finishes each response.
 
-Lightweight wrapper; delegates to `mnemonic_postflight.sh`.
+**What it does:** Checks `stop_hook_active` (exits 0 immediately if true), scrapes the session transcript for `assistant_message` events, ends the active episode, and ingests `/tmp/mnemo_pending_summary.md` via `orchestrator finish-task`. Falls back to `mnemonic_postflight.sh` if orchestrator state is unavailable.
 
 ---
 
 ### `mnemonic_hook_post_tool.sh`
 
-**When:** Claude Code `PostToolUse` hook — fires after each tool call.
+**When:** Claude Code `PostToolUse` hook — fires after each **successful** tool call (CC 2.1.143+).
 
-**What it does:** Light signal capture for passive feedback (e.g., recording which notes were accessed).
+**What it does:** Emits `tool_call` and `tool_result` events (is_error=false) to the active MnemonicOS episode. Failed tool calls go to `mnemonic_hook_post_tool_failure.sh`.
+
+---
+
+### `mnemonic_hook_post_tool_failure.sh`
+
+**When:** Claude Code `PostToolUseFailure` hook — fires after each **failed** tool call (CC 2.1.143+).
+
+**What it does:** Emits `tool_call`, `tool_result` (is_error=true), and `failure` events. Input fields: `error`, `error_type`, `is_interrupt`, `is_timeout` (no `tool_response` field).
 
 ---
 
@@ -235,7 +243,49 @@ In `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "bash /path/to/ai_memory/scripts/mnemonic_hook_preflight.sh"
+            "command": "cd /path/to/ai_memory && scripts/mnemonic_hook_preflight.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd /path/to/ai_memory && scripts/mnemonic_hook_post_tool.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd /path/to/ai_memory && scripts/mnemonic_hook_file_artifact.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd /path/to/ai_memory && scripts/mnemonic_hook_post_tool_failure.sh"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd /path/to/ai_memory && scripts/mnemonic_precompact_dump.sh"
           }
         ]
       }
@@ -246,7 +296,7 @@ In `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "bash /path/to/ai_memory/scripts/mnemonic_stop_hook.sh"
+            "command": "cd /path/to/ai_memory && scripts/mnemonic_stop_hook.sh"
           }
         ]
       }

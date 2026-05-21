@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # mnemonic_hook_post_tool.sh — Claude Code PostToolUse hook (all tools)
 #
-# Captures tool_call and tool_result events for every tool.
+# Captures tool_call and tool_result events for successful tool calls.
 # Write/Edit file artifacts are also handled by mnemonic_hook_file_artifact.sh.
-# is_error responses additionally emit a failure event.
+# Tool failures go to mnemonic_hook_post_tool_failure.sh (PostToolUseFailure).
 #
-# Input (stdin): Claude Code PostToolUse JSON
+# Input (stdin): Claude Code PostToolUse JSON (CC 2.1.143+: success-only)
 #   { "session_id": "...", "tool_name": "...",
-#     "tool_input": {...}, "tool_response": {...} }
+#     "tool_input": {...}, "tool_response": { "success": true } }
 # Exit: always 0 — never block the tool call
 
 set -uo pipefail
@@ -30,8 +30,7 @@ fi
 
 HOOK_JSON=$(cat)
 
-# Parse everything in one Python call — build call_payload, result_payload,
-# is_error flag, optional failure_payload. Write to temp file.
+# Parse tool info — build call_payload and result_payload. Write to temp file.
 PAYLOADS_FILE=$(mktemp /tmp/mnemo_tool_payloads.XXXXXX.json)
 
 HOOK_JSON="$HOOK_JSON" python3 - "$PAYLOADS_FILE" <<'PY' 2>/dev/null || { rm -f "$PAYLOADS_FILE"; exit 0; }
@@ -47,9 +46,8 @@ except Exception:
 tool_name = hook.get("tool_name", "")
 tool_input = hook.get("tool_input", {})
 tool_response = hook.get("tool_response", {})
-is_error = bool(tool_response.get("is_error", False))
 
-# Truncate large payloads; session_capture externalizes above its 32 KB threshold.
+# PostToolUse fires on success only (CC 2.1.143+). Failures go to PostToolUseFailure.
 MAX_BYTES = 256 * 1024
 
 def maybe_truncate(obj):
@@ -72,21 +70,12 @@ tool_input_out, _ = maybe_truncate(tool_input)
 tool_response_out, truncated = maybe_truncate(tool_response)
 
 call_payload = {"tool_name": tool_name, "tool_input": tool_input_out}
-result_payload = {"tool_name": tool_name, "is_error": is_error, "tool_response": tool_response_out}
+result_payload = {"tool_name": tool_name, "is_error": False, "tool_response": tool_response_out}
 if truncated:
     result_payload["_truncated"] = True
 
-failure_payload = None
-if is_error:
-    msg = ""
-    if isinstance(tool_response, dict):
-        msg = str(tool_response.get("output") or tool_response.get("error") or "")[:512]
-    elif isinstance(tool_response, str):
-        msg = tool_response[:512]
-    failure_payload = {"tool_name": tool_name, "error_message": msg, "source": "tool_error"}
-
 with open(out_path, "w", encoding="utf-8") as fh:
-    json.dump({"call": call_payload, "result": result_payload, "failure": failure_payload}, fh)
+    json.dump({"call": call_payload, "result": result_payload}, fh)
 PY
 
 [[ -s "$PAYLOADS_FILE" ]] || { rm -f "$PAYLOADS_FILE"; exit 0; }
@@ -97,9 +86,6 @@ CALL_PAYLOAD=$(python3 -c \
 RESULT_PAYLOAD=$(python3 -c \
   "import json,sys; d=json.load(open(sys.argv[1])); print(json.dumps(d['result']))" \
   "$PAYLOADS_FILE" 2>/dev/null) || { rm -f "$PAYLOADS_FILE"; exit 0; }
-FAILURE_PAYLOAD=$(python3 -c \
-  "import json,sys; d=json.load(open(sys.argv[1])); v=d.get('failure'); print(json.dumps(v) if v else '')" \
-  "$PAYLOADS_FILE" 2>/dev/null) || FAILURE_PAYLOAD=""
 rm -f "$PAYLOADS_FILE"
 
 CONVERSATION_ID=$(python3 -c \
@@ -132,15 +118,5 @@ fi
   --type tool_result \
   --payload-json "$RESULT_PAYLOAD" \
   --json >/dev/null 2>&1 || true
-
-if [[ -n "$FAILURE_PAYLOAD" ]]; then
-  "${CLI[@]}" capture append-event \
-    --bridge-id claude \
-    --conversation-id "$CONVERSATION_ID" \
-    --episode-id "$EPISODE_ID" \
-    --type failure \
-    --payload-json "$FAILURE_PAYLOAD" \
-    --json >/dev/null 2>&1 || true
-fi
 
 exit 0

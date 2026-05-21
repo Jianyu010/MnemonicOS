@@ -31,6 +31,14 @@ export MNEMOS_AUTO_TRIGGER_PIPELINE="${MNEMOS_AUTO_TRIGGER_PIPELINE:-0}"
 
 # Read session_id from Stop hook's stdin JSON (same session as preflight)
 HOOK_JSON=$(cat 2>/dev/null) || HOOK_JSON="{}"
+
+# CC 2.1.143+: stop_hook_active=true means the hook is running inside a loop
+# guard; must return success immediately or trigger "stop_hook_prevented" limit.
+STOP_HOOK_ACTIVE=$(echo "$HOOK_JSON" | python3 -c \
+  "import sys,json; d=json.load(sys.stdin); print('1' if d.get('stop_hook_active') else '0')" 2>/dev/null) \
+  || STOP_HOOK_ACTIVE="0"
+[[ "$STOP_HOOK_ACTIVE" == "1" ]] && exit 0
+
 SESSION_ID=$(echo "$HOOK_JSON" | python3 -c \
   "import sys,json; d=json.load(sys.stdin); print(d.get('session_id',''))" 2>/dev/null) \
   || SESSION_ID=""

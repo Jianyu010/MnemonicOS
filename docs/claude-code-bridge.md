@@ -13,10 +13,11 @@ integration.
 ┌─────────────────────────────────────────────────────────────────────┐
 │  Claude Code (your IDE / CLI)                                       │
 │                                                                     │
-│  UserPromptSubmit hook ──┐                                          │
-│  PostToolUse hook        │                                          │
-│  PreCompact hook         ├──► YOUR BRIDGE SCRIPTS (scripts/)        │
-│  Stop hook ──────────────┘         │         │                      │
+│  UserPromptSubmit hook ────┐                                        │
+│  PostToolUse hook          │                                        │
+│  PostToolUseFailure hook   ├──► YOUR BRIDGE SCRIPTS (scripts/)      │
+│  PreCompact hook           │         │         │                    │
+│  Stop hook ────────────────┘         │         │                    │
 │                                    │         │                      │
 │ ════════════════════════ BOUNDARY ═╪═════════╪════════════════════ │
 │                                    ▼         ▼                      │
@@ -111,7 +112,8 @@ Five hooks cover the full turn lifecycle:
 | Hook event | Trigger | Script | What it captures |
 |---|---|---|---|
 | `UserPromptSubmit` | User sends a message | `mnemonic_hook_preflight.sh` | `user_message`, `retrieval_packet`, episode begin |
-| `PostToolUse` (all) | Any tool completes | `mnemonic_hook_post_tool.sh` | `tool_call`, `tool_result`, `failure` |
+| `PostToolUse` (all) | Tool call **succeeds** (CC 2.1.143+) | `mnemonic_hook_post_tool.sh` | `tool_call`, `tool_result` |
+| `PostToolUseFailure` (all) | Tool call **fails** (CC 2.1.143+) | `mnemonic_hook_post_tool_failure.sh` | `tool_call`, `tool_result` (is_error=true), `failure` |
 | `PostToolUse` (Write/Edit) | Write or Edit tool completes | `mnemonic_hook_file_artifact.sh` | `file_changed`, `artifact_created` |
 | `Stop` | Claude finishes responding | `mnemonic_stop_hook.sh` | `assistant_message` (scraped from transcript), episode end, writeback |
 | `PreCompact` | Context window near limit | `mnemonic_precompact_dump.sh` | Copies pending summary to `brain/raw/sessions/` before compaction discards conversation context |
@@ -152,6 +154,17 @@ Add to `~/.claude/settings.json` (global) or `.claude/settings.json` (project):
           {
             "type": "command",
             "command": "cd /path/to/mnemonicos && scripts/mnemonic_hook_file_artifact.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd /path/to/mnemonicos && scripts/mnemonic_hook_post_tool_failure.sh"
           }
         ]
       }
@@ -203,33 +216,51 @@ Claude Code passes JSON on **stdin** to each hook. The fields vary by hook type:
 }
 ```
 
-### PostToolUse stdin
+### PostToolUse stdin (CC 2.1.143+: success only)
 
 ```json
 {
   "session_id": "uuid",
   "tool_name": "Bash",
   "tool_input": { "command": "ls" },
-  "tool_response": {
-    "output": "file1\nfile2",
-    "is_error": false
-  }
+  "tool_response": { "success": true }
 }
 ```
 
-`tool_response` shape varies by tool. The reliable fields are:
-- `is_error` (bool) — present on all tool responses when an error occurred
-- `output` (str) — present for Bash, Read
-- `content` (str) — present for some tools
+`tool_response` shape varies by tool. `is_error` is **not** present in
+`PostToolUse` — failed tool calls fire `PostToolUseFailure` instead.
+
+### PostToolUseFailure stdin (CC 2.1.143+)
+
+```json
+{
+  "session_id": "uuid",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_...",
+  "tool_input": { "command": "ls /nonexistent" },
+  "error": "No such file or directory",
+  "error_type": "bash_error",
+  "is_interrupt": false,
+  "is_timeout": false
+}
+```
+
+No `tool_response` field — error info is in top-level `error`, `error_type`,
+`is_interrupt`, and `is_timeout`.
 
 ### Stop stdin
 
 ```json
 {
   "session_id": "uuid",
-  "stop_hook_active": true
+  "stop_hook_active": false
 }
 ```
+
+`stop_hook_active` is `true` when the hook fires inside a loop guard (e.g.
+the turn is being held open by another Stop hook). **Exit 0 immediately** when
+this is `true` — doing real work while `stop_hook_active=true` risks hitting the
+`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` limit and causing `stop_hook_prevented`.
 
 ---
 
@@ -309,14 +340,25 @@ disable flag, and proper JSON escaping via `python3 -c` env-var injection.
 
 ---
 
-## Step 4 — PostToolUse: Tool Capture Hook
+## Step 4 — PostToolUse / PostToolUseFailure: Tool Capture Hooks
 
-`scripts/mnemonic_hook_post_tool.sh` fires after **every** tool call. It reads
-the state file, builds payloads, and emits up to three events:
+**CC 2.1.143+** split tool capture into two hooks:
 
-- `tool_call` — tool name + input (always)
-- `tool_result` — tool name + response (always)
-- `failure` — tool name + error message (only when `is_error: true`)
+| Hook | Script | Fires when |
+|---|---|---|
+| `PostToolUse` | `mnemonic_hook_post_tool.sh` | tool call **succeeds** |
+| `PostToolUseFailure` | `mnemonic_hook_post_tool_failure.sh` | tool call **fails** |
+
+`mnemonic_hook_post_tool.sh` reads the state file and emits two events:
+
+- `tool_call` — tool name + input
+- `tool_result` — tool name + response (`is_error: false`)
+
+`mnemonic_hook_post_tool_failure.sh` emits three events:
+
+- `tool_call` — tool name + input
+- `tool_result` — tool name + error info (`is_error: true`)
+- `failure` — tool name + error message + error_type
 
 Key design decisions:
 
@@ -335,13 +377,12 @@ This avoids the "stdin already consumed" problem.
 heredoc (which has tricky quoting semantics), the Python subprocess writes its
 result to a temp file. The shell then reads named fields from it.
 
-Skeleton:
+Success hook skeleton (`mnemonic_hook_post_tool.sh`):
 
 ```bash
 HOOK_JSON=$(cat)
 [[ -f /tmp/mnemo_hook_state ]] || exit 0  # no active episode — skip
 
-# Build payloads in one Python invocation
 PAYLOADS_FILE=$(mktemp /tmp/mnemo_tool_payloads.XXXXXX.json)
 HOOK_JSON="$HOOK_JSON" python3 - "$PAYLOADS_FILE" <<'PY'
 import json, os, sys
@@ -349,44 +390,76 @@ hook = json.loads(os.environ["HOOK_JSON"])
 tool_name = hook.get("tool_name", "")
 tool_input = hook.get("tool_input", {})
 tool_response = hook.get("tool_response", {})
-is_error = bool(tool_response.get("is_error", False))
+# PostToolUse fires on success only — is_error never true here
 
 # ... truncate large values ...
 
-failure = None
-if is_error:
-    failure = {"tool_name": tool_name,
-               "error_message": str(tool_response.get("output",""))[:512],
-               "source": "tool_error"}
-
 json.dump({"call": {"tool_name": tool_name, "tool_input": tool_input},
-           "result": {"tool_name": tool_name, "is_error": is_error, "tool_response": tool_response},
-           "failure": failure},
+           "result": {"tool_name": tool_name, "is_error": False,
+                      "tool_response": tool_response}},
           open(sys.argv[1], "w"))
 PY
 
-# Read state and emit events
 CONVERSATION_ID=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('conversation_id',''))" /tmp/mnemo_hook_state)
 EPISODE_ID=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('episode_id',''))" /tmp/mnemo_hook_state)
-
 CALL_PAYLOAD=$(python3 -c "import json,sys; print(json.dumps(json.load(open(sys.argv[1]))['call']))" "$PAYLOADS_FILE")
 RESULT_PAYLOAD=$(python3 -c "import json,sys; print(json.dumps(json.load(open(sys.argv[1]))['result']))" "$PAYLOADS_FILE")
+rm -f "$PAYLOADS_FILE"
 
 mnemonicos capture append-event --bridge-id claude \
   --conversation-id "$CONVERSATION_ID" --episode-id "$EPISODE_ID" \
   --type tool_call --payload-json "$CALL_PAYLOAD" --json >/dev/null
-
 mnemonicos capture append-event --bridge-id claude \
   --conversation-id "$CONVERSATION_ID" --episode-id "$EPISODE_ID" \
   --type tool_result --payload-json "$RESULT_PAYLOAD" --json >/dev/null
+exit 0
+```
 
-# Failure event (conditional)
-FAILURE=$(python3 -c "import json,sys; v=json.load(open(sys.argv[1]))['failure']; print(json.dumps(v) if v else '')" "$PAYLOADS_FILE")
-[[ -n "$FAILURE" ]] && mnemonicos capture append-event --bridge-id claude \
-  --conversation-id "$CONVERSATION_ID" --episode-id "$EPISODE_ID" \
-  --type failure --payload-json "$FAILURE" --json >/dev/null
+Failure hook skeleton (`mnemonic_hook_post_tool_failure.sh`):
 
+```bash
+HOOK_JSON=$(cat)
+[[ -f /tmp/mnemo_hook_state ]] || exit 0
+
+PAYLOADS_FILE=$(mktemp /tmp/mnemo_tool_failure_payloads.XXXXXX.json)
+HOOK_JSON="$HOOK_JSON" python3 - "$PAYLOADS_FILE" <<'PY'
+import json, os, sys
+hook = json.loads(os.environ["HOOK_JSON"])
+tool_name  = hook.get("tool_name", "")
+tool_input = hook.get("tool_input", {})
+error_msg  = str(hook.get("error") or "")[:512]
+error_type = hook.get("error_type", "")
+is_interrupt = bool(hook.get("is_interrupt", False))
+is_timeout   = bool(hook.get("is_timeout", False))
+
+# ... truncate large values ...
+
+json.dump({
+    "call":    {"tool_name": tool_name, "tool_input": tool_input},
+    "result":  {"tool_name": tool_name, "is_error": True,
+                "error": error_msg, "error_type": error_type,
+                "is_interrupt": is_interrupt, "is_timeout": is_timeout},
+    "failure": {"tool_name": tool_name, "error_message": error_msg,
+                "error_type": error_type, "source": "tool_error"},
+}, open(sys.argv[1], "w"))
+PY
+
+CONVERSATION_ID=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('conversation_id',''))" /tmp/mnemo_hook_state)
+EPISODE_ID=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('episode_id',''))" /tmp/mnemo_hook_state)
+CALL_PAYLOAD=$(python3 -c "import json,sys; print(json.dumps(json.load(open(sys.argv[1]))['call']))" "$PAYLOADS_FILE")
+RESULT_PAYLOAD=$(python3 -c "import json,sys; print(json.dumps(json.load(open(sys.argv[1]))['result']))" "$PAYLOADS_FILE")
+FAILURE_PAYLOAD=$(python3 -c "import json,sys; print(json.dumps(json.load(open(sys.argv[1]))['failure']))" "$PAYLOADS_FILE")
 rm -f "$PAYLOADS_FILE"
+
+mnemonicos capture append-event --bridge-id claude \
+  --conversation-id "$CONVERSATION_ID" --episode-id "$EPISODE_ID" \
+  --type tool_call --payload-json "$CALL_PAYLOAD" --json >/dev/null
+mnemonicos capture append-event --bridge-id claude \
+  --conversation-id "$CONVERSATION_ID" --episode-id "$EPISODE_ID" \
+  --type tool_result --payload-json "$RESULT_PAYLOAD" --json >/dev/null
+mnemonicos capture append-event --bridge-id claude \
+  --conversation-id "$CONVERSATION_ID" --episode-id "$EPISODE_ID" \
+  --type failure --payload-json "$FAILURE_PAYLOAD" --json >/dev/null
 exit 0
 ```
 
@@ -611,9 +684,9 @@ Each line:
 | `episode_started` | `begin-episode` (automatic) | `cwd`, `repo`, `branch`, `model`, `agent_runtime` |
 | `user_message` | preflight hook | `content` (string) |
 | `retrieval_packet` | preflight hook | `state` (retrieval_state string), `context_markdown`, optional Stage 7 retry trace (`final_pass_index`, `auto_retry_summary`, `retrieval_pass_count`, `followup_query`) |
-| `tool_call` | post-tool hook | `tool_name`, `tool_input` |
-| `tool_result` | post-tool hook | `tool_name`, `is_error`, `tool_response` |
-| `failure` | post-tool hook | `tool_name`, `error_message`, `source` |
+| `tool_call` | post-tool hook (success or failure) | `tool_name`, `tool_input` |
+| `tool_result` | post-tool hook (success or failure) | `tool_name`, `is_error`, `tool_response` (success) or `error`/`error_type`/`is_interrupt`/`is_timeout` (failure) |
+| `failure` | post-tool **failure** hook only | `tool_name`, `error_message`, `error_type`, `source` |
 | `file_changed` | file artifact hook | `file_path`, `tool`, `size_bytes`, `content` |
 | `artifact_created` | file artifact hook | `file_path`, `tool`, `size_bytes`, `content` |
 | `assistant_message` | stop hook (transcript scrape) | `content` (array of content blocks), `timestamp`, `source_uuid` |
@@ -642,14 +715,18 @@ UserPromptSubmit hook fires
         ▼
 Claude processes prompt (tool calls interleaved)
         │
-   For each tool call:
-        ├─ PostToolUse hook (all tools):
+   For each tool call (CC 2.1.143+):
+        ├─ PostToolUse hook (success):
         │    ├─ capture append-event tool_call
-        │    ├─ capture append-event tool_result
-        │    └─ capture append-event failure    (if is_error)
+        │    └─ capture append-event tool_result   (is_error=false)
         │
-        └─ PostToolUse hook (Write|Edit only):
-             ├─ capture append-event file_changed   (Edit)
+        ├─ PostToolUseFailure hook (failure):
+        │    ├─ capture append-event tool_call
+        │    ├─ capture append-event tool_result   (is_error=true)
+        │    └─ capture append-event failure
+        │
+        └─ PostToolUse hook (Write|Edit only, success):
+             ├─ capture append-event file_changed    (Edit)
              └─ capture append-event artifact_created (Write)
         │
         ▼
@@ -746,6 +823,11 @@ the real content. Truncated events carry `"_truncated": true`.
 **Transcript timestamp filtering.** Without filtering by `started_at`, the Stop
 hook would re-emit all prior turns as assistant messages. Always compare
 `timestamp >= episode.started_at`.
+
+**Stop hook with `stop_hook_active=true`.** CC 2.1.143+ passes `stop_hook_active: true`
+in Stop hook stdin when the hook fires inside a loop guard. The stop hook must
+check this field and exit 0 immediately; doing real work (episode end, writeback)
+when it is `true` will double-emit events and risk hitting `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`.
 
 **Legacy postflight fallback.** When `TASK_ID` and `SESSION_ID` are both set,
 the stop hook uses `orchestrator finish-task` (preferred — runs full writeback
