@@ -6,7 +6,9 @@ import sqlite3
 
 def connect_db(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(db_path)
+    # timeout=30: wait up to 30 s when another writer holds the WAL write lock,
+    # instead of failing immediately with OperationalError: database is locked.
+    connection = sqlite3.connect(db_path, timeout=30.0)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute("PRAGMA journal_mode = WAL")

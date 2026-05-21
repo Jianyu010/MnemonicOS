@@ -150,7 +150,7 @@ class ExtractionConfig:
     max_embedded_images: int = 100
     min_embedded_image_px: int = 64
     max_extraction_item_seconds: int = 7200
-    stall_timeout_seconds: int = 300
+    stall_timeout_seconds: int = 900
     dual_lane_enabled: bool = False
     quick_lane_batch: int = 5
     slow_lane_batch: int = 5

@@ -75,10 +75,12 @@ reembed_on_summary_change_only = true
 # dual_lane_enabled = false
 # quick_lane_batch = 5           # max quick items fetched per job run
 # slow_lane_batch = 5            # max slow items fetched per job run
-# stall_timeout_seconds = 300    # kill subprocess if no progress for this many seconds (default 300)
+# stall_timeout_seconds = 900    # kill subprocess if no progress for this many seconds (default 900)
+#                                # MUST be > llm_timeout_seconds and > vlm_timeout_seconds so the
+#                                # HTTP timeout fires before the stall detector kills the process.
 # max_extraction_item_seconds = 7200  # absolute safety-net timeout (default 7200 = 2 h)
 # vlm_timeout_seconds = 240      # per-artifact VLM HTTP timeout; must be < stall_timeout_seconds (default 240)
-# llm_timeout_seconds = 600      # per-window LLM HTTP timeout (default 600)
+# llm_timeout_seconds = 600      # per-window LLM HTTP timeout; must be < stall_timeout_seconds (default 600)
 
 [graph]
 enabled = true

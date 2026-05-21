@@ -866,7 +866,7 @@ class ExtractionLayerTest(unittest.TestCase):
     def test_extraction_config_defaults_stall_timeout(self) -> None:
         from second_brain.config import ExtractionConfig
         cfg = ExtractionConfig()
-        self.assertEqual(cfg.stall_timeout_seconds, 300)
+        self.assertEqual(cfg.stall_timeout_seconds, 900)
         self.assertEqual(cfg.max_extraction_item_seconds, 7200)
 
     def test_lane_handle_stall_kills_when_progress_file_unchanged(self) -> None:
