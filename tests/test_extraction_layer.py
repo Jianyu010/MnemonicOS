@@ -530,6 +530,7 @@ class ExtractionLayerTest(unittest.TestCase):
             stop_poll=threading.Event(),
             progress_file=progress_file,
             timeout_seconds=10,
+            stall_timeout_seconds=30,
             process_registry=None,
         )
         timed_out = handle.join()
@@ -559,6 +560,7 @@ class ExtractionLayerTest(unittest.TestCase):
             stop_poll=threading.Event(),
             progress_file=progress_file,
             timeout_seconds=1,
+            stall_timeout_seconds=30,
             process_registry=None,
         )
         timed_out = handle.join()
@@ -591,6 +593,7 @@ class ExtractionLayerTest(unittest.TestCase):
             stop_poll=threading.Event(),
             progress_file=progress_file,
             timeout_seconds=1,
+            stall_timeout_seconds=30,
             process_registry=None,
         )
 
@@ -614,13 +617,17 @@ class ExtractionLayerTest(unittest.TestCase):
         class SlowProc:
             pid = 424242
             returncode = None
+            stderr = None
 
             def __init__(self) -> None:
                 self.calls = 0
 
+            def poll(self):
+                return self.returncode
+
             def communicate(self, timeout=None):
                 self.calls += 1
-                if self.calls <= 2:
+                if self.calls == 1:
                     raise subprocess.TimeoutExpired(cmd="slow", timeout=timeout)
                 self.returncode = -signal.SIGKILL
                 return (b"", b"")
@@ -633,6 +640,7 @@ class ExtractionLayerTest(unittest.TestCase):
             stop_poll=threading.Event(),
             progress_file=progress_file,
             timeout_seconds=1,
+            stall_timeout_seconds=30,
             process_registry=None,
         )
 
@@ -853,6 +861,144 @@ class ExtractionLayerTest(unittest.TestCase):
             finally:
                 connection.close()
             self.assertEqual(int(pending_count["count"]), 2)
+
+
+    def test_extraction_config_defaults_stall_timeout(self) -> None:
+        from second_brain.config import ExtractionConfig
+        cfg = ExtractionConfig()
+        self.assertEqual(cfg.stall_timeout_seconds, 300)
+        self.assertEqual(cfg.max_extraction_item_seconds, 7200)
+
+    def test_lane_handle_stall_kills_when_progress_file_unchanged(self) -> None:
+        import subprocess
+        import threading
+        from second_brain.extraction.worker import _LaneHandle
+
+        progress_file = Path(tempfile.gettempdir()) / "mnemo_test_stall_unchanged.json"
+        try:
+            progress_file.unlink()
+        except FileNotFoundError:
+            pass
+
+        # Process sleeps forever and never writes the progress file.
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        handle = _LaneHandle(
+            proc=proc,
+            poll_thread=None,
+            stop_poll=threading.Event(),
+            progress_file=progress_file,
+            timeout_seconds=30,       # absolute deadline: won't hit
+            stall_timeout_seconds=2,  # stall kill: 2s (hits first)
+            process_registry=None,
+        )
+        timed_out = handle.join()
+        self.assertTrue(timed_out)
+        self.assertIsNotNone(proc.poll())
+
+    def test_lane_handle_no_kill_when_progress_file_keeps_updating(self) -> None:
+        import subprocess
+        import threading
+        from second_brain.extraction.worker import _LaneHandle
+
+        progress_file = Path(tempfile.gettempdir()) / "mnemo_test_stall_updating.json"
+        try:
+            progress_file.unlink()
+        except FileNotFoundError:
+            pass
+
+        # Write to progress file every 0.3s for ~1.5s then exit.
+        script = "\n".join([
+            "import time, pathlib",
+            f"p = pathlib.Path({str(progress_file)!r})",
+            "for i in range(5):",
+            "    p.write_text(str(i))",
+            "    time.sleep(0.3)",
+        ])
+        proc = subprocess.Popen(
+            [sys.executable, "-c", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        handle = _LaneHandle(
+            proc=proc,
+            poll_thread=None,
+            stop_poll=threading.Event(),
+            progress_file=progress_file,
+            timeout_seconds=30,      # absolute: 30s (won't hit)
+            stall_timeout_seconds=2, # stall: 2s (won't hit — file keeps updating)
+            process_registry=None,
+        )
+        timed_out = handle.join()
+        self.assertFalse(timed_out)  # exits naturally
+        self.assertIsNotNone(proc.poll())
+        self.assertEqual(proc.returncode, 0)
+
+    def test_dual_lane_quick_independent_from_slow_timeout(self) -> None:
+        """Quick lane items complete even if slow lane times out."""
+        from second_brain.extraction import worker
+
+        class QuickHandle:
+            def join(self) -> bool:
+                return False
+
+        class SlowHandle:
+            def join(self) -> bool:
+                return True  # simulates a timeout
+
+        def fake_spawn(*, progress_key, **kw):
+            return SlowHandle() if progress_key == "slow" else QuickHandle()
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            config = _config(workspace)
+            config.extraction.dual_lane_enabled = True
+            config.extraction.quick_lane_batch = 2
+            config.extraction.slow_lane_batch = 1
+
+            connection = connect_db(config.paths.db_path)
+            try:
+                with connection:
+                    connection.execute(
+                        "INSERT INTO archive(id, type, path, ingested_at, tags, source_format) "
+                        "VALUES ('artifact/pdf-heavy', 'doc', '/dev/null', '2026-05-20 08:00:00', '[]', 'pdf')"
+                    )
+                    connection.execute(
+                        "INSERT INTO extraction_queue(source_kind, archive_id, status, queued_at) "
+                        "VALUES ('artifact', 'artifact/pdf-heavy', 'pending', '2026-05-20 08:00:00')"
+                    )
+                    for i in range(2):
+                        connection.execute(
+                            "INSERT INTO extraction_queue(source_kind, archive_id, status, queued_at) "
+                            "VALUES ('session', ?, 'pending', ?)",
+                            (f"session/quick-{i}", f"2026-05-20 08:0{i + 1}:00"),
+                        )
+            finally:
+                connection.close()
+
+            def accumulate(conn, stats, queue_id):
+                stats.processed += 1
+                with conn:
+                    conn.execute(
+                        "UPDATE extraction_queue SET status='processed', finished_at=datetime('now') WHERE id=?",
+                        (queue_id,),
+                    )
+
+            with (
+                mock.patch.object(worker, "_spawn_item_subprocess", side_effect=fake_spawn),
+                mock.patch.object(worker, "_accumulate_subprocess_result", side_effect=accumulate),
+                mock.patch.object(worker, "mark_error"),
+            ):
+                result = process_extraction_queue(config, dry_run=False)
+
+        # Both quick items processed; slow item timed out
+        self.assertEqual(result.processed, 2)
+        self.assertEqual(result.errors, 1)
 
 
 if __name__ == "__main__":

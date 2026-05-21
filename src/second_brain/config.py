@@ -149,7 +149,8 @@ class ExtractionConfig:
     max_windows_per_batch: int = 1
     max_embedded_images: int = 100
     min_embedded_image_px: int = 64
-    max_extraction_item_seconds: int = 1800
+    max_extraction_item_seconds: int = 7200
+    stall_timeout_seconds: int = 300
     dual_lane_enabled: bool = False
     quick_lane_batch: int = 5
     slow_lane_batch: int = 5
@@ -456,6 +457,7 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
         max_embedded_images=int(extraction_data.get("max_embedded_images", _ed.max_embedded_images)),
         min_embedded_image_px=int(extraction_data.get("min_embedded_image_px", _ed.min_embedded_image_px)),
         max_extraction_item_seconds=int(extraction_data.get("max_extraction_item_seconds", _ed.max_extraction_item_seconds)),
+        stall_timeout_seconds=int(extraction_data.get("stall_timeout_seconds", _ed.stall_timeout_seconds)),
         dual_lane_enabled=bool(extraction_data.get("dual_lane_enabled", _ed.dual_lane_enabled)),
         quick_lane_batch=int(extraction_data.get("quick_lane_batch", _ed.quick_lane_batch)),
         slow_lane_batch=int(extraction_data.get("slow_lane_batch", _ed.slow_lane_batch)),

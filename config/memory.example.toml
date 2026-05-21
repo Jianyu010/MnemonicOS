@@ -73,8 +73,10 @@ reembed_on_summary_change_only = true
 # Two-lane concurrent extraction: run one quick item (episode/session/text)
 # and one slow item (PDF/DOCX/other) simultaneously. Requires OLLAMA_NUM_PARALLEL=2.
 # dual_lane_enabled = false
-# quick_lane_batch = 5   # max quick items fetched per job run
-# slow_lane_batch = 5    # max slow items fetched per job run
+# quick_lane_batch = 5           # max quick items fetched per job run
+# slow_lane_batch = 5            # max slow items fetched per job run
+# stall_timeout_seconds = 300    # kill subprocess if no progress for this many seconds
+# max_extraction_item_seconds = 7200  # absolute safety-net timeout (2 h)
 
 [graph]
 enabled = true

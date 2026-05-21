@@ -631,3 +631,46 @@ overlapping extraction invocation.
 - `daemon status` shows a dual-lane progress block when active.
 - Single-lane behaviour is unchanged when `dual_lane_enabled = false`.
 - Full test suite passes.
+
+---
+
+## Phase 13: Decoupled Lanes + Progress-Aware Stall Timeout
+
+Status: **implemented 2026-05-21**.
+
+Plan: `ingestion-extraction-plan-phase13.md`.
+
+### Summary
+
+Two targeted fixes to dual-lane extraction reliability discovered after Phase 12
+shipped:
+
+**Decoupled lane threads.** `_process_dual_lane` no longer pairs one quick item
+with one slow item and blocks until both finish. Instead it spawns two
+independent threads — one for all quick candidates, one for all slow candidates.
+Each thread processes its items serially and uses its own SQLite connection.
+Quick-lane throughput is no longer throttled by slow-lane stalls or timeouts.
+
+**Progress-aware stall timeout.** The hard `max_extraction_item_seconds` wall
+is replaced by a stall detector in `_LaneHandle.join()`. The subprocess is
+killed only when its progress file stops changing for `stall_timeout_seconds`
+(default 5 min). The absolute `max_extraction_item_seconds` remains as a
+fallback safety net (default raised to 2 h). Legitimately slow items (e.g.,
+100-artifact PDFs) are now allowed to run to completion as long as each
+VLM/LLM call makes forward progress.
+
+### Requires
+
+- `dual_lane_enabled = true` in config (same as Phase 12).
+- New config key: `stall_timeout_seconds` (default 300 s).
+- Raised default for `max_extraction_item_seconds` (7200 s).
+
+### Acceptance
+
+- Quick items are not blocked by slow-lane stalls or timeouts.
+- A subprocess that stops updating its progress file for `stall_timeout_seconds`
+  is killed and its queue row marked error (retriable).
+- A subprocess actively making progress is never killed before the absolute
+  deadline.
+- Both lanes run to completion independently even if one lane stalls.
+- Full test suite passes.
