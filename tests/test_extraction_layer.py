@@ -1001,5 +1001,120 @@ class ExtractionLayerTest(unittest.TestCase):
         self.assertEqual(result.errors, 1)
 
 
+    def test_inference_timeout_error_raised_on_socket_timeout(self) -> None:
+        """_open_request converts socket.timeout into InferenceTimeoutError."""
+        import socket as _socket
+        from second_brain.extraction.providers import InferenceTimeoutError, _open_request
+        from urllib import request as _req
+
+        req = _req.Request("http://127.0.0.1:11434/api/generate", method="GET")
+        with mock.patch("second_brain.extraction.providers.request.build_opener") as mock_opener:
+            instance = mock_opener.return_value
+            instance.open.side_effect = _socket.timeout("timed out")
+            with self.assertRaises(InferenceTimeoutError):
+                with _open_request(req, timeout_seconds=1):
+                    pass
+
+    def test_socket_timeout_not_retried_as_transient(self) -> None:
+        """socket.timeout must NOT be in _TRANSIENT_ERRORS (would cause infinite retry)."""
+        import socket as _socket
+        from second_brain.extraction.providers import _TRANSIENT_ERRORS
+        self.assertNotIn(_socket.timeout, _TRANSIENT_ERRORS)
+        self.assertNotIn(TimeoutError, _TRANSIENT_ERRORS)
+
+    def test_ollama_vlm_provider_passes_timeout_and_keep_alive(self) -> None:
+        """OllamaVLMProvider passes timeout_seconds and keep_alive=0 to _ollama_generate."""
+        from second_brain.extraction.providers import OllamaVLMProvider
+        from second_brain.projection.pipeline_models import ArtifactView
+
+        artifact = ArtifactView(
+            artifact_id="fig-1",
+            kind="figure",
+            mime_type="image/png",
+            payload=b"fake-image",
+            source_attachment_path=None,
+            source_locator="page:1",
+            marker="[FIGURE:fig-1]",
+        )
+        provider = OllamaVLMProvider(
+            "llama3.2-vision:latest",
+            base_url="http://127.0.0.1:11434",
+            timeout_seconds=42,
+            keep_alive=0,
+        )
+        with mock.patch(
+            "second_brain.extraction.providers._ollama_generate", return_value="{}"
+        ) as mock_gen:
+            provider.describe(artifact)
+        mock_gen.assert_called_once()
+        _, kwargs = mock_gen.call_args
+        self.assertEqual(kwargs["timeout_seconds"], 42)
+        self.assertEqual(kwargs["keep_alive"], 0)
+
+    def test_ollama_llm_provider_passes_timeout(self) -> None:
+        """OllamaLLMProvider passes timeout_seconds to _ollama_generate."""
+        from second_brain.extraction.providers import OllamaLLMProvider
+
+        provider = OllamaLLMProvider(
+            "qwen3:8b",
+            base_url="http://127.0.0.1:11434",
+            timeout_seconds=99,
+        )
+        with mock.patch(
+            "second_brain.extraction.providers._ollama_generate", return_value="{}"
+        ) as mock_gen:
+            provider.extract_candidates({"text_windows": [], "active_source_ref": "x/y"})
+        mock_gen.assert_called_once()
+        _, kwargs = mock_gen.call_args
+        self.assertEqual(kwargs["timeout_seconds"], 99)
+
+    def test_subprocess_entry_inference_timeout_not_tombstoned(self) -> None:
+        """InferenceTimeoutError always writes 'timeout:' prefix, never 'tombstoned:'."""
+        from second_brain.extraction._subprocess_entry import _run
+        from second_brain.extraction.providers import InferenceTimeoutError
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            config = _config(workspace)
+
+            connection = connect_db(config.paths.db_path)
+            try:
+                with connection:
+                    connection.execute(
+                        "INSERT INTO archive(id, type, path, ingested_at, tags) "
+                        "VALUES ('artifact/timeout-test', 'doc', '/dev/null', '2026-05-21', '[]')"
+                    )
+                    connection.execute(
+                        "INSERT INTO extraction_queue(id, source_kind, archive_id, status, attempt_count) "
+                        "VALUES (77, 'artifact', 'artifact/timeout-test', 'processing', 3)"
+                    )
+            finally:
+                connection.close()
+
+            # Raise InferenceTimeoutError from _process_item — simulates a VLM hang.
+            # Patch at the worker module since _process_item is a local import inside _run().
+            with mock.patch(
+                "second_brain.extraction.worker._process_item",
+                side_effect=InferenceTimeoutError("timed out after 240s"),
+            ):
+                exit_code = _run(77, config_path=str(config.config_path))
+
+            self.assertEqual(exit_code, 1)
+            connection = connect_db(config.paths.db_path)
+            try:
+                row = connection.execute(
+                    "SELECT status, last_error FROM extraction_queue WHERE id = 77"
+                ).fetchone()
+            finally:
+                connection.close()
+
+            self.assertEqual(row["status"], "error")
+            self.assertTrue(
+                str(row["last_error"]).startswith("timeout:"),
+                f"Expected 'timeout:' prefix, got: {row['last_error']!r}",
+            )
+            self.assertNotIn("tombstoned", str(row["last_error"]))
+
+
 if __name__ == "__main__":
     unittest.main()

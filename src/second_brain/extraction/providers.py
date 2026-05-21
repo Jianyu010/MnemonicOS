@@ -19,6 +19,15 @@ from second_brain.projection.pipeline_models import ArtifactView, TextWindow
 from .models import SCHEMA_VERSION, VisualSnippet
 
 
+class InferenceTimeoutError(RuntimeError):
+    """Raised when an Ollama or OpenAI-compatible inference call times out.
+
+    Caught by _subprocess_entry._run() before the generic handler and written as
+    ``"timeout: …"`` — never ``"tombstoned: …"`` — so retry_failed_extractions
+    requeues the item regardless of attempt count.
+    """
+
+
 class VLMProvider(Protocol):
     provider_name: str
     model_name: str
@@ -159,9 +168,18 @@ class FixtureLLMProvider:
 class OllamaVLMProvider:
     provider_name = "ollama"
 
-    def __init__(self, model_name: str, *, base_url: str = "http://127.0.0.1:11434") -> None:
+    def __init__(
+        self,
+        model_name: str,
+        *,
+        base_url: str = "http://127.0.0.1:11434",
+        timeout_seconds: int | None = None,
+        keep_alive: int = 0,
+    ) -> None:
         self.model_name = model_name
         self.base_url = base_url.rstrip("/")
+        self.timeout_seconds = timeout_seconds
+        self.keep_alive = keep_alive
 
     def describe(self, artifact: ArtifactView) -> VisualSnippet:
         image_bytes = artifact.payload
@@ -187,6 +205,8 @@ class OllamaVLMProvider:
             model=self.model_name,
             prompt=prompt,
             images=[base64.b64encode(image_bytes).decode("ascii")],
+            timeout_seconds=self.timeout_seconds,
+            keep_alive=self.keep_alive,
         )
         parsed = _parse_jsonish_response(response)
         warnings = parsed.get("warnings") if isinstance(parsed.get("warnings"), list) else []
@@ -204,13 +224,25 @@ class OllamaVLMProvider:
 class OllamaLLMProvider:
     provider_name = "ollama"
 
-    def __init__(self, model_name: str, *, base_url: str = "http://127.0.0.1:11434") -> None:
+    def __init__(
+        self,
+        model_name: str,
+        *,
+        base_url: str = "http://127.0.0.1:11434",
+        timeout_seconds: int | None = None,
+    ) -> None:
         self.model_name = model_name
         self.base_url = base_url.rstrip("/")
+        self.timeout_seconds = timeout_seconds
 
     def extract_candidates(self, packet: dict[str, Any]) -> str:
         prompt = _candidate_extraction_prompt(packet)
-        return _ollama_generate(self.base_url, model=self.model_name, prompt=prompt)
+        return _ollama_generate(
+            self.base_url,
+            model=self.model_name,
+            prompt=prompt,
+            timeout_seconds=self.timeout_seconds,
+        )
 
 
 class OpenAICompatibleLLMProvider:
@@ -352,7 +384,12 @@ def build_vlm_provider(config: AppConfig) -> VLMProvider:
     if config.extraction.vlm_provider == "fixture":
         return FixtureVLMProvider(config.extraction.vlm_model)
     if config.extraction.vlm_provider == "ollama":
-        return OllamaVLMProvider(config.extraction.vlm_model, base_url=config.extraction.vlm_base_url or config.extraction.ollama_base_url)
+        return OllamaVLMProvider(
+            config.extraction.vlm_model,
+            base_url=config.extraction.vlm_base_url or config.extraction.ollama_base_url,
+            timeout_seconds=config.extraction.vlm_timeout_seconds or 240,
+            keep_alive=0,
+        )
     if config.extraction.vlm_provider in {"openai", "openai_compatible"}:
         return OpenAICompatibleVLMProvider(
             config.extraction.vlm_model,
@@ -367,7 +404,11 @@ def build_llm_provider(config: AppConfig) -> LLMProvider:
     if config.extraction.llm_provider == "fixture":
         return FixtureLLMProvider(config.extraction.llm_model)
     if config.extraction.llm_provider == "ollama":
-        return OllamaLLMProvider(config.extraction.llm_model, base_url=config.extraction.llm_base_url or config.extraction.ollama_base_url)
+        return OllamaLLMProvider(
+            config.extraction.llm_model,
+            base_url=config.extraction.llm_base_url or config.extraction.ollama_base_url,
+            timeout_seconds=config.extraction.llm_timeout_seconds or 600,
+        )
     if config.extraction.llm_provider in {"openai", "openai_compatible"}:
         return OpenAICompatibleLLMProvider(
             config.extraction.llm_model,
@@ -573,6 +614,7 @@ def _ollama_generate(
     prompt: str,
     images: list[str] | None = None,
     timeout_seconds: int | None = None,
+    keep_alive: int | None = None,
 ) -> str:
     payload: dict[str, Any] = {
         "model": model,
@@ -581,6 +623,8 @@ def _ollama_generate(
     }
     if images:
         payload["images"] = images
+    if keep_alive is not None:
+        payload["keep_alive"] = keep_alive
     req = request.Request(
         f"{base_url}/api/generate",
         data=json.dumps(payload).encode("utf-8"),
@@ -625,9 +669,9 @@ _TRANSIENT_ERRORS = (
     BrokenPipeError,
     ConnectionResetError,
     ConnectionAbortedError,
-    TimeoutError,
-    socket.timeout,
 )
+# Timeout errors are NOT retried — they surface as InferenceTimeoutError immediately.
+_TIMEOUT_ERRORS = (TimeoutError, socket.timeout)
 _RETRY_DELAYS = (1.0, 3.0, 8.0)
 
 
@@ -645,6 +689,10 @@ def _open_request(req: request.Request, *, timeout_seconds: int | None):
                 return opener.open(req, timeout=timeout_seconds)
             return request.urlopen(req, timeout=timeout_seconds)
         except URLError as exc:
+            if isinstance(exc.reason, _TIMEOUT_ERRORS):
+                raise InferenceTimeoutError(
+                    f"inference call timed out after {timeout_seconds}s"
+                ) from exc
             if isinstance(exc.reason, transient):
                 last_exc = exc
                 if delay is None:
@@ -652,7 +700,11 @@ def _open_request(req: request.Request, *, timeout_seconds: int | None):
                 time.sleep(delay)
             else:
                 raise
-        except transient as exc:
+        except _TIMEOUT_ERRORS as exc:
+            raise InferenceTimeoutError(
+                f"inference call timed out after {timeout_seconds}s"
+            ) from exc
+        except _TRANSIENT_ERRORS as exc:
             last_exc = exc
             if delay is None:
                 break
