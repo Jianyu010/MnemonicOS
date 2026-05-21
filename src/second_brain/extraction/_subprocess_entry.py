@@ -57,6 +57,7 @@ def _run(item_id: int, *, config_path: str | None = None, progress_file: str | N
     from second_brain.ingest import _migrations_dir
     from second_brain.projection.pipeline import ProjectionService
 
+    from .providers import InferenceTimeoutError
     from .queue import _row_to_item, mark_error
     from .worker import _process_item
 
@@ -79,6 +80,17 @@ def _run(item_id: int, *, config_path: str | None = None, progress_file: str | N
     try:
         _process_item(config, service, connection, item=item, dry_run=False, progress=progress, start_window=start_window)
         return 0
+    except InferenceTimeoutError as exc:
+        # Always retryable — never tombstoned regardless of attempt_count.
+        # retry_failed_extractions requeues any error whose last_error starts with "timeout:".
+        error_text = f"timeout: inference call exceeded per-call timeout: {exc}"
+        try:
+            with connection:
+                mark_error(connection, queue_id=item_id, error=error_text)
+        except Exception:
+            pass
+        print(f"extraction timeout for item {item_id}: {exc}", file=sys.stderr)
+        return 1
     except Exception as exc:
         error_text = str(exc)
         if item.attempt_count >= 1:

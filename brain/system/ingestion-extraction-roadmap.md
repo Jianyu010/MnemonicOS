@@ -674,3 +674,35 @@ VLM/LLM call makes forward progress.
   deadline.
 - Both lanes run to completion independently even if one lane stalls.
 - Full test suite passes.
+
+## Phase 14: Graceful Ollama Inference Timeout + VLM keep_alive=0 (implemented 2026-05-21)
+
+**Problem:** `OllamaVLMProvider` and `OllamaLLMProvider` had no HTTP timeout
+(`timeout_seconds=None`). Ollama hangs on a VLM call → subprocess hangs →
+stall detector fires after 5 min → SIGKILL → TCP connection severed mid-stream
+→ Ollama stuck in `Stopping…` for hours. Also `socket.timeout` was in
+`_TRANSIENT_ERRORS`, silently retrying a hanging call up to 3 more times.
+
+**Solution:**
+- `InferenceTimeoutError` raised by `_open_request` on `socket.timeout` /
+  `TimeoutError` — not retried, surfaces immediately as a subprocess exit.
+- `OllamaVLMProvider` now accepts `timeout_seconds` (default 240 s via
+  `build_vlm_provider`) and `keep_alive=0` → Ollama unloads the VLM model
+  immediately after each artifact, preventing stuck-model accumulation.
+- `OllamaLLMProvider` accepts `timeout_seconds` (default 600 s).
+- `_subprocess_entry._run()` catches `InferenceTimeoutError` before the generic
+  handler and writes `"timeout: …"` — never `"tombstoned: …"` — so
+  `retry_failed_extractions` requeues the item regardless of attempt count.
+
+**Key invariant:** `vlm_timeout_seconds` (240 s) < `stall_timeout_seconds`
+(300 s). HTTP timeout fires first → subprocess exits via exception → clean TCP
+close → Ollama context cancel propagates → GPU work aborted → model unloads
+normally within 5 min TTL (or immediately if no other request pending).
+
+**Invariants:**
+- `_TRANSIENT_ERRORS` no longer contains `socket.timeout` or `TimeoutError`.
+- `InferenceTimeoutError` is always retryable (no tombstone, no matter how
+  many prior attempts).
+- `keep_alive=0` on VLM calls: model unloads after each artifact (~30 s
+  reload overhead per artifact, eliminated stuck-model accumulation).
+- Full test suite passes.
