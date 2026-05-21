@@ -2,14 +2,16 @@
 
 ## Status
 
-Both phases are fully implemented.
+Three phases fully implemented.
 
 - Phase 1 (shared orchestrator commonplace): done.
 - Phase 2 (hook rewiring to call orchestrator CLI): done.
+- Phase 3 (skill-based enforcement layer): done — `.claude/skills/mnemonicos-bridge/SKILL.md`
+  auto-discovered by CC from project `.claude/skills/` directory (skills-dir mechanism).
 
 The hooks are thin shell wrappers over `mnemonicos orchestrator begin-task` and
 `mnemonicos orchestrator finish-task`. They do not chain raw runtime operations
-directly.
+directly. The skill enforces that the agent actually reads and acts on injected context.
 
 ---
 
@@ -72,22 +74,28 @@ mnemonicos orchestrator finish-task \
 - Stop fires once per user turn (not once at session end). The natural ingestion
   unit is a single user-prompt turn.
 
-**`mnemonic_hook_post_tool.sh`** (PostToolUse, all tools):
+**`mnemonic_hook_post_tool.sh`** (PostToolUse, success only — CC 2.1.143+):
 
-Appends `tool_call` and `tool_result` events to the active episode via
-`capture append-event`. Emits a `failure` event when `is_error` is true.
+Appends `tool_call` and `tool_result` (is_error=false) events to the active
+episode. Does NOT emit failure events — those go to the failure hook.
 
-**`mnemonic_hook_file_artifact.sh`** (PostToolUse, Write/Edit only):
+**`mnemonic_hook_post_tool_failure.sh`** (PostToolUseFailure — CC 2.1.143+):
+
+Appends `tool_call`, `tool_result` (is_error=true), and `failure` events.
+Input fields: `error`, `error_type`, `is_interrupt`, `is_timeout` (no `tool_response`).
+
+**`mnemonic_hook_file_artifact.sh`** (PostToolUse Write/Edit, success only):
 
 Appends `file_changed` or `artifact_created` events to the active episode,
 tracking which files Claude modified during the turn.
 
-**`mark_failure`** (manual, per CLAUDE.md):
+**`mark_failure`** (enforced by skill, per `.claude/skills/mnemonicos-bridge/`):
 
-No mid-session hook exists. Failure re-retrieval is triggered manually by Claude
-per the instructions in `CLAUDE.md`. If a mid-session hook becomes available
-later, `mnemonicos orchestrator mark-failure --bridge-id claude --task-id ...`
-is the correct call.
+No mid-session hook exists. Failure re-retrieval is triggered by the
+`mnemonicos-bridge` skill, which mandates `mnemonic_context.sh` after the
+first meaningful failure. If a mid-session hook becomes available later,
+`mnemonicos orchestrator mark-failure --bridge-id claude --task-id ...` is
+the correct call.
 
 ---
 
@@ -163,6 +171,33 @@ count, subjective quality on known-domain tasks.
 
 ---
 
+## Skill Layer
+
+The hook layer is passive — it injects context but cannot enforce that the agent
+reads or acts on it. The skill layer closes this gap.
+
+**`.claude/skills/mnemonicos-bridge/SKILL.md`** (project scope, in repo):
+
+Auto-discovered by Claude Code from the `.claude/skills/` directory (CC's
+`skills-dir` mechanism). No settings.json registration needed. Shows up in the
+available-skills list that superpowers enforces.
+
+Also installed globally at `~/.claude/skills/mnemonicos-bridge/SKILL.md` for
+activation from any project that carries MnemonicOS context (global CLAUDE.md).
+
+What the skill enforces:
+
+1. **Read** the injected `## Memory Context` block and act on `retrieval_state`
+2. **Run manual retrieval** if the hook missed or state is insufficient
+3. **Re-query** after the first meaningful failure (mandatory, not optional)
+4. **Dedup-aware writeback**: `confirm > update > new`
+
+The superpowers `using-superpowers` skill checks the available-skills list
+before every response. Because `mnemonicos-bridge` is now registered, it fires
+automatically on any non-trivial task — not only when the user explicitly invokes it.
+
+---
+
 ## Hook Registration
 
 Hooks are registered globally in `~/.claude/settings.json`. No per-project
@@ -171,6 +206,9 @@ registration is needed. Claude Desktop uses the same file — no separate config
 Relevant hook scripts:
 
 - `scripts/mnemonic_hook_preflight.sh` (UserPromptSubmit)
+- `scripts/mnemonic_hook_post_tool.sh` (PostToolUse — success only)
+- `scripts/mnemonic_hook_post_tool_failure.sh` (PostToolUseFailure)
+- `scripts/mnemonic_hook_file_artifact.sh` (PostToolUse Write/Edit)
 - `scripts/mnemonic_stop_hook.sh` (Stop)
 - `scripts/mnemonic_precompact_dump.sh` (PreCompact)
 
@@ -204,8 +242,10 @@ scripts/mnemonic_should_retrieve.sh --task "debug the auth deploy failure"
 
 | | Claude Code | Codex |
 |---|---|---|
-| Enforcement | Hard-gate via registered hook | Skill-based (best-effort without wrapper) |
-| Fallback mode | None — hooks always active | Codex app (no adapter) |
-| `mark_failure` | Manual per CLAUDE.md | Explicit adapter call |
+| Passive injection | Hook (UserPromptSubmit) | Hook (preflight script) |
+| Active enforcement | Skill (`.claude/skills/mnemonicos-bridge/`) | Skill (`codex_skills/mnemonicos-bridge/`) |
+| Fallback mode | None — hooks + skill always active | Codex app (no adapter) |
+| `mark_failure` | Skill-enforced manual re-query | Explicit adapter call |
 | Transport | CLI (hooks cannot do Python imports) | Python, CLI, or HTTP |
 | Granularity | Once per user turn | Once per top-level task submission |
+| Tool failure capture | Separate `PostToolUseFailure` hook (CC 2.1.143+) | Not applicable |
