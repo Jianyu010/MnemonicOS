@@ -664,12 +664,21 @@ def _wiki_auto_resolve_review_job(config: AppConfig, *, dry_run: bool = False) -
 
 _STALE_PROCESSING_TIMEOUT_MINUTES = 60
 _STALE_PROCESSING_TOMBSTONE_ATTEMPTS = 3
+# Items in 'pending' state with no error recorded (killed externally without cleanup)
+# are tombstoned after this many attempts to prevent them cycling forever.
+_MAX_PENDING_SILENT_ATTEMPTS = 10
 
 
 def _retry_failed_extractions_job(config: AppConfig, *, dry_run: bool = False) -> JobRunResult:
     connection = connect_db(config.paths.db_path)
     run_migrations(connection, config.paths.workspace_root / "migrations")
-    stats: dict[str, int] = {"retried": 0, "skipped_tombstoned": 0, "stale_processing_reset": 0, "stale_processing_tombstoned": 0}
+    stats: dict[str, int] = {
+        "retried": 0,
+        "skipped_tombstoned": 0,
+        "stale_processing_reset": 0,
+        "stale_processing_tombstoned": 0,
+        "pending_silent_tombstoned": 0,
+    }
     job_id: int | None = None
     try:
         with connection:
@@ -702,6 +711,23 @@ def _retry_failed_extractions_job(config: AppConfig, *, dry_run: bool = False) -
             (f"-{_STALE_PROCESSING_TIMEOUT_MINUTES}",),
         ).fetchall()
 
+        # Items that keep cycling through pending without ever writing an error —
+        # typically because the daemon/subprocess was SIGTERM'd before the parent
+        # thread could call mark_error.  After _MAX_PENDING_SILENT_ATTEMPTS cycles
+        # these items will never self-heal; tombstone them so they stop occupying
+        # a lane on every extraction run.
+        silent_pending_rows = connection.execute(
+            """
+            SELECT id, attempt_count
+            FROM extraction_queue
+            WHERE status = 'pending'
+              AND last_error IS NULL
+              AND attempt_count >= ?
+            ORDER BY attempt_count DESC, id ASC
+            """,
+            (_MAX_PENDING_SILENT_ATTEMPTS,),
+        ).fetchall()
+
         if not dry_run:
             with connection:
                 for row in rows:
@@ -725,6 +751,15 @@ def _retry_failed_extractions_job(config: AppConfig, *, dry_run: bool = False) -
                             (int(row["id"]),),
                         )
                         stats["stale_processing_reset"] += 1
+                for row in silent_pending_rows:
+                    connection.execute(
+                        "UPDATE extraction_queue SET status='error', finished_at=datetime('now'), "
+                        "last_error='tombstoned: pending item exceeded max silent attempts ("
+                        + str(_MAX_PENDING_SILENT_ATTEMPTS) + ") — repeatedly killed without error' "
+                        "WHERE id=?",
+                        (int(row["id"]),),
+                    )
+                    stats["pending_silent_tombstoned"] += 1
         else:
             stats["retried"] = len(rows)
             for row in stale_rows:
@@ -732,6 +767,7 @@ def _retry_failed_extractions_job(config: AppConfig, *, dry_run: bool = False) -
                     stats["stale_processing_tombstoned"] += 1
                 else:
                     stats["stale_processing_reset"] += 1
+            stats["pending_silent_tombstoned"] = len(silent_pending_rows)
 
         with connection:
             _close_job_run(connection, job_id, status="ok", stats=stats)
