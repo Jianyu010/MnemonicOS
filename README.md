@@ -361,6 +361,11 @@ Start here:
 - [Claude bridge system note](brain/system/claude-bridge.md)
 - [Codex bridge system note](brain/system/codex-bridge.md)
 
+Claude Code bridge uses two layers: hooks (passive context injection) and a
+skill (active enforcement). The skill at `.claude/skills/mnemonicos-bridge/`
+is auto-discovered by Claude Code and enforces retrieval discipline on every
+non-trivial task.
+
 Minimum adapter contract:
 
 1. Use a stable `bridge_id`.

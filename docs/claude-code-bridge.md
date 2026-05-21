@@ -120,6 +120,48 @@ Five hooks cover the full turn lifecycle:
 
 ---
 
+## Skill Layer
+
+Hooks inject context **passively** — the agent receives the `## Memory Context`
+block in its prompt but nothing enforces that it reads and acts on it correctly.
+The skill layer closes this gap.
+
+### How it works
+
+Claude Code auto-discovers skills from `.claude/skills/*/SKILL.md` in both the
+project directory and `~/.claude/skills/` globally. This is the `skills-dir`
+mechanism (CC 2.1.143+). No `settings.json` registration is needed.
+
+File: `.claude/skills/mnemonicos-bridge/SKILL.md` (in this repo)
+
+When the `superpowers` plugin's `using-superpowers` skill fires (before every
+response), it checks the available-skills list. Because `mnemonicos-bridge` is
+registered there, it is auto-triggered on any non-trivial task — without the
+user typing a `/skill` command.
+
+### What the skill enforces
+
+| Step | Action |
+|---|---|
+| 1 | Read hook-injected `## Memory Context` and act on `retrieval_state` |
+| 2 | Run `mnemonic_context.sh` manually if hook missed or state insufficient |
+| 3 | Mandatory re-query after first meaningful failure |
+| 4 | Dedup-aware writeback: `confirm > update > new` |
+
+### Installation
+
+The project-level skill at `.claude/skills/mnemonicos-bridge/SKILL.md` activates
+when working inside this repo. For activation from any project (since
+`~/.claude/CLAUDE.md` references MnemonicOS globally), also copy it to the
+global location:
+
+```bash
+mkdir -p ~/.claude/skills/mnemonicos-bridge
+cp .claude/skills/mnemonicos-bridge/SKILL.md ~/.claude/skills/mnemonicos-bridge/
+```
+
+---
+
 ## Step 1 — settings.json Wiring
 
 Add to `~/.claude/settings.json` (global) or `.claude/settings.json` (project):
