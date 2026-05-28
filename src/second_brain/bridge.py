@@ -235,7 +235,13 @@ def _semantic_score(config: AppConfig, connection: sqlite3.Connection, note_id: 
     ).fetchone()
     if row is None:
         return 0.0
-    query_vector = build_embedding_provider(config).embed_texts([query_text])[0]
+    try:
+        query_vector = build_embedding_provider(config).embed_texts([query_text])[0]
+    except Exception:
+        # Embedding provider unavailable (e.g. Ollama down) — degrade gracefully.
+        # Returning 0.0 means no semantic match found; promote as "new" rather than
+        # looping forever in the promotion queue without creating a decisions record.
+        return 0.0
     return cosine_similarity(query_vector, vector_from_json(str(row["vector_json"])))
 
 

@@ -77,8 +77,9 @@ def extraction_status(
     errors_only: bool = False,
     limit: int = 20,
 ) -> dict[str, Any]:
+    # No run_migrations here: status path must stay read-only to avoid blocking the
+    # socket thread on the WAL write lock (see brain/system/debug-ingestion.md B1).
     connection = connect_db(config.paths.db_path)
-    run_migrations(connection, _migrations_dir(config))
     try:
         if queue_id is not None:
             row = connection.execute(

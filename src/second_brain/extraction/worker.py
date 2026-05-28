@@ -10,6 +10,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -192,7 +193,11 @@ def _spawn_item_subprocess(
     (e.g. ``"quick"`` or ``"slow"`` for dual-lane mode).  ``None`` means
     flat/single-lane mode — updates go directly into *progress*.
     """
-    progress_file = Path(tempfile.gettempdir()) / f"mnemo_progress_{item_id}.json"
+    # Use a unique suffix so concurrent or double-spawned processes for the same
+    # item_id each get an isolated file. A shared path causes stall detection
+    # cross-contamination: progress writes from either process reset both timers
+    # (see brain/system/debug-ingestion.md B3).
+    progress_file = Path(tempfile.gettempdir()) / f"mnemo_progress_{item_id}_{uuid.uuid4().hex[:8]}.json"
     try:
         progress_file.unlink()
     except FileNotFoundError:
