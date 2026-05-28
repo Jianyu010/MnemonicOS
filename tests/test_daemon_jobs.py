@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
 import tempfile
@@ -11,13 +12,13 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from second_brain.config import load_config
+from second_brain.config import ExtractionConfig, load_config
 from second_brain.daemon import Daemon
 from second_brain.daemon_jobs import _DEFAULT_SCHEDULES, build_registry
 from second_brain.daemon_status import _render_watch, daemon_status_summary
 from second_brain.db import connect_db, run_migrations
 from second_brain.ingest import ingest_session
-from second_brain.jobs import run_job
+from second_brain.jobs import _STALE_PROCESSING_TIMEOUT_MINUTES, run_job
 
 
 def _write(path: Path, content: str) -> None:
@@ -420,6 +421,198 @@ class DaemonJobsTest(unittest.TestCase):
                 progress_file.unlink()
             except FileNotFoundError:
                 pass
+
+
+class RetryExtractionRaceTest(unittest.TestCase):
+    """Tests for the double-spawn race between retry_failed_extractions and
+    process_extraction_queue.  See brain/system/debug-ingestion.md for full
+    incident writeup."""
+
+    def _prepare_workspace(self, workspace: Path) -> object:
+        _write(workspace / "brain/system/MEMORY.md", "# MEMORY\n")
+        _write(workspace / "brain/system/USER.md", "# USER\n")
+        _write(workspace / "brain/system/ACTIVE.md", "# ACTIVE\n")
+        _write(workspace / "brain/system/AGENTS.md", "bridges: {}\n")
+        config_path = workspace / "config.toml"
+        _write(
+            config_path,
+            f"""
+            [paths]
+            vault_root = "{(workspace / 'brain').as_posix()}"
+            db_path = "{(workspace / 'brain/data/archive.db').as_posix()}"
+            vectors_dir = "{(workspace / 'brain/data/vectors').as_posix()}"
+            graph_dir = "{(workspace / 'brain/data/graph').as_posix()}"
+            eval_queries = "{(workspace / 'evals/queries.jsonl').as_posix()}"
+
+            [embeddings]
+            enabled = false
+
+            [graph]
+            enabled = false
+
+            [ingest]
+            auto_trigger_pipeline = false
+
+            [daemon]
+            socket_path = "{(workspace / 'brain/data/mnemonic.sock').as_posix()}"
+            pid_path = "{(workspace / 'brain/data/mnemonic.pid').as_posix()}"
+            log_path = "{(workspace / 'brain/logs/daemon.log').as_posix()}"
+            max_pending = 999
+            max_oldest_age_minutes = 999
+            """,
+        )
+        config = load_config(config_path, workspace)
+        conn = connect_db(config.paths.db_path)
+        run_migrations(conn, ROOT / "migrations")
+        conn.close()
+        return config
+
+    def _insert_processing_item(
+        self,
+        conn,
+        *,
+        started_minutes_ago: float,
+        attempt_count: int = 1,
+    ) -> int:
+        """Insert an episode item in 'processing' state. Returns the row id."""
+        started_at = datetime.now(timezone.utc) - timedelta(minutes=started_minutes_ago)
+        started_at_str = started_at.strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute(
+            """
+            INSERT INTO extraction_queue(
+                source_kind, conversation_id, episode_id,
+                status, attempt_count,
+                queued_at, started_at,
+                projection_metadata_json, intra_source_relations_json
+            ) VALUES (
+                'episode', 'test-conv-id', 'test-ep-id',
+                'processing', ?,
+                datetime('now'), ?,
+                '{}', '[]'
+            )
+            """,
+            (attempt_count, started_at_str),
+        )
+        conn.commit()
+        return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    # ------------------------------------------------------------------ #
+    # B5 — configuration invariant                                         #
+    # ------------------------------------------------------------------ #
+
+    def test_stale_timeout_exceeds_max_extraction_item_seconds(self) -> None:
+        """_STALE_PROCESSING_TIMEOUT_MINUTES must be strictly greater than
+        max_extraction_item_seconds / 60.
+
+        If stale_timeout <= max_extraction_seconds, retry_failed_extractions
+        will reset items that are still legitimately running, causing the
+        double-spawn race (see brain/system/debug-ingestion.md B5).
+        """
+        max_minutes = ExtractionConfig().max_extraction_item_seconds / 60
+        self.assertGreater(
+            _STALE_PROCESSING_TIMEOUT_MINUTES,
+            max_minutes,
+            msg=(
+                f"_STALE_PROCESSING_TIMEOUT_MINUTES ({_STALE_PROCESSING_TIMEOUT_MINUTES}m) "
+                f"<= max_extraction_item_seconds ({max_minutes}m): "
+                "retry_failed_extractions can reset active subprocesses mid-run, "
+                "causing a double-spawn (see brain/system/debug-ingestion.md B5)."
+            ),
+        )
+
+    # ------------------------------------------------------------------ #
+    # B5 — retry_failed_extractions stale-reset behaviour                  #
+    # ------------------------------------------------------------------ #
+
+    def test_retry_does_not_reset_item_within_extraction_window(self) -> None:
+        """An item in 'processing' for less than the stale timeout must NOT
+        be reset.  Resetting it while the subprocess is alive causes the
+        double-spawn race."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = self._prepare_workspace(Path(tmp_dir))
+            conn = connect_db(config.paths.db_path)
+
+            # started 30 min ago — well within the stale window
+            item_id = self._insert_processing_item(conn, started_minutes_ago=30)
+            conn.close()
+
+            run_job(config, job_name="retry_failed_extractions", dry_run=False)
+
+            conn = connect_db(config.paths.db_path)
+            row = conn.execute(
+                "SELECT status FROM extraction_queue WHERE id = ?", (item_id,)
+            ).fetchone()
+            conn.close()
+            self.assertEqual(
+                row["status"],
+                "processing",
+                "Item started 30 min ago must stay 'processing' — it is within the "
+                "extraction window and its subprocess may still be running.",
+            )
+
+    def test_retry_resets_genuinely_stale_processing_item(self) -> None:
+        """An item in 'processing' for longer than the stale timeout (and with
+        attempt_count below the tombstone threshold) must be reset to 'pending'
+        so the next extraction job can pick it up."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = self._prepare_workspace(Path(tmp_dir))
+            conn = connect_db(config.paths.db_path)
+
+            # started well past the stale threshold, low attempt_count → reset not tombstone
+            stale_minutes = _STALE_PROCESSING_TIMEOUT_MINUTES + 30
+            item_id = self._insert_processing_item(
+                conn, started_minutes_ago=stale_minutes, attempt_count=1
+            )
+            conn.close()
+
+            run_job(config, job_name="retry_failed_extractions", dry_run=False)
+
+            conn = connect_db(config.paths.db_path)
+            row = conn.execute(
+                "SELECT status FROM extraction_queue WHERE id = ?", (item_id,)
+            ).fetchone()
+            conn.close()
+            self.assertIn(
+                row["status"],
+                ("pending", "error"),
+                "Genuinely stale processing item must be reset to 'pending' or "
+                "tombstoned — it should never stay 'processing' after retry runs.",
+            )
+
+    def test_retry_does_not_reset_item_at_exact_max_extraction_boundary(self) -> None:
+        """An item that has been processing for exactly max_extraction_item_seconds
+        (the absolute kill threshold) must not be reset before it would be killed
+        by the extraction worker itself.
+
+        This is the core of the double-spawn race: if stale_timeout <=
+        max_extraction_seconds, the retry job wins the race and re-queues the item
+        while the subprocess is still alive.
+        """
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = self._prepare_workspace(Path(tmp_dir))
+            conn = connect_db(config.paths.db_path)
+
+            # started exactly at the max extraction time boundary
+            max_minutes = config.extraction.max_extraction_item_seconds / 60
+            item_id = self._insert_processing_item(
+                conn, started_minutes_ago=max_minutes, attempt_count=1
+            )
+            conn.close()
+
+            run_job(config, job_name="retry_failed_extractions", dry_run=False)
+
+            conn = connect_db(config.paths.db_path)
+            row = conn.execute(
+                "SELECT status FROM extraction_queue WHERE id = ?", (item_id,)
+            ).fetchone()
+            conn.close()
+            self.assertEqual(
+                row["status"],
+                "processing",
+                "Item at the max-extraction-time boundary must still be 'processing': "
+                "the subprocess is legitimately alive up to this point and resetting "
+                "it would cause a double-spawn.",
+            )
 
 
 if __name__ == "__main__":

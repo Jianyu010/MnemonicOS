@@ -325,6 +325,61 @@ class Daemon:
         except (FileNotFoundError, OSError):
             pass
 
+    def _startup_migrate(self) -> None:
+        """Run DB migrations once at startup before any threads start.
+
+        All status-path functions (collect_status_snapshot, promotion_status,
+        extraction_status) skip run_migrations to stay read-only and avoid
+        blocking the socket thread on the WAL write lock. This call ensures
+        the schema is current before those reads happen.
+        See brain/system/debug-ingestion.md B1.
+        """
+        try:
+            from .db import connect_db, run_migrations
+            conn = connect_db(self.config.paths.db_path)
+            try:
+                run_migrations(conn, self.config.paths.workspace_root / "migrations")
+                self.logger.info("startup migrations complete")
+            finally:
+                conn.close()
+        except Exception as exc:
+            self.logger.warning("startup migrations failed: %s", exc)
+
+    def _reset_stale_processing_items(self) -> None:
+        """At startup, reset items stuck in 'processing' back to 'pending'.
+
+        Items stay in 'processing' if the daemon was killed (SIGKILL, OOM, crash)
+        before _mark_processing_items_as_error ran. They are invisible to
+        pending_quick_items / pending_slow_items (which filter status='pending')
+        and would stall the queue indefinitely.
+        See brain/system/debug-ingestion.md B4.
+        """
+        try:
+            from .db import connect_db
+            conn = connect_db(self.config.paths.db_path)
+            try:
+                with conn:
+                    count = conn.execute(
+                        "SELECT COUNT(*) FROM extraction_queue WHERE status = 'processing'"
+                    ).fetchone()[0]
+                    if count:
+                        conn.execute(
+                            """
+                            UPDATE extraction_queue
+                            SET status = 'pending',
+                                finished_at = NULL,
+                                last_error = NULL
+                            WHERE status = 'processing'
+                            """
+                        )
+                        self.logger.info(
+                            "reset %d stale processing items to pending on startup", count
+                        )
+            finally:
+                conn.close()
+        except Exception as exc:
+            self.logger.warning("failed to reset stale processing items on startup: %s", exc)
+
     def _mark_processing_items_as_error(self) -> None:
         """On shutdown, mark any items still 'processing' as error.
 
@@ -385,6 +440,8 @@ class Daemon:
         if threading.current_thread() is threading.main_thread():
             self._install_signal_handlers()
         self.logger.info("mnemonicos daemon starting")
+        self._startup_migrate()
+        self._reset_stale_processing_items()
         self._start_managed_ollama()
         try:
             self.scheduler_thread.start()

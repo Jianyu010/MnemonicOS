@@ -115,8 +115,9 @@ def collect_storage_stats(config: AppConfig) -> dict[str, Any]:
 
 def promotion_status(config: AppConfig) -> dict[str, Any]:
     """Return promotion queue health counts from promotion_decisions + extraction_candidates."""
+    # No run_migrations here: status path must stay read-only to avoid blocking the
+    # socket thread on the WAL write lock (see brain/system/debug-ingestion.md B1).
     connection = connect_db(config.paths.db_path)
-    run_migrations(connection, config.paths.workspace_root / "migrations")
     try:
         promotion_ready = int(
             (connection.execute(
@@ -146,18 +147,21 @@ def promotion_status(config: AppConfig) -> dict[str, Any]:
 
 
 def collect_status_snapshot(config: AppConfig) -> dict[str, Any]:
+    # No run_migrations here: status path must stay read-only to avoid blocking the
+    # socket thread on the WAL write lock (see brain/system/debug-ingestion.md B1).
     connection = connect_db(config.paths.db_path)
-    run_migrations(connection, config.paths.workspace_root / "migrations")
-    last_runs = connection.execute(
-        """
-        SELECT job_name, status, finished_at
-        FROM job_runs
-        WHERE finished_at IS NOT NULL
-        ORDER BY id DESC
-        LIMIT 10
-        """
-    ).fetchall()
-    connection.close()
+    try:
+        last_runs = connection.execute(
+            """
+            SELECT job_name, status, finished_at
+            FROM job_runs
+            WHERE finished_at IS NOT NULL
+            ORDER BY id DESC
+            LIMIT 10
+            """
+        ).fetchall()
+    finally:
+        connection.close()
     snapshot = {
         "queue": collect_queue_stats(config),
         "promotion": promotion_status(config),
@@ -662,7 +666,13 @@ def _wiki_auto_resolve_review_job(config: AppConfig, *, dry_run: bool = False) -
         raise
 
 
-_STALE_PROCESSING_TIMEOUT_MINUTES = 60
+# Floor for the stale-processing timeout (minutes). The effective threshold used
+# at runtime is max(this, max_extraction_item_seconds/60 + 30) so it adapts to
+# config changes automatically. This constant must stay > the default
+# max_extraction_item_seconds (7200 s = 120 min) to prevent retry_failed_extractions
+# from resetting items that are still within their legitimate extraction window —
+# which would cause a double-spawn race (see brain/system/debug-ingestion.md B5).
+_STALE_PROCESSING_TIMEOUT_MINUTES = 150
 _STALE_PROCESSING_TOMBSTONE_ATTEMPTS = 3
 # Items in 'pending' state with no error recorded (killed externally without cleanup)
 # are tombstoned after this many attempts to prevent them cycling forever.
@@ -700,6 +710,12 @@ def _retry_failed_extractions_job(config: AppConfig, *, dry_run: bool = False) -
         stats["skipped_tombstoned"] = tombstoned_count
 
         # Recover items stuck in 'processing' — worker died without calling mark_error.
+        # Threshold must exceed max_extraction_item_seconds so we never reset an item
+        # whose subprocess is still alive (see brain/system/debug-ingestion.md B5).
+        effective_stale_minutes = max(
+            _STALE_PROCESSING_TIMEOUT_MINUTES,
+            config.extraction.max_extraction_item_seconds // 60 + 30,
+        )
         stale_rows = connection.execute(
             """
             SELECT id, attempt_count
@@ -708,7 +724,7 @@ def _retry_failed_extractions_job(config: AppConfig, *, dry_run: bool = False) -
               AND started_at < datetime('now', ? || ' minutes')
             ORDER BY started_at ASC
             """,
-            (f"-{_STALE_PROCESSING_TIMEOUT_MINUTES}",),
+            (f"-{effective_stale_minutes}",),
         ).fetchall()
 
         # Items that keep cycling through pending without ever writing an error —
