@@ -83,17 +83,22 @@ def build_library_layout(snapshot: WorldSnapshot) -> SceneLayout:
             )
         )
         if section.entries:
-            pile_x = x + 18
-            pile_y = y + shelf_height - 82
+            # Span the full shelf inner area so draw_scroll_pile can fill
+            # all three board levels (matches draw_bookshelf geometry:
+            # side_w=12, top_depth=10+4=14, bottom_margin=14).
+            inner_x = x + 12
+            inner_y = y + 14
+            inner_w = shelf_width - 24
+            inner_h = shelf_height - 28
             objects.append(
                 LayoutObject(
                     object_id=f"entry-pile:{section.key}",
                     label=section.label,
                     kind="entry-pile",
-                    x=pile_x,
-                    y=pile_y,
-                    width=shelf_width - 36,
-                    height=64,
+                    x=inner_x,
+                    y=inner_y,
+                    width=inner_w,
+                    height=inner_h,
                     scene_name="library",
                     section_key=section.key,
                 )
@@ -104,8 +109,8 @@ def build_library_layout(snapshot: WorldSnapshot) -> SceneLayout:
                         object_id=f"marker:{section.key}",
                         label="Links",
                         kind="marker",
-                        x=pile_x + 62,
-                        y=pile_y - 10,
+                        x=inner_x + inner_w - 18,
+                        y=inner_y - 10,
                         width=12,
                         height=12,
                         scene_name="library",

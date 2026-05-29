@@ -951,43 +951,50 @@ def draw_risk_halo(surface, rect, entries, colors, pygame) -> None:
 # ── Scroll pile ───────────────────────────────────────────────────────────────
 
 def draw_scroll_pile(surface, rect, entries, runtime, pygame) -> None:
+    """Fill shelf board levels with scrolls.
+
+    rect spans the full shelf inner area (set by tilemap entry-pile object).
+    Board y offsets (from rect.y) mirror draw_bookshelf: 26, 56, 86.
+    Scrolls sit on top of each board (scroll bottom = board_y).
+    Levels filled bottom-first; each row is centred horizontally.
+    """
     total = len(entries)
     if total <= 0:
         return
-    pile_bases = decompose_capped_triangular_piles(total, max_base=3)
-    index = 0
+
     scroll_w = 14
     scroll_h = 20
     col_step = 11
-    row_step = 6
-    pile_gap  = 16
-    pile_widths = [(base - 1) * col_step + scroll_w for base in pile_bases]
-    total_width = sum(pile_widths) + pile_gap * max(0, len(pile_widths) - 1)
-    pile_x  = rect.x + max(0, (rect.width - total_width) // 2)
-    shelf_y = rect.bottom - 8
-    for pile_index, base in enumerate(pile_bases):
-        this_width = pile_widths[pile_index]
-        pile_origin_x = pile_x
-        for row_index, row_count in enumerate(range(base, 0, -1)):
-            row_width = (row_count - 1) * col_step + scroll_w
-            row_x = pile_origin_x + max(0, (this_width - row_width) // 2)
-            y = shelf_y - scroll_h - row_index * row_step
-            for col in range(row_count):
-                entry = entries[index]
-                fill    = entry_color(entry)
-                outline = lifecycle_color(entry.lifecycle_state)
-                slot_rect = pygame.Rect(row_x + col * col_step, y, scroll_w, scroll_h)
-                sprite = None
-                if runtime.assets is not None and getattr(runtime.assets, "scroll_sprites", None):
-                    sprite = runtime.assets.scroll_sprites.get(str(entry.lifecycle_state))
-                draw_scroll(
-                    surface, slot_rect, fill, outline, entry.lifecycle_state, pygame,
-                    sprite=sprite,
-                    is_fresh=scroll_is_fresh(entry),
-                    anim_frame=runtime.anim_frame + index,
-                )
-                index += 1
-        pile_x += this_width + pile_gap
+
+    # Board y-offsets match draw_bookshelf shelf_levels relative to inner rect.
+    board_offsets = [86, 56, 26]   # bottom → top
+    max_per_row = max(1, min(18, (rect.width - scroll_w) // col_step + 1))
+
+    index = 0
+    for board_y_offset in board_offsets:
+        if index >= total:
+            break
+        board_y   = rect.y + board_y_offset
+        row_slice = entries[index : index + max_per_row]
+        row_count = len(row_slice)
+        row_width = (row_count - 1) * col_step + scroll_w
+        row_x     = rect.x + max(0, (rect.width - row_width) // 2)
+        scroll_y  = board_y - scroll_h
+
+        for col, entry in enumerate(row_slice):
+            fill    = entry_color(entry)
+            outline = lifecycle_color(entry.lifecycle_state)
+            slot_rect = pygame.Rect(row_x + col * col_step, scroll_y, scroll_w, scroll_h)
+            sprite = None
+            if runtime.assets is not None and getattr(runtime.assets, "scroll_sprites", None):
+                sprite = runtime.assets.scroll_sprites.get(str(entry.lifecycle_state))
+            draw_scroll(
+                surface, slot_rect, fill, outline, entry.lifecycle_state, pygame,
+                sprite=sprite,
+                is_fresh=scroll_is_fresh(entry),
+                anim_frame=runtime.anim_frame + index + col,
+            )
+        index += max_per_row
 
 
 def decompose_capped_triangular_piles(total: int, *, max_base: int) -> list[int]:
