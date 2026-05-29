@@ -30,6 +30,7 @@ from .queue import (
     pending_quick_items,
     pending_slow_items,
     queue_row_to_source_ref,
+    requeue_orphaned_processing,
     source_ref_id,
     update_window_checkpoint,
 )
@@ -40,12 +41,25 @@ _log = logging.getLogger(__name__)
 
 
 def _terminate_process_group(proc: subprocess.Popen, *, grace_seconds: float = 2.0) -> None:
+    """SIGTERM then SIGKILL the subprocess's process group, and reap it.
+
+    Reaping uses ``proc.wait()`` rather than ``proc.communicate()``: the caller
+    (``_LaneHandle.join``) runs a separate thread that drains ``proc.stderr``, and
+    two threads reading the same pipe corrupts ``communicate()`` — it could raise
+    a non-``TimeoutExpired`` error, skip the SIGKILL escalation, and leave a live
+    orphan subprocess that a later tick then re-dispatches (double-spawn, see
+    brain/system/debug-ingestion.md B3/B5). ``wait()`` only reaps; it never
+    touches the pipes, so it cannot race the drain thread.
+
+    The process is a session/group leader (``start_new_session=True``), so its
+    pgid equals its pid and ``os.killpg(proc.pid, ...)`` targets the whole group.
+    """
     try:
         os.killpg(proc.pid, signal.SIGTERM)
     except ProcessLookupError:
         return
     try:
-        proc.communicate(timeout=grace_seconds)
+        proc.wait(timeout=grace_seconds)
         return
     except subprocess.TimeoutExpired:
         pass
@@ -53,7 +67,10 @@ def _terminate_process_group(proc: subprocess.Popen, *, grace_seconds: float = 2
         os.killpg(proc.pid, signal.SIGKILL)
     except ProcessLookupError:
         return
-    proc.communicate()
+    try:
+        proc.wait(timeout=grace_seconds)
+    except subprocess.TimeoutExpired:
+        _log.error("subprocess pid=%s survived SIGKILL — possible orphan", proc.pid)
 
 
 @dataclass
@@ -82,11 +99,15 @@ class _LaneHandle:
 
         def _drain_stderr() -> None:
             if self.proc.stderr is not None:
-                while True:
-                    chunk = self.proc.stderr.read(4096)
-                    if not chunk:
-                        break
-                    stderr_chunks.append(chunk)
+                try:
+                    while True:
+                        chunk = self.proc.stderr.read(4096)
+                        if not chunk:
+                            break
+                        stderr_chunks.append(chunk)
+                except (ValueError, OSError):
+                    # Pipe closed underneath us during teardown — expected.
+                    pass
 
         drain_thread = threading.Thread(target=_drain_stderr, daemon=True)
         drain_thread.start()
@@ -144,8 +165,25 @@ class _LaneHandle:
             self.stop_poll.set()
             if self.poll_thread is not None:
                 self.poll_thread.join(timeout=2.0)
+            # Safety net: never return while the subprocess is still alive. If the
+            # monitoring loop above raised (or any non-timeout exit path is taken),
+            # the normal kill branches are skipped; without this an orphaned live
+            # subprocess is left behind, the job lock is released, and a later tick
+            # re-dispatches the same item — spawning a second subprocess and bumping
+            # attempt_count (double-spawn, see brain/system/debug-ingestion.md B3/B5).
+            if self.proc.poll() is None:
+                _terminate_process_group(self.proc)
+            drain_thread.join(timeout=2.0)
             if self.process_registry is not None:
                 self.process_registry.unregister(self.proc)
+            # Close the pipes we opened so the FDs are not leaked (see B2). Safe now
+            # that the process is reaped and the drain thread has joined.
+            for stream in (self.proc.stdout, self.proc.stderr):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except OSError:
+                        pass
             try:
                 self.progress_file.unlink()
             except FileNotFoundError:
@@ -272,6 +310,16 @@ def process_extraction_queue(
 ) -> ExtractionProcessResult:
     connection = connect_db(config.paths.db_path)
     run_migrations(connection, _migrations_dir(config))
+    if not dry_run:
+        # Reap items wedged in 'processing' by a parent that died (e.g. daemon
+        # restart) so they can be retried instead of blocking the queue forever.
+        with connection:
+            reaped = requeue_orphaned_processing(
+                connection,
+                older_than_seconds=config.extraction.max_extraction_item_seconds,
+            )
+        if reaped:
+            _log.warning("requeued %d orphaned 'processing' extraction item(s)", reaped)
     stats = ExtractionProcessResult(
         processed=0,
         skipped=0,
@@ -346,7 +394,12 @@ def _process_single_lane(
             continue
 
         with connection:
-            mark_processing(connection, item.id)
+            claimed = mark_processing(connection, item.id)
+        if not claimed:
+            # Row was no longer 'pending' — already claimed elsewhere or a stale
+            # orphan is still in flight. Skip to avoid a second live subprocess.
+            _log.debug("extraction item %s no longer pending at claim; skipping", item.id)
+            continue
 
         timed_out = _run_item_subprocess(
             config_path=config_path,
@@ -421,7 +474,13 @@ def _process_dual_lane(
         try:
             for idx, item in enumerate(candidates):
                 with conn:
-                    mark_processing(conn, item.id)
+                    claimed = mark_processing(conn, item.id)
+                if not claimed:
+                    # Row was no longer 'pending' — already claimed elsewhere or a
+                    # stale orphan is still in flight. Skip to avoid a second live
+                    # subprocess for the same item.
+                    _log.debug("extraction item %s no longer pending at claim; skipping", item.id)
+                    continue
                 handle = _spawn_item_subprocess(
                     config_path=config_path,
                     item_id=item.id,

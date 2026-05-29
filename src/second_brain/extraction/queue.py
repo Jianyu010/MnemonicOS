@@ -233,8 +233,18 @@ def pending_slow_items(connection: sqlite3.Connection, *, limit: int) -> list[Ex
     return [_row_to_item(row) for row in rows]
 
 
-def mark_processing(connection: sqlite3.Connection, queue_id: int) -> None:
-    connection.execute(
+def mark_processing(connection: sqlite3.Connection, queue_id: int) -> bool:
+    """Atomically claim a pending queue item for processing.
+
+    Returns True iff this call transitioned the row from 'pending' to
+    'processing'. A False return means the row was no longer 'pending' (already
+    claimed by a concurrent run, or a stale orphan still mid-flight) — the caller
+    MUST NOT spawn a subprocess for it. The ``WHERE status = 'pending'`` guard +
+    rowcount check is what guarantees at-most-one in-flight subprocess per item,
+    replacing the previous unconditional UPDATE that allowed double-dispatch
+    (see brain/system/debug-ingestion.md B3/B5).
+    """
+    cursor = connection.execute(
         """
         UPDATE extraction_queue
         SET status = 'processing',
@@ -242,10 +252,41 @@ def mark_processing(connection: sqlite3.Connection, queue_id: int) -> None:
             started_at = datetime('now'),
             finished_at = NULL,
             last_error = NULL
-        WHERE id = ?
+        WHERE id = ? AND status = 'pending'
         """,
         (queue_id,),
     )
+    return cursor.rowcount == 1
+
+
+def requeue_orphaned_processing(
+    connection: sqlite3.Connection, *, older_than_seconds: int
+) -> int:
+    """Reset extraction_queue rows wedged in 'processing' back to 'pending'.
+
+    An item is marked 'processing' by the parent thread just before it spawns the
+    extraction subprocess; the parent then watches it (kill on stall/timeout). If the
+    daemon restarts while an item is in flight, the watching parent dies and the row is
+    left 'processing' forever — no other path resets it (retry_failed_extractions only
+    requeues 'error'). This reaper requeues any 'processing' row whose started_at is
+    older than the per-item time budget, so a fresh daemon can retry it.
+
+    Returns the number of rows reset.
+    """
+    cursor = connection.execute(
+        """
+        UPDATE extraction_queue
+        SET status = 'pending',
+            started_at = NULL
+        WHERE status = 'processing'
+          AND (
+              started_at IS NULL
+              OR started_at <= datetime('now', ?)
+          )
+        """,
+        (f"-{int(older_than_seconds)} seconds",),
+    )
+    return cursor.rowcount
 
 
 CURRENT_SCHEMA_VERSION = "1.1"
