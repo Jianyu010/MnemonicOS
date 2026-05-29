@@ -1,6 +1,6 @@
 # Ingestion Debug Record
 
-Last updated: 2026-05-23
+Last updated: 2026-05-29
 
 ---
 
@@ -108,3 +108,52 @@ UPDATE extraction_queue SET status='pending', finished_at=NULL, last_error=NULL
 WHERE status='processing'
 ```
 Preserves `attempt_count` so tombstone logic still works on repeated failures.
+
+---
+
+## B6 — Double-spawn ROOT CAUSE: unreaped subprocess + non-atomic claim
+
+**Status**: Resolves the "root cause TBD" flagged in B3 and B5.
+
+**Symptom**
+Two `second_brain.extraction._subprocess_entry --item-id N` procs (both PPID=daemon,
+one old + one fresh) for the same item, row `status='processing' attempt_count=2`,
+single daemon. Wasted Ollama calls → VRAM contention.
+
+**Cause (two compounding defects)**
+1. `_LaneHandle.join()`'s `finally` cleaned up registry/progress/poll-thread but
+   **never killed the subprocess**. Any exception in the watch loop → finally runs,
+   proc left alive, lane thread dies, `_process_dual_lane`'s `t.join()` returns,
+   `process_extraction_queue` returns, **job lock released with a live orphan**.
+2. `_terminate_process_group` called `proc.communicate()` while `join()`'s
+   `drain_thread` concurrently read the same `proc.stderr` pipe. Two threads on one
+   pipe → `communicate()` can raise a non-`TimeoutExpired` error → **SIGKILL
+   escalation skipped** → kill silently fails → feeds defect 1.
+3. `mark_processing` was an unconditional `UPDATE ... WHERE id=?` (no `status`
+   guard, no rowcount check). Once the orphan row was requeued→pending (by
+   `requeue_orphaned_processing` after `max_extraction_item_seconds`, or
+   `retry_failed_extractions` stale-reset), the next tick re-marked it
+   (attempt_count→2) and **spawned subprocess #2 while #1 still ran**.
+
+Within one daemon the per-job `threading.Lock` prevents *concurrent*
+`process_extraction_queue` runs — so the double-spawn required run #1 to return
+while its subprocess stayed alive (defects 1+2), then a later run #3 to re-claim
+the requeued row (defect 3). Not a concurrency-of-runs bug; a reaping bug.
+
+**Patch** (`extraction/queue.py`, `extraction/worker.py`)
+- `mark_processing` → atomic claim: `UPDATE ... WHERE id=? AND status='pending'`,
+  returns `cursor.rowcount == 1`. Both callsites skip the item (no spawn) on False.
+- `_terminate_process_group` reaps with `proc.wait()`, never `communicate()`
+  (wait() doesn't touch the pipes, so it can't race the drain thread); logs if a
+  proc survives SIGKILL.
+- `_LaneHandle.join()` `finally` is now a **guaranteed-reap safety net**: if
+  `proc.poll() is None` it calls `_terminate_process_group`, then joins the drain
+  thread and closes the pipes (FD hygiene, see B2). drain loop swallows
+  ValueError/OSError from pipes closed underneath it.
+
+**Regression tests** (`tests/test_extraction_layer.py`)
+- `test_mark_processing_is_atomic_claim` — 2nd claim returns False, no attempt bump.
+- `test_lane_handle_join_reaps_when_watch_loop_raises` — exception in watch loop
+  still reaps the subprocess.
+- `test_lane_handle_timeout_reaps_despite_stderr_flood` — child ignores SIGTERM
+  and floods stderr (forces SIGKILL path under concurrent drain); still reaped.

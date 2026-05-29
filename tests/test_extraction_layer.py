@@ -617,6 +617,7 @@ class ExtractionLayerTest(unittest.TestCase):
         class SlowProc:
             pid = 424242
             returncode = None
+            stdout = None
             stderr = None
 
             def __init__(self) -> None:
@@ -625,12 +626,12 @@ class ExtractionLayerTest(unittest.TestCase):
             def poll(self):
                 return self.returncode
 
-            def communicate(self, timeout=None):
+            def wait(self, timeout=None):
                 self.calls += 1
                 if self.calls == 1:
                     raise subprocess.TimeoutExpired(cmd="slow", timeout=timeout)
                 self.returncode = -signal.SIGKILL
-                return (b"", b"")
+                return self.returncode
 
         progress_file = Path(tempfile.gettempdir()) / "mnemo_test_lane_handle_escalate.json"
         proc = SlowProc()
@@ -655,6 +656,152 @@ class ExtractionLayerTest(unittest.TestCase):
                 mock.call(proc.pid, signal.SIGKILL),
             ],
         )
+
+    def test_mark_processing_is_atomic_claim(self) -> None:
+        """mark_processing must only transition pending->processing once.
+
+        Regression for double-spawn (debug-ingestion B3/B5): the second claim on
+        a row that is already 'processing' must return False and must NOT bump
+        attempt_count, so a later tick cannot re-dispatch a live item.
+        """
+        from second_brain.extraction.queue import mark_processing
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            config = _config(workspace)
+            connection = connect_db(config.paths.db_path)
+            try:
+                with connection:
+                    connection.execute(
+                        "INSERT INTO extraction_queue(id, source_kind, archive_id, status, queued_at) "
+                        "VALUES (1, 'artifact', 'artifact/a', 'pending', '2026-05-20 08:00:00')"
+                    )
+
+                with connection:
+                    first = mark_processing(connection, 1)
+                with connection:
+                    second = mark_processing(connection, 1)
+
+                self.assertTrue(first)
+                self.assertFalse(second)
+                attempt = connection.execute(
+                    "SELECT attempt_count FROM extraction_queue WHERE id = 1"
+                ).fetchone()[0]
+                self.assertEqual(attempt, 1)
+
+                # Once requeued to pending it can be claimed again (resume path).
+                with connection:
+                    connection.execute(
+                        "UPDATE extraction_queue SET status='pending' WHERE id=1"
+                    )
+                with connection:
+                    third = mark_processing(connection, 1)
+                self.assertTrue(third)
+                attempt = connection.execute(
+                    "SELECT attempt_count FROM extraction_queue WHERE id = 1"
+                ).fetchone()[0]
+                self.assertEqual(attempt, 2)
+            finally:
+                connection.close()
+
+    def test_lane_handle_join_reaps_when_watch_loop_raises(self) -> None:
+        """join() must never return while the subprocess is alive.
+
+        Regression for double-spawn: if the monitoring loop raises, the finally
+        block must still kill+reap the subprocess. Otherwise a live orphan is
+        left behind, the job lock is released, and a later tick re-dispatches the
+        same item (second subprocess, attempt_count bumped).
+        """
+        import subprocess
+        import threading
+        import time
+        from second_brain.extraction import worker
+        from second_brain.extraction.worker import _LaneHandle
+
+        progress_file = Path(tempfile.gettempdir()) / "mnemo_test_lane_handle_raise.json"
+        try:
+            progress_file.unlink()
+        except FileNotFoundError:
+            pass
+
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        handle = _LaneHandle(
+            proc=proc,
+            poll_thread=None,
+            stop_poll=threading.Event(),
+            progress_file=progress_file,
+            timeout_seconds=30,
+            stall_timeout_seconds=30,
+            process_registry=None,
+        )
+
+        with mock.patch.object(worker.time, "sleep", side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                handle.join()
+
+        deadline = time.monotonic() + 3.0
+        while proc.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertIsNotNone(proc.poll())
+
+    def test_lane_handle_timeout_reaps_despite_stderr_flood(self) -> None:
+        """Timeout kill must reap even when stderr is flooded and SIGTERM ignored.
+
+        Regression for the pipe-race reaping bug: the old _terminate_process_group
+        called proc.communicate() while join()'s drain thread read the same stderr
+        pipe. With a child that ignores SIGTERM (forcing the SIGKILL escalation)
+        and floods stderr, the concurrent read could make communicate() raise and
+        skip SIGKILL, orphaning the subprocess. Reaping must still succeed.
+        """
+        import os
+        import signal
+        import subprocess
+        import threading
+        import time
+        from second_brain.extraction.worker import _LaneHandle
+
+        progress_file = Path(tempfile.gettempdir()) / "mnemo_test_lane_handle_flood.json"
+        try:
+            progress_file.unlink()
+        except FileNotFoundError:
+            pass
+
+        child = (
+            "import signal,sys,time\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "sys.stderr.write('x'*200000)\n"
+            "sys.stderr.flush()\n"
+            "time.sleep(60)\n"
+        )
+        proc = subprocess.Popen(
+            [sys.executable, "-c", child],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        handle = _LaneHandle(
+            proc=proc,
+            poll_thread=None,
+            stop_poll=threading.Event(),
+            progress_file=progress_file,
+            timeout_seconds=1,
+            stall_timeout_seconds=30,
+            process_registry=None,
+        )
+
+        timed_out = handle.join()
+
+        self.assertTrue(timed_out)
+        deadline = time.monotonic() + 5.0
+        while proc.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertIsNotNone(proc.poll())
+        with self.assertRaises(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGTERM)
 
     def test_file_progress_flushes_item_assignment(self) -> None:
         from second_brain.extraction._subprocess_entry import _FileProgress

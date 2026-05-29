@@ -10,6 +10,7 @@ from second_brain.config import default_config_path, load_config
 from second_brain.review import slugify
 
 from .assets import load_assets
+from .assets.loader import SKIN_CLOAK_PRESETS, SKIN_TUNIC_PRESETS
 from .data.loader import BrainLoader
 from .data.models import GameBook, GameEntry, WorldSnapshot
 from .data.watcher import WorldWatcher
@@ -130,6 +131,7 @@ def run_game(settings: GameSettings, snapshot: WorldSnapshot) -> int:
                     handle_mouse_down(runtime, event.pos, pygame)
             update_overlay_hold(runtime, dt, pygame)
             update_overlay_slide(runtime, dt)
+            update_portal_flash(runtime, dt)
             maybe_reload_world(runtime)
             maybe_refresh_daemon_socket(runtime)
             maybe_refresh_live_overlay(runtime)
@@ -183,6 +185,9 @@ def build_ui_fonts(settings: GameSettings, pygame):
 
 
 def handle_keydown(runtime: GameRuntime, key: int, pygame, sound_manager: SoundManager | None = None, text: str = "") -> None:
+    if runtime.overlay.mode == "skin-picker":
+        handle_skin_picker_keys(runtime, key, pygame, sound_manager)
+        return
     if runtime.overlay.mode == "onboarding":
         dismiss_onboarding(runtime)
         if sound_manager is not None:
@@ -369,6 +374,9 @@ def handle_keydown(runtime: GameRuntime, key: int, pygame, sound_manager: SoundM
             if sound_manager is not None:
                 sound_manager.play("menu_confirm")
         return
+    if key == pygame.K_p and runtime.overlay.mode == "none":
+        open_skin_picker(runtime)
+        return
     if key == pygame.K_SPACE:
         interact(runtime, sound_manager)
     elif key == pygame.K_b and runtime.overlay.mode == "none" and runtime.nearest_object_id == "daemon:counter" and (runtime.carried_entry_id or runtime.carried_session_slug):
@@ -546,6 +554,7 @@ def interact(runtime: GameRuntime, sound_manager: SoundManager | None = None) ->
         return
     if obj.kind == "stairs":
         switch_scene(runtime, obj.target_scene or runtime.current_scene)
+        runtime.portal_flash = 1.0
         if obj.target_anchor_id:
             anchor = find_anchor(runtime, obj.target_anchor_id)
             if anchor is not None:
@@ -616,6 +625,7 @@ def find_anchor(runtime: GameRuntime, anchor_id: str):
 
 
 def jump_to_session(runtime: GameRuntime, book: GameBook, *, open_overlay: bool = False) -> None:
+    runtime.portal_flash = 1.0
     runtime.current_scene = "vault"
     scene = runtime.scenes["vault"]
     target = next((obj for obj in scene.objects if obj.session_slug == book.session_slug), None)
@@ -744,6 +754,9 @@ def draw_overlay(surface, runtime: GameRuntime, small_font, tiny_font, pygame) -
     title = small_font.render(runtime.overlay.title, True, (45, 35, 30))
     surface.blit(title, (panel.x + 24, panel.y + 20))
 
+    if runtime.overlay.mode == "skin-picker":
+        draw_skin_picker_overlay(surface, runtime, panel, small_font, tiny_font, pygame)
+        return
     if runtime.overlay.mode == "daemon":
         for index, item in enumerate(DAEMON_MENU):
             color = (30, 20, 18) if index == runtime.overlay.menu_index else (90, 80, 70)
@@ -910,6 +923,11 @@ def handle_mouse_wheel(runtime: GameRuntime, delta_y: int) -> None:
             runtime.overlay.browser_scroll += 2
         elif delta_y > 0:
             runtime.overlay.browser_scroll = max(0, runtime.overlay.browser_scroll - 2)
+
+
+def update_portal_flash(runtime: GameRuntime, dt: float) -> None:
+    if runtime.portal_flash > 0.0:
+        runtime.portal_flash = max(0.0, runtime.portal_flash - dt / 0.35)
 
 
 def update_overlay_slide(runtime: GameRuntime, dt: float) -> None:
@@ -1136,6 +1154,130 @@ def build_onboarding_overlay() -> OverlayState:
         "Press any key to begin."
     )
     return OverlayState(mode="onboarding", title="Welcome", body=body)
+
+
+# ── Skin picker ───────────────────────────────────────────────────────────────
+
+def open_skin_picker(runtime: GameRuntime) -> None:
+    runtime.overlay = OverlayState(
+        mode="skin-picker",
+        title="Player Appearance",
+        body="",
+        menu_index=0,          # 0 = cloak row, 1 = tunic row
+        browser_cursor=_skin_cloak_index(runtime),
+        browser_scroll=_skin_tunic_index(runtime),
+    )
+    runtime.overlay_slide = 0.0
+
+
+def _skin_cloak_index(runtime: GameRuntime) -> int:
+    for i, (_, c) in enumerate(SKIN_CLOAK_PRESETS):
+        if c == runtime.player_skin_cloak:
+            return i
+    return 0
+
+
+def _skin_tunic_index(runtime: GameRuntime) -> int:
+    for i, (_, t) in enumerate(SKIN_TUNIC_PRESETS):
+        if t == runtime.player_skin_tunic:
+            return i
+    return 0
+
+
+def handle_skin_picker_keys(runtime: GameRuntime, key: int, pygame, sound_manager) -> None:
+    if key == pygame.K_ESCAPE:
+        runtime.overlay = OverlayState()
+        runtime.overlay_slide = 0.0
+        if sound_manager:
+            sound_manager.play("inspect_close")
+        return
+    if key in (pygame.K_UP, pygame.K_w):
+        runtime.overlay.menu_index = max(0, runtime.overlay.menu_index - 1)
+        if sound_manager:
+            sound_manager.play("menu_move")
+        return
+    if key in (pygame.K_DOWN, pygame.K_s):
+        runtime.overlay.menu_index = min(1, runtime.overlay.menu_index + 1)
+        if sound_manager:
+            sound_manager.play("menu_move")
+        return
+    if key in (pygame.K_LEFT, pygame.K_a):
+        if runtime.overlay.menu_index == 0:
+            runtime.overlay.browser_cursor = (runtime.overlay.browser_cursor - 1) % len(SKIN_CLOAK_PRESETS)
+        else:
+            runtime.overlay.browser_scroll = (runtime.overlay.browser_scroll - 1) % len(SKIN_TUNIC_PRESETS)
+        _apply_skin_preview(runtime)
+        if sound_manager:
+            sound_manager.play("menu_move")
+        return
+    if key in (pygame.K_RIGHT, pygame.K_d):
+        if runtime.overlay.menu_index == 0:
+            runtime.overlay.browser_cursor = (runtime.overlay.browser_cursor + 1) % len(SKIN_CLOAK_PRESETS)
+        else:
+            runtime.overlay.browser_scroll = (runtime.overlay.browser_scroll + 1) % len(SKIN_TUNIC_PRESETS)
+        _apply_skin_preview(runtime)
+        if sound_manager:
+            sound_manager.play("menu_move")
+        return
+    if key in (pygame.K_RETURN, pygame.K_SPACE):
+        _apply_skin_preview(runtime)
+        runtime.overlay = OverlayState()
+        runtime.overlay_slide = 0.0
+        runtime.status_line = "Appearance saved."
+        if sound_manager:
+            sound_manager.play("menu_confirm")
+
+
+def _apply_skin_preview(runtime: GameRuntime) -> None:
+    cloak_i = runtime.overlay.browser_cursor % len(SKIN_CLOAK_PRESETS)
+    tunic_i = runtime.overlay.browser_scroll % len(SKIN_TUNIC_PRESETS)
+    runtime.player_skin_cloak = SKIN_CLOAK_PRESETS[cloak_i][1]
+    runtime.player_skin_tunic = SKIN_TUNIC_PRESETS[tunic_i][1]
+    runtime.player_skin_dirty = True
+
+
+def draw_skin_picker_overlay(surface, runtime: GameRuntime, panel, small_font, tiny_font, pygame) -> None:
+    cloak_i = runtime.overlay.browser_cursor % len(SKIN_CLOAK_PRESETS)
+    tunic_i = runtime.overlay.browser_scroll % len(SKIN_TUNIC_PRESETS)
+    row     = runtime.overlay.menu_index
+
+    y = panel.y + 70
+
+    # Cloak row
+    row_color = (30, 20, 18) if row == 0 else (90, 80, 70)
+    cloak_label = small_font.render("Cloak:", True, row_color)
+    surface.blit(cloak_label, (panel.x + 24, y))
+    px = panel.x + 110
+    for i, (name, cloak_c) in enumerate(SKIN_CLOAK_PRESETS):
+        swatch = pygame.Rect(px, y, 22, 22)
+        pygame.draw.rect(surface, cloak_c, swatch, border_radius=4)
+        if i == cloak_i:
+            pygame.draw.rect(surface, (240, 200, 80), swatch, 2, border_radius=4)
+        name_s = tiny_font.render(name, True, (150, 130, 110) if i != cloak_i else (240, 200, 80))
+        surface.blit(name_s, (px, y + 26))
+        px += 90
+    y += 62
+
+    # Tunic row
+    row_color = (30, 20, 18) if row == 1 else (90, 80, 70)
+    tunic_label = small_font.render("Tunic:", True, row_color)
+    surface.blit(tunic_label, (panel.x + 24, y))
+    px = panel.x + 110
+    for i, (name, tunic_c) in enumerate(SKIN_TUNIC_PRESETS):
+        swatch = pygame.Rect(px, y, 22, 22)
+        pygame.draw.rect(surface, tunic_c, swatch, border_radius=4)
+        if i == tunic_i:
+            pygame.draw.rect(surface, (240, 200, 80), swatch, 2, border_radius=4)
+        name_s = tiny_font.render(name, True, (150, 130, 110) if i != tunic_i else (240, 200, 80))
+        surface.blit(name_s, (px, y + 26))
+        px += 90
+    y += 62
+
+    # Row selector arrows
+    arrow = "▶  " if row == 0 else "   "
+    surface.blit(tiny_font.render(arrow + "UP/DOWN switch row", True, (90, 80, 70)), (panel.x + 24, y))
+    y += 22
+    surface.blit(tiny_font.render("LEFT/RIGHT change colour, ENTER confirm, ESC cancel", True, (90, 80, 70)), (panel.x + 24, y))
 
 
 def dismiss_onboarding(runtime: GameRuntime) -> None:

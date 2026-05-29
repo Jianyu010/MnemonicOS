@@ -136,6 +136,12 @@ class GameRuntime:
     prefs: GamePrefs = field(default_factory=GamePrefs)
     seen_landmark_hints: set[str] = field(default_factory=set)
     pending_world_reload: bool = False
+    # ── Visual effects ────────────────────────────────────────────────────────
+    portal_flash: float = 0.0          # 1.0 → fades to 0 over ~0.35 s
+    # ── Player skin ───────────────────────────────────────────────────────────
+    player_skin_cloak: tuple = field(default_factory=lambda: (72, 120, 192))
+    player_skin_tunic: tuple = field(default_factory=lambda: (242, 231, 214))
+    player_skin_dirty: bool = True     # True → rebuild frames before next draw
 
 
 def switch_scene(runtime: GameRuntime, scene_name: str) -> None:
