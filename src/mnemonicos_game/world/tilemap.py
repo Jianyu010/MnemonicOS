@@ -155,6 +155,62 @@ def build_library_layout(snapshot: WorldSnapshot) -> SceneLayout:
                 )
             )
 
+    # ── Stone pillars (4) — flank the shelf hall ─────────────────────────────
+    pillar_w, pillar_h = 24, 120
+    for pillar_index, (px, py) in enumerate([
+        (486, 290), (486, 560), (486, 830),      # left column
+        (1758, 290), (1758, 560), (1758, 830),   # right column
+    ]):
+        objects.append(
+            LayoutObject(
+                object_id=f"pillar:{pillar_index}",
+                label="",
+                kind="pillar",
+                x=px,
+                y=py,
+                width=pillar_w,
+                height=pillar_h,
+                scene_name="library",
+                solid=True,
+            )
+        )
+
+    # ── Wall torches (6) — evenly spaced on back wall ─────────────────────────
+    torch_w, torch_h = 16, 28
+    torch_y = 52
+    for torch_index, tx in enumerate([220, 540, 860, 1100, 1420, 1740]):
+        objects.append(
+            LayoutObject(
+                object_id=f"torch:{torch_index}",
+                label="",
+                kind="torch",
+                x=tx,
+                y=torch_y,
+                width=torch_w,
+                height=torch_h,
+                scene_name="library",
+                solid=False,
+            )
+        )
+
+    # ── Far-back decorative shelves (depth illusion) ──────────────────────────
+    for fs_index, (fsx, fsy) in enumerate([
+        (300, 90), (700, 80), (1100, 92), (1500, 85),
+    ]):
+        objects.append(
+            LayoutObject(
+                object_id=f"far-shelf:{fs_index}",
+                label="",
+                kind="far-shelf",
+                x=fsx,
+                y=fsy,
+                width=110,
+                height=56,
+                scene_name="library",
+                solid=False,
+            )
+        )
+
     objects.extend(
         [
             LayoutObject(
