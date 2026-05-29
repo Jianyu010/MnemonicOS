@@ -183,6 +183,8 @@ def draw_scene(surface, runtime, font, small_font, tiny_font, pygame) -> None:
             draw_pillar(surface, rect, colors, pygame)
         elif obj.kind == "torch":
             draw_torch(surface, rect, runtime.anim_tick, runtime.anim_frame, runtime.assets, colors, pygame)
+        elif obj.kind == "crate":
+            draw_crate(surface, rect, obj.label, colors, tiny_font, pygame)
         elif obj.kind == "anchor":
             continue
 
@@ -967,8 +969,12 @@ def draw_scroll_pile(surface, rect, entries, runtime, pygame) -> None:
     col_step = 11
 
     # Board y-offsets match draw_bookshelf shelf_levels relative to inner rect.
-    board_offsets = [86, 56, 26]   # bottom → top
+    all_board_offsets = [86, 56, 26]   # bottom → top
     max_per_row = max(1, min(18, (rect.width - scroll_w) // col_step + 1))
+
+    # Only show as many levels as entries need (sparse shelf for small sections).
+    n_levels = min(3, max(1, math.ceil(total / max_per_row)))
+    board_offsets = all_board_offsets[:n_levels]
 
     index = 0
     for board_y_offset in board_offsets:
@@ -1014,6 +1020,36 @@ def decompose_capped_triangular_piles(total: int, *, max_base: int) -> list[int]
 
 
 # ── Construction shelf ────────────────────────────────────────────────────────
+
+def draw_crate(surface, rect, label: str, colors, tiny_font, pygame) -> None:
+    """Wooden crate representing bulk overflow entries. Stamped with label (e.g. ×100)."""
+    wood_light = (168, 116, 56)
+    wood_dark  = (108, 68, 28)
+    wood_mid   = (138, 90, 40)
+    nail       = (200, 180, 140)
+    # Body
+    pygame.draw.rect(surface, wood_mid, rect, border_radius=3)
+    # Top face (lighter)
+    pygame.draw.rect(surface, wood_light, (rect.x, rect.y, rect.width, 8), border_radius=3)
+    # Plank lines
+    for offset in (rect.height // 3, rect.height * 2 // 3):
+        pygame.draw.line(surface, wood_dark, (rect.x + 2, rect.y + offset), (rect.right - 2, rect.y + offset), 1)
+    # Vertical straps
+    strap_x1 = rect.x + rect.width // 3
+    strap_x2 = rect.x + rect.width * 2 // 3
+    pygame.draw.line(surface, wood_dark, (strap_x1, rect.y + 2), (strap_x1, rect.bottom - 2), 2)
+    pygame.draw.line(surface, wood_dark, (strap_x2, rect.y + 2), (strap_x2, rect.bottom - 2), 2)
+    # Corner nails
+    for nx, ny in [(rect.x + 3, rect.y + 3), (rect.right - 4, rect.y + 3),
+                   (rect.x + 3, rect.bottom - 4), (rect.right - 4, rect.bottom - 4)]:
+        pygame.draw.circle(surface, nail, (nx, ny), 2)
+    # ×1K stamp
+    stamp = tiny_font.render(label, True, (240, 210, 160))
+    surface.blit(stamp, (rect.x + (rect.width - stamp.get_width()) // 2,
+                          rect.y + (rect.height - stamp.get_height()) // 2))
+    # Border
+    pygame.draw.rect(surface, wood_dark, rect, 2, border_radius=3)
+
 
 def draw_construction_shelf(surface, rect, colors, pygame) -> None:
     pygame.draw.rect(surface, (86, 82, 78), rect, border_radius=8)

@@ -23,6 +23,7 @@ class LayoutObject:
     target_anchor_id: str | None = None
     solid: bool = False
     reserved: bool = False
+    bulk_count: int = 0   # entries represented by a crate object (kind="crate")
 
     @property
     def rect_tuple(self) -> tuple[int, int, int, int]:
@@ -117,6 +118,38 @@ def build_library_layout(snapshot: WorldSnapshot) -> SceneLayout:
                         section_key=section.key,
                     )
                 )
+
+            # ── Overflow crates (1 crate = 1 000 entries) ────────────────────
+            # Arranged in a 2-col × 3-row grid in the gap to the right of the
+            # shelf (columns are 330 px apart, shelf_width=240 → 90 px gap).
+            _CRATE_SIZE = 100   # entries per crate
+            n_crates = min(6, len(section.entries) // _CRATE_SIZE)
+            if n_crates:
+                crate_w, crate_h = 32, 32
+                gap = 6
+                crate_col_step = crate_w + gap          # 38 px
+                crate_row_step = crate_h + gap          # 38 px
+                crate_origin_x = x + shelf_width + 8   # just right of shelf
+                crate_origin_y = y + shelf_height - crate_h  # bottom-align
+                for ci in range(n_crates):
+                    col = ci % 2
+                    row = ci // 2
+                    cx = crate_origin_x + col * crate_col_step
+                    cy = crate_origin_y - row * crate_row_step
+                    objects.append(
+                        LayoutObject(
+                            object_id=f"crate:{section.key}:{ci}",
+                            label="×100",
+                            kind="crate",
+                            x=cx,
+                            y=cy,
+                            width=crate_w,
+                            height=crate_h,
+                            scene_name="library",
+                            section_key=section.key,
+                            bulk_count=_CRATE_SIZE,
+                        )
+                    )
 
     if system_section is not None:
         # Keep the system wall in the left-side daemon cluster so it remains visible
