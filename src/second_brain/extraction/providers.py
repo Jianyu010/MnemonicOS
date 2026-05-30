@@ -230,10 +230,12 @@ class OllamaLLMProvider:
         *,
         base_url: str = "http://127.0.0.1:11434",
         timeout_seconds: int | None = None,
+        keep_alive: int = 0,
     ) -> None:
         self.model_name = model_name
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
+        self.keep_alive = keep_alive
 
     def extract_candidates(self, packet: dict[str, Any]) -> str:
         prompt = _candidate_extraction_prompt(packet)
@@ -242,6 +244,7 @@ class OllamaLLMProvider:
             model=self.model_name,
             prompt=prompt,
             timeout_seconds=self.timeout_seconds,
+            keep_alive=self.keep_alive,
         )
 
 

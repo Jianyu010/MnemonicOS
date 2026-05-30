@@ -40,3 +40,12 @@ development/
 # Empty scratch canvases
 /Untitled.canvas
 /Untitled *.canvas
+
+# Superpowers agentic workspace (auxiliary, not project code)
+/.superpowers/
+
+# macOS metadata
+.DS_Store
+
+# Runtime DB (local only)
+/brain/data/memory.sqlite
