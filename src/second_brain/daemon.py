@@ -249,8 +249,15 @@ class SocketServer:
                 client, _ = server_socket.accept()
             except socket.timeout:
                 continue
-            except OSError:
-                break
+            except OSError as exc:
+                # A real shutdown closes the socket -> stop serving. Otherwise log and
+                # keep serving: a transient accept() error must not silently kill the
+                # listener (that produces a live PID with a dead socket — "Connection
+                # refused" while the daemon appears up).
+                if self.shutdown_event.is_set():
+                    break
+                self.logger.warning("socket accept() failed, continuing: %s", exc)
+                continue
             with client:
                 try:
                     request = b""
