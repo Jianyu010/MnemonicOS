@@ -142,7 +142,7 @@ Fix:
 
 ## Amendment: corroboration_count in DB
 
-Status: **not started**.
+Status: **implemented 2026-05-11** (status was stale; verified 2026-06-10: `migrations/019_corroboration_count.sql`, parser.py frontmatter parse, sync.py `_upsert_note` INSERT/UPDATE).
 
 `renderer.py` already writes `corroboration_count` to markdown frontmatter at promotion
 time. `sync_vault(mode="incremental")` already fires inline after every promotion batch.
@@ -172,7 +172,7 @@ is the only case where the maintenance layer touches `corroboration_count`.
 
 ## Amendment: Intra-Source Relation Application
 
-Status: **not started**. Requires LLM/VLM Phase 8 to ship first.
+Status: **implemented 2026-05-10** (status was stale; verified 2026-06-10: `_apply_intra_source_relations` in promotion/worker.py, wired into `process_promotion_queue`; extraction Phase 8 shipped in the same commit d281189).
 
 Planned deliverables (see
 `ingestion-promotion-plan-intra-source-relations.md`):

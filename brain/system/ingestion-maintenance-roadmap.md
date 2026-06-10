@@ -219,7 +219,7 @@ north-flange bridge and does not change Codex/Claude hook capture.
 
 ### Phase M1: Embedding Provider Interface
 
-Status: planned.
+Status: **implemented 2026-05-11** (commit 3b3d7cc: `embedding_providers.py` — `EmbeddingProvider` protocol, `ProviderHealth`, hash/ollama/openai_compatible providers).
 
 Work:
 1. Introduce `EmbeddingProvider`:
@@ -250,7 +250,7 @@ Acceptance:
 
 ### Phase M2: Provider Registry and Config
 
-Status: planned.
+Status: **implemented 2026-05-11** (commit 3b3d7cc: `build_embedding_provider` + `[embeddings]` config section + `embedding_model_key`).
 
 Work:
 1. Add an embedding provider registry:
@@ -337,7 +337,7 @@ Acceptance:
 
 ### Phase M5: Re-Embedding and Migration Policy
 
-Status: planned.
+Status: **partially implemented** (embed_backfill scopes vectors by `embedding_model_key`, so a provider/model change re-embeds everything on the next run; no dedicated re-embed planner or progress ledger).
 
 Work:
 1. Treat provider/model/dimensions/fingerprint changes as vector-version changes.

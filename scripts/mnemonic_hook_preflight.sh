@@ -16,6 +16,8 @@ if [[ -f "$REPO_ROOT/config/memory.toml" ]]; then
 else
   CONFIG="$REPO_ROOT/config/memory.example.toml"
 fi
+# Test/agent isolation: explicit config path overrides repo default.
+CONFIG="${MNEMO_CONFIG:-$CONFIG}"
 STATE_FILE="${STATE_FILE:-/tmp/mnemo_hook_state}"
 
 # --- MnemonicOS enable/disable switch ---

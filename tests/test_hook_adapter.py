@@ -61,6 +61,40 @@ def _hook_json(prompt: str = "test prompt", session_id: str = "test-session-abc"
     return json.dumps({"prompt": prompt, "session_id": session_id})
 
 
+def _install_fake_mnemonicos(tmp_root: str) -> tuple[str, Path]:
+    """Write a fake ``mnemonicos`` binary into <tmp_root>/bin.
+
+    Returns (PATH value with the fake bin first, log file path). Hook tests
+    must never invoke the real CLI: real runs depend on live Ollama latency
+    (>30 s under daemon GPU contention) and ingest junk test prompts/summaries
+    into the production memory DB.
+    """
+    bin_dir = Path(tmp_root) / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    log_path = Path(tmp_root) / "mnemonicos.log"
+    fake = bin_dir / "mnemonicos"
+    fake.write_text(
+        textwrap.dedent(
+            f"""\
+            #!/usr/bin/env bash
+            printf '%s\\n' "$*" >> {str(log_path)!r}
+            case "$*" in
+              *"capture begin-episode"*)
+                printf '{{"conversation_id": "conv-fake-%s", "episode_id": "episode-fake-%s"}}\\n' "$$" "$$" ;;
+              *"capture end-episode"*) printf '{{"ok": true}}\\n' ;;
+              *"orchestrator begin-task"*)
+                printf '{{"task_id": "task-fake-%s", "context_markdown": "fake memory context", "retrieval_state": "partial"}}\\n' "$$" ;;
+              *"orchestrator finish-task"*) printf '{{"decision": "skip"}}\\n' ;;
+              *) printf '{{"ok": true}}\\n' ;;
+            esac
+            exit 0
+            """
+        )
+    )
+    fake.chmod(0o755)
+    return f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}", log_path
+
+
 def _pending_summary(*, agent: str = "claude", date: str = "2026-04-15") -> str:
     return textwrap.dedent(f"""\
         agent: {agent}
@@ -78,7 +112,10 @@ def _pending_summary(*, agent: str = "claude", date: str = "2026-04-15") -> str:
 
 
 class TestPreflightHook(unittest.TestCase):
-    """Tests for mnemonic_hook_preflight.sh."""
+    """Tests for mnemonic_hook_preflight.sh.
+
+    Uses a fake ``mnemonicos`` on PATH — see _install_fake_mnemonicos.
+    """
 
     def setUp(self) -> None:
         self._tmp = tempfile.NamedTemporaryFile(prefix="mnemo_state_", delete=False)
@@ -86,13 +123,23 @@ class TestPreflightHook(unittest.TestCase):
         self._state_file = self._tmp.name
         # Remove so the script can write fresh
         os.unlink(self._state_file)
+        self._fake_bin_tmp = tempfile.TemporaryDirectory(prefix="mnemo_fake_bin_")
+        self._fake_path, self._cli_log = _install_fake_mnemonicos(self._fake_bin_tmp.name)
 
     def tearDown(self) -> None:
+        self._fake_bin_tmp.cleanup()
         for f in [self._state_file]:
             try:
                 os.unlink(f)
             except FileNotFoundError:
                 pass
+
+    def _env(self, *, mnemo_enabled: str = "1") -> dict:
+        return _make_env(
+            state_file=self._state_file,
+            mnemo_enabled=mnemo_enabled,
+            extra={"PATH": self._fake_path},
+        )
 
     def test_exits_zero_on_empty_prompt(self) -> None:
         """Empty prompt → exit 0, no stdout, no state file written."""
@@ -100,6 +147,7 @@ class TestPreflightHook(unittest.TestCase):
             PREFLIGHT,
             _hook_json(prompt=""),
             state_file=self._state_file,
+            env=self._env(),
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "")
@@ -111,6 +159,7 @@ class TestPreflightHook(unittest.TestCase):
             PREFLIGHT,
             _hook_json(prompt="x" * 2000),
             state_file=self._state_file,
+            env=self._env(),
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
@@ -124,6 +173,7 @@ class TestPreflightHook(unittest.TestCase):
             PREFLIGHT,
             _hook_json(prompt="implement a test function for the orchestrator"),
             state_file=self._state_file,
+            env=self._env(),
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         # If state file exists, it must contain a non-empty task_id
@@ -140,6 +190,7 @@ class TestPreflightHook(unittest.TestCase):
             PREFLIGHT,
             _hook_json(prompt="debug the failing test in orchestrator module"),
             state_file=self._state_file,
+            env=self._env(),
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         stdout = result.stdout.strip()
@@ -163,6 +214,7 @@ class TestPreflightHook(unittest.TestCase):
                 PREFLIGHT,
                 _hook_json(prompt="implement auth module", session_id=sess),
                 state_file=self._state_file,
+                env=self._env(),
             )
             self.assertEqual(result.returncode, 0, f"Failed for session {sess}: {result.stderr}")
             # Clean state file between runs
@@ -191,7 +243,13 @@ class TestCodexPreflightHook(unittest.TestCase):
 
 
 class TestStopHook(unittest.TestCase):
-    """Tests for mnemonic_stop_hook.sh."""
+    """Tests for mnemonic_stop_hook.sh.
+
+    A fake ``mnemonicos`` binary is installed on PATH by default so tests
+    never invoke the real orchestrator: real runs depend on live Ollama
+    latency (>30 s under daemon GPU contention) and ingest junk test
+    summaries into the production memory DB.
+    """
 
     def setUp(self) -> None:
         self._state_tmp = tempfile.NamedTemporaryFile(prefix="mnemo_state_", delete=False)
@@ -206,7 +264,11 @@ class TestStopHook(unittest.TestCase):
         self._pending_file = self._pending_tmp.name
         os.unlink(self._pending_file)
 
+        self._fake_bin_tmp = tempfile.TemporaryDirectory(prefix="mnemo_fake_bin_")
+        self._fake_path, self._cli_log = _install_fake_mnemonicos(self._fake_bin_tmp.name)
+
     def tearDown(self) -> None:
+        self._fake_bin_tmp.cleanup()
         for f in [self._state_file, self._pending_file]:
             try:
                 os.unlink(f)
@@ -217,7 +279,11 @@ class TestStopHook(unittest.TestCase):
                   pending_content: str | None = None,
                   task_id: str | None = None,
                   env_extra: dict | None = None) -> subprocess.CompletedProcess:
-        env = _make_env(state_file=self._state_file, extra=env_extra)
+        # Default to the fake mnemonicos PATH; an explicit PATH in env_extra wins.
+        extra = {"PATH": self._fake_path}
+        if env_extra:
+            extra.update(env_extra)
+        env = _make_env(state_file=self._state_file, extra=extra)
         # Override PENDING path via env (scripts use /tmp/mnemo_pending_summary.md by default,
         # but we inject it by symlinking or via env if the script supports it).
         # Since the script hardcodes PENDING, we patch via a wrapper approach:
@@ -347,8 +413,11 @@ class TestHookRoundTrip(unittest.TestCase):
         self._state_tmp.close()
         self._state_file = self._state_tmp.name
         os.unlink(self._state_file)
+        self._fake_bin_tmp = tempfile.TemporaryDirectory(prefix="mnemo_fake_bin_")
+        self._fake_path, self._cli_log = _install_fake_mnemonicos(self._fake_bin_tmp.name)
 
     def tearDown(self) -> None:
+        self._fake_bin_tmp.cleanup()
         try:
             os.unlink(self._state_file)
         except FileNotFoundError:
@@ -356,7 +425,7 @@ class TestHookRoundTrip(unittest.TestCase):
 
     def test_per_turn_task_ids_are_independent(self) -> None:
         """Two preflight runs with the same session_id produce different task_ids."""
-        env = _make_env(state_file=self._state_file)
+        env = _make_env(state_file=self._state_file, extra={"PATH": self._fake_path})
         task_ids: list[str] = []
 
         for _ in range(2):
@@ -499,27 +568,44 @@ class TestHookDisableSwitch(unittest.TestCase):
 
 
 class TestCodexHookAdapter(unittest.TestCase):
-    """Tests for the Codex-specific hook wrappers."""
+    """Tests for the Codex-specific hook wrappers.
+
+    Capture fidelity needs the real CLI, so instead of faking the binary these
+    tests isolate the workspace: MNEMO_CONFIG points the hooks/importer at a
+    temp workspace so episodes and extraction-queue rows never land in the
+    production DB (real runs left orphaned pending rows behind).
+    """
 
     def setUp(self) -> None:
         self._state_tmp = tempfile.NamedTemporaryFile(prefix="mnemo_codex_state_", delete=False)
         self._state_tmp.close()
         self._state_file = self._state_tmp.name
         os.unlink(self._state_file)
+        self._workspace_tmp = tempfile.TemporaryDirectory(prefix="mnemo_codex_ws_")
+        workspace = Path(self._workspace_tmp.name)
+        (workspace / "config").mkdir()
+        self._config_path = workspace / "config" / "memory.toml"
+        self._config_path.write_text("")  # defaults; paths derive from this file's location
+        self._raw_sessions_root = workspace / "brain" / "raw" / "sessions"
         self._session_id = "codex-unit-hook-session"
-        self._raw_session_dir = ROOT / "brain" / "raw" / "sessions" / self._session_id
-        shutil.rmtree(self._raw_session_dir, ignore_errors=True)
+        self._raw_session_dir = self._raw_sessions_root / self._session_id
 
     def tearDown(self) -> None:
         try:
             os.unlink(self._state_file)
         except FileNotFoundError:
             pass
-        shutil.rmtree(self._raw_session_dir, ignore_errors=True)
+        self._workspace_tmp.cleanup()
+
+    def _env(self, *, extra: dict | None = None) -> dict:
+        merged = {"MNEMO_CONFIG": str(self._config_path)}
+        if extra:
+            merged.update(extra)
+        return _make_env(state_file=self._state_file, extra=merged)
 
     def test_codex_preflight_and_stop_capture_turn(self) -> None:
         """Codex hooks write a raw codex episode without using Claude hook state."""
-        env = _make_env(state_file=self._state_file)
+        env = self._env()
         prompt_payload = json.dumps(
             {
                 "session_id": self._session_id,
@@ -607,8 +693,7 @@ class TestCodexHookAdapter(unittest.TestCase):
                         }
                     )
                 )
-                env = _make_env(
-                    state_file=self._state_file,
+                env = self._env(
                     extra={"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"},
                 )
                 result = subprocess.run(
@@ -635,8 +720,7 @@ class TestCodexHookAdapter(unittest.TestCase):
         """Codex notify payloads should become one readable turn episode."""
         session_id = "codex-unit-notify-session"
         turn_id = "turn-unit-notify-001"
-        raw_session_dir = ROOT / "brain" / "raw" / "sessions" / session_id
-        shutil.rmtree(raw_session_dir, ignore_errors=True)
+        raw_session_dir = self._raw_sessions_root / session_id
         try:
             payload = json.dumps(
                 {
@@ -653,6 +737,7 @@ class TestCodexHookAdapter(unittest.TestCase):
                 [sys.executable, str(CODEX_NOTIFY_IMPORTER), "turn-ended", payload],
                 capture_output=True,
                 text=True,
+                env={**os.environ, "MNEMO_CONFIG": str(self._config_path)},
                 timeout=30,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -683,8 +768,7 @@ class TestCodexHookAdapter(unittest.TestCase):
         """Structured Codex notify payloads preserve rich turn details."""
         session_id = "codex-unit-faithful-session"
         turn_id = "turn-unit-faithful-001"
-        raw_session_dir = ROOT / "brain" / "raw" / "sessions" / session_id
-        shutil.rmtree(raw_session_dir, ignore_errors=True)
+        raw_session_dir = self._raw_sessions_root / session_id
         try:
             payload = json.dumps(
                 {
@@ -774,6 +858,7 @@ class TestCodexHookAdapter(unittest.TestCase):
                 [sys.executable, str(CODEX_NOTIFY_IMPORTER), "turn-ended", payload],
                 capture_output=True,
                 text=True,
+                env={**os.environ, "MNEMO_CONFIG": str(self._config_path)},
                 timeout=30,
             )
             self.assertEqual(result.returncode, 0, result.stderr)

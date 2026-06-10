@@ -13,13 +13,13 @@
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| S7-P1 | Emission contract, render model, and output profiles | not started |
-| S7-P2 | Canonical JSON renderer and direct/runtime parity | not started |
-| S7-P3 | Markdown renderer and full selected-packet presentation | not started |
-| S7-P4 | Archive, warning, contradiction, and missing-role presentation | not started |
-| S7-P5 | Directive-guided branch filtering and deferred context summary | not started |
-| S7-P6 | Directive-specific metrics and retrieval trace emission | not started |
-| S7-P7 | Shell/API consolidation and no-raise degraded output | not started |
+| S7-P1 | Emission contract, render model, and output profiles | implemented 2026-05-14 (662aa0b) |
+| S7-P2 | Canonical JSON renderer and direct/runtime parity | implemented 2026-05-14 (662aa0b) |
+| S7-P3 | Markdown renderer and full selected-packet presentation | implemented 2026-05-14 (662aa0b) |
+| S7-P4 | Archive, warning, contradiction, and missing-role presentation | implemented 2026-05-14 (662aa0b) |
+| S7-P5 | Directive-guided branch filtering and deferred context summary | implemented 2026-05-14 (662aa0b; orchestrator auto-retry on by default in hook preflight) |
+| S7-P6 | Directive-specific metrics and retrieval trace emission | not started (runtime packet metrics still legacy fields) |
+| S7-P7 | Shell/API consolidation and no-raise degraded output | partial (orchestrator consumes render_emission; direct shell/API render parity not verified) |
 
 ---
 

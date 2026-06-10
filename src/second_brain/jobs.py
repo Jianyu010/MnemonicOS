@@ -409,7 +409,13 @@ def run_job(
 
     if job_name == "wiki_health_report":
         from .maintenance import compute_wiki_health_stats, detect_semantic_duplicates
-        from .ops import load_open_review_items, load_open_relearn_tasks, write_maintenance_overview
+        from .ops import (
+            load_open_review_items,
+            load_open_relearn_tasks,
+            refresh_active_file,
+            sync_eval_candidates,
+            write_maintenance_overview,
+        )
         job_id = _open_job_run(connection, job_name, "dry-run" if dry_run else "live")
         try:
             dedup_pairs = detect_semantic_duplicates(connection, config, dry_run=dry_run)
@@ -425,17 +431,42 @@ def run_job(
             stats["wiki_orphan_notes"] = health.orphan_note_count
             stats["semantic_dedup_candidates"] = len(dedup_pairs)
             if not dry_run:
+                stale_rows = [
+                    dict(row)
+                    for row in connection.execute(
+                        "SELECT n.id AS id, n.title AS title, "
+                        "f.freshness_state AS freshness_state, "
+                        "COALESCE(n.last_verified_at, 'never') AS last_verified_at "
+                        "FROM note_freshness f JOIN notes n ON n.id = f.note_id "
+                        "WHERE f.freshness_state IN ('suspect', 'stale', 'contested') "
+                        "ORDER BY f.staleness_score DESC"
+                    )
+                ]
+                contradiction_rows = [
+                    item for item in open_reviews if item.review_type == "contradiction"
+                ]
+                eval_candidates = sync_eval_candidates(config, [], dry_run=True).open_candidates
                 write_maintenance_overview(
                     config,
                     stats=stats,
                     review_items=open_reviews,
-                    contradiction_rows=[
-                        item for item in open_reviews if item.review_type == "contradiction"
-                    ],
-                    stale_rows=[],
+                    contradiction_rows=contradiction_rows,
+                    stale_rows=stale_rows,
                     relearn_tasks=open_relearns,
-                    eval_candidates=[],
+                    eval_candidates=eval_candidates,
                     wiki_health=health,
+                )
+                # ACTIVE.md is pinned into every retrieval context; keep its
+                # auto sections in sync with review/staleness/relearn state.
+                refresh_active_file(
+                    config,
+                    review_items=[
+                        item for item in open_reviews if item.review_type != "contradiction"
+                    ],
+                    stale_rows=stale_rows,
+                    contradiction_rows=contradiction_rows,
+                    relearn_tasks=open_relearns,
+                    eval_candidates=eval_candidates,
                 )
             with connection:
                 _close_job_run(connection, job_id, status="ok", stats=stats)

@@ -45,7 +45,7 @@ def _capture_notify_payload(argv: list[str], notify_payload: dict[str, Any]) -> 
         return 0
 
     os.environ.setdefault("MNEMOS_AUTO_TRIGGER_PIPELINE", "0")
-    config_path = str(ROOT / "config" / "memory.toml")
+    config_path = os.environ.get("MNEMO_CONFIG") or str(ROOT / "config" / "memory.toml")
     if not Path(config_path).exists():
         config_path = str(ROOT / "config" / "memory.example.toml")
     config = load_config(config_path)
@@ -151,7 +151,7 @@ def _capture_transcript_delta(argv: list[str]) -> int:
         return 0
 
     os.environ.setdefault("MNEMOS_AUTO_TRIGGER_PIPELINE", "0")
-    config_path = str(ROOT / "config" / "memory.toml")
+    config_path = os.environ.get("MNEMO_CONFIG") or str(ROOT / "config" / "memory.toml")
     if not Path(config_path).exists():
         config_path = str(ROOT / "config" / "memory.example.toml")
     config = load_config(config_path)
