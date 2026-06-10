@@ -13,12 +13,28 @@ from pathlib import Path
 from .config import default_config_path, load_config
 
 
-def socket_send(socket_path: os.PathLike[str] | str, payload: dict[str, object]) -> dict[str, object] | None:
+def socket_send(
+    socket_path: os.PathLike[str] | str,
+    payload: dict[str, object],
+    *,
+    timeout: float = 2.0,
+) -> dict[str, object] | None:
+    """Send one request to the daemon socket and read one reply.
+
+    Returns None only when the daemon is unreachable (connect/send failed).
+    If the request was delivered but the reply did not arrive within
+    ``timeout`` — e.g. a synchronous job still running — returns
+    ``{"status": "timeout"}`` so callers do not mistake a busy daemon for a
+    dead one and re-run the work in-process (duplicate writers then collide
+    with "database is locked").
+    """
+    delivered = False
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-            client.settimeout(2.0)
+            client.settimeout(timeout)
             client.connect(str(socket_path))
             client.sendall((json.dumps(payload) + "\n").encode("utf-8"))
+            delivered = True
             response = b""
             while b"\n" not in response:
                 chunk = client.recv(4096)
@@ -27,6 +43,8 @@ def socket_send(socket_path: os.PathLike[str] | str, payload: dict[str, object])
                 response += chunk
         return json.loads(response.decode("utf-8").strip() or "{}")
     except OSError:
+        if delivered:
+            return {"status": "timeout", "error": f"no reply within {timeout}s (request delivered)"}
         return None
 
 

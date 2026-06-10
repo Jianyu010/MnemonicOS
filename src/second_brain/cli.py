@@ -1767,7 +1767,12 @@ def _daemon_run_job(config_path: str, job_name: str) -> int:
     config = load_config(config_path)
     if config.daemon is None:
         raise SystemExit("daemon configuration is not available")
-    response = socket_send(config.daemon.socket_path, {"cmd": "run-job", "job": job_name})
+    # Jobs run synchronously in the daemon and reply on completion, so allow a
+    # long reply window. A post-delivery timeout must NOT fall back to an
+    # in-process run — the daemon is already running the job.
+    response = socket_send(
+        config.daemon.socket_path, {"cmd": "run-job", "job": job_name}, timeout=900.0
+    )
     if response is None:
         result = run_job(config, job_name=job_name, dry_run=False)
         print(json.dumps({"status": "ok", "job": result.job_name, "result": result.stats}, sort_keys=True))

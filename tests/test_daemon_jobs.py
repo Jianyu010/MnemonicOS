@@ -615,5 +615,103 @@ class RetryExtractionRaceTest(unittest.TestCase):
             )
 
 
+class ActiveFileRefreshTest(unittest.TestCase):
+    """wiki_health_report must refresh brain/system/ACTIVE.md.
+
+    The May-2026 maintenance-layer refactor dropped the refresh_active_file
+    call from the job graph, freezing ACTIVE.md — which is pinned into every
+    retrieval context — at its last manual update."""
+
+    def test_wiki_health_report_refreshes_active_md(self) -> None:
+        from datetime import datetime as _dt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = DaemonJobsTest._prepare_workspace(self, workspace)  # type: ignore[arg-type]
+            active_path = workspace / "brain/system/ACTIVE.md"
+            active_path.write_text("# ACTIVE\nupdated_at: 2020-01-01\n")
+
+            result = run_job(config, job_name="wiki_health_report", dry_run=False)
+            self.assertEqual(result.status, "ok")
+
+            content = active_path.read_text()
+            today = _dt.now().strftime("%Y-%m-%d")
+            self.assertIn(f"updated_at: {today}", content)
+            self.assertIn("## Needs Human Review", content)
+            self.assertIn("## Relearn Queue", content)
+
+
+class SocketSendTest(unittest.TestCase):
+    """socket_send must distinguish 'unreachable' from 'delivered, reply slow'.
+
+    Long-running daemon jobs reply only after completion. If the client treats
+    a post-delivery read timeout as 'daemon down' the CLI falls back to running
+    the job in-process — a duplicate concurrent run that collides on the DB
+    write lock ('database is locked')."""
+
+    def test_returns_none_when_socket_unreachable(self) -> None:
+        from second_brain.daemon_status import socket_send
+
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "no-such.sock"
+            self.assertIsNone(socket_send(missing, {"cmd": "status"}))
+
+    def test_returns_timeout_status_when_reply_exceeds_timeout(self) -> None:
+        import socket as socketlib
+        import threading
+
+        from second_brain.daemon_status import socket_send
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sock_path = str(Path(tmp) / "slow.sock")
+            server = socketlib.socket(socketlib.AF_UNIX, socketlib.SOCK_STREAM)
+            server.bind(sock_path)
+            server.listen(1)
+            release = threading.Event()
+
+            def _slow_server() -> None:
+                conn, _ = server.accept()
+                conn.recv(4096)  # request is delivered
+                release.wait(5.0)  # never replies within the client timeout
+                conn.close()
+
+            thread = threading.Thread(target=_slow_server, daemon=True)
+            thread.start()
+            try:
+                response = socket_send(sock_path, {"cmd": "run-job", "job": "x"}, timeout=0.5)
+            finally:
+                release.set()
+                server.close()
+                thread.join(timeout=5.0)
+
+            self.assertIsNotNone(
+                response,
+                "request was delivered — must not be reported as unreachable",
+            )
+            self.assertEqual(response.get("status"), "timeout")
+
+    def test_daemon_run_job_does_not_fall_back_after_delivery(self) -> None:
+        from unittest import mock
+
+        from second_brain import cli
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_dir = Path(tmp) / "config"
+            config_dir.mkdir()
+            config_path = config_dir / "memory.toml"
+            config_path.write_text("")
+
+            with (
+                mock.patch.object(
+                    cli, "socket_send", return_value={"status": "timeout"}
+                ),
+                mock.patch.object(cli, "run_job") as mock_run_job,
+            ):
+                exit_code = cli._daemon_run_job(str(config_path), "wiki_health_report")
+
+            mock_run_job.assert_not_called()
+            self.assertNotEqual(exit_code, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
