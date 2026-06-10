@@ -80,7 +80,7 @@ Dependencies: `rich` (already installed), `prompt_toolkit` (already installed).
 
 ## Phase 4: Hardening — Fix Loopholes
 
-Status: **pending** (found 2026-05-09).
+Status: **implemented 2026-05-10** (status was stale; verified 2026-06-10: review_ops.py has the `lifecycle_state`/promotion-header guards in `_parse_review_file` and the tmp-write -> DB-update -> rename ordering in `approve_review_item`).
 
 ### Loophole 1 — `approve_review_item` atomicity
 

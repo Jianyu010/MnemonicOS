@@ -58,8 +58,9 @@ Remaining:
 
 - Runtime packet metrics still record only legacy retrieval/recommendation
   fields; directive-specific metrics remain for S6-P7 follow-up.
-- Stage 7 has not yet consumed the directive because Stage 7 implementation is
-  not started.
+- Stage 7 consumes the directive since 2026-05-14 (`render_emission` in
+  emission.py, commit 662aa0b); this line previously said Stage 7 was not
+  started — corrected in the 2026-06-10 roadmap audit.
 
 **2026-05-14 (Phase 8 cross-cut):** Gate-aware assessment added as part of
 retrieval-polish. `_retrieval_state_for_packet` now reads

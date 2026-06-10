@@ -282,7 +282,7 @@ Conclusion:
 
 ## Phase 8: Intra-Source Relation Extraction
 
-Status: **not started**.
+Status: **implemented 2026-05-10** (status was stale; verified 2026-06-10: `validate_intra_source_relations` in validation.py, queue-row storage, promotion-side application via `_apply_intra_source_relations`).
 
 Planned deliverables:
 - `intra_source_relations` top-level field added to `mnemos-extraction-v1` bundle schema.
@@ -324,7 +324,7 @@ Purpose:
 
 ### Phase A: Provider Contract Cleanup
 
-Status: planned.
+Status: **partially implemented 2026-05-11** (commit 3b3d7cc: adapter classes own prompt transport; capability metadata and `healthcheck()` not built).
 
 Work:
 1. Keep the existing `VLMProvider` and `LLMProvider` protocols, but make their
@@ -354,7 +354,7 @@ Acceptance:
 
 ### Phase B: Registry and Config Shape
 
-Status: planned.
+Status: **partially implemented 2026-05-11** (commit 3b3d7cc: `[models.llm]`/`[models.vlm]` config shape + builders for all four adapters; builder dispatch is still if-based, not a registry table).
 
 Work:
 1. Replace hard-coded `if provider == "ollama"` builders with provider
@@ -390,7 +390,7 @@ Acceptance:
 
 ### Phase C: Adapters
 
-Status: planned.
+Status: **largely implemented 2026-05-11** (commit 3b3d7cc: fixture, ollama, openai_compatible, and cli_command adapters all shipped; shared conformance tests and adapter-version metadata not verified).
 
 Adapter order:
 1. `fixture`: deterministic tests, no external dependency.
@@ -585,7 +585,7 @@ requiring a separate LLM attribution pass at maintenance time for those sessions
 
 ## Phase 12: Dual-Lane Concurrent Extraction
 
-Status: **planned 2026-05-20**.
+Status: **implemented 2026-05-20**.
 
 Plan: `ingestion-extraction-plan-phase12.md`.
 
