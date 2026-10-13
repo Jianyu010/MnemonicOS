@@ -228,7 +228,7 @@ bash scripts/install_mnemonicos.sh
 
 ### `install_codex_skill.sh`
 
-Install the Codex skill integration (copies hook scripts to the Codex hooks directory).
+Install the Codex skill: copies `codex_skills/mnemonicos-bridge/` to `$CODEX_HOME/skills/mnemonicos-bridge/` (default `~/.codex/skills/`).
 
 ---
 
