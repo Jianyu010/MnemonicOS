@@ -1147,6 +1147,92 @@ class ExtractionLayerTest(unittest.TestCase):
         self.assertEqual(result.processed, 2)
         self.assertEqual(result.errors, 1)
 
+    def test_dual_lane_quick_lane_keeps_draining_while_slow_lane_runs(self) -> None:
+        """A session queued while a PDF is in flight is claimed in the same run
+        (issue #38), instead of waiting for the PDF to finish and the next tick."""
+        import threading
+
+        from second_brain.extraction import worker
+
+        late_item_processed = threading.Event()
+        state: dict[str, object] = {}
+
+        class QuickHandle:
+            def join(self) -> bool:
+                return False
+
+        class SlowHandle:
+            """Simulates a long PDF: enqueue a new quick item mid-run, then wait
+            until the quick lane has processed it before finishing."""
+
+            def join(self) -> bool:
+                conn = connect_db(state["db_path"])
+                try:
+                    with conn:
+                        conn.execute(
+                            "INSERT INTO extraction_queue(source_kind, archive_id, status, queued_at) "
+                            "VALUES ('session', 'session/late-arrival', 'pending', datetime('now'))"
+                        )
+                finally:
+                    conn.close()
+                state["late_processed_in_time"] = late_item_processed.wait(10.0)
+                return False
+
+        def fake_spawn(*, progress_key, **kw):
+            return SlowHandle() if progress_key == "slow" else QuickHandle()
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            config = _config(workspace)
+            config.extraction.dual_lane_enabled = True
+            config.extraction.quick_lane_batch = 5
+            config.extraction.slow_lane_batch = 1
+            state["db_path"] = config.paths.db_path
+
+            connection = connect_db(config.paths.db_path)
+            try:
+                with connection:
+                    connection.execute(
+                        "INSERT INTO archive(id, type, path, ingested_at, tags, source_format) "
+                        "VALUES ('artifact/pdf-heavy', 'doc', '/dev/null', '2026-05-20 08:00:00', '[]', 'pdf')"
+                    )
+                    connection.execute(
+                        "INSERT INTO extraction_queue(source_kind, archive_id, status, queued_at) "
+                        "VALUES ('artifact', 'artifact/pdf-heavy', 'pending', '2026-05-20 08:00:00')"
+                    )
+                    connection.execute(
+                        "INSERT INTO extraction_queue(source_kind, archive_id, status, queued_at) "
+                        "VALUES ('session', 'session/early', 'pending', '2026-05-20 08:01:00')"
+                    )
+            finally:
+                connection.close()
+
+            def accumulate(conn, stats, queue_id):
+                stats.processed += 1
+                row = conn.execute(
+                    "SELECT archive_id FROM extraction_queue WHERE id=?", (queue_id,)
+                ).fetchone()
+                with conn:
+                    conn.execute(
+                        "UPDATE extraction_queue SET status='processed', finished_at=datetime('now') WHERE id=?",
+                        (queue_id,),
+                    )
+                if row and row["archive_id"] == "session/late-arrival":
+                    late_item_processed.set()
+
+            with (
+                mock.patch.object(worker, "_QUICK_LANE_REFILL_WAIT_SECONDS", 0.05),
+                mock.patch.object(worker, "_spawn_item_subprocess", side_effect=fake_spawn),
+                mock.patch.object(worker, "_accumulate_subprocess_result", side_effect=accumulate),
+                mock.patch.object(worker, "mark_error"),
+            ):
+                result = process_extraction_queue(config, dry_run=False)
+
+        self.assertTrue(state.get("late_processed_in_time"), "late quick item was not drained during the slow run")
+        # early session + late session + the PDF
+        self.assertEqual(result.processed, 3)
+        self.assertEqual(result.errors, 0)
+
 
     def test_inference_timeout_error_raised_on_socket_timeout(self) -> None:
         """_open_request converts socket.timeout into InferenceTimeoutError."""

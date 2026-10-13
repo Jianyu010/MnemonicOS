@@ -12,7 +12,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from second_brain.config import AppConfig
 from second_brain.db import connect_db, run_migrations
@@ -38,6 +38,10 @@ from .store import append_candidates, candidate_counts, replace_candidates, repl
 from .validation import parse_candidate_bundle, parse_intra_source_relations, projection_evidence_ids, validate_candidate
 
 _log = logging.getLogger(__name__)
+
+# How long the quick lane waits between empty refills while the slow lane is
+# still running (dual-lane mode). Module-level so tests can shorten it.
+_QUICK_LANE_REFILL_WAIT_SECONDS = 15.0
 
 
 def _terminate_process_group(proc: subprocess.Popen, *, grace_seconds: float = 2.0) -> None:
@@ -463,16 +467,46 @@ def _process_dual_lane(
     quick_stats = ExtractionProcessResult(0, 0, 0, 0, 0, 0, 0, 0)
     slow_stats = ExtractionProcessResult(0, 0, 0, 0, 0, 0, 0, 0)
 
+    # Set when the slow lane has nothing left to do. The quick lane keeps
+    # re-fetching newly queued sessions/episodes until then, so a two-hour PDF
+    # no longer caps quick-lane throughput at quick_lane_batch items per run
+    # (the scheduler holds the job lock for the whole run, so a tick cannot
+    # start a second quick lane; see issue #38).
+    slow_done = threading.Event()
+    if not slow_candidates:
+        slow_done.set()
+
     def _run_lane(
         candidates: list,
         lane_stats: ExtractionProcessResult,
         progress_key: str,
         lane_total: int,
+        *,
+        refill: "Callable[[Any], list] | None" = None,
+        drain_until: "threading.Event | None" = None,
     ) -> None:
         conn = connect_db(config.paths.db_path)
         run_migrations(conn, _migrations_dir(config))
+        seen_ids: set[int] = {item.id for item in candidates}
+        queue: list = list(candidates)
+        idx = 0
         try:
-            for idx, item in enumerate(candidates):
+            while True:
+                if not queue:
+                    if refill is None or drain_until is None or drain_until.is_set():
+                        break
+                    fresh = [item for item in refill(conn) if item.id not in seen_ids]
+                    if not fresh:
+                        # Nothing new yet; wait for more intake or for the other
+                        # lane to finish, whichever comes first, then look again.
+                        drain_until.wait(_QUICK_LANE_REFILL_WAIT_SECONDS)
+                        continue
+                    seen_ids.update(item.id for item in fresh)
+                    queue.extend(fresh)
+                    lane_total += len(fresh)
+                    if progress is not None:
+                        progress[f"{progress_key}_total"] = lane_total
+                item = queue.pop(0)
                 with conn:
                     claimed = mark_processing(conn, item.id)
                 if not claimed:
@@ -480,6 +514,7 @@ def _process_dual_lane(
                     # stale orphan is still in flight. Skip to avoid a second live
                     # subprocess for the same item.
                     _log.debug("extraction item %s no longer pending at claim; skipping", item.id)
+                    idx += 1
                     continue
                 handle = _spawn_item_subprocess(
                     config_path=config_path,
@@ -493,6 +528,7 @@ def _process_dual_lane(
                     process_registry=process_registry,
                     progress_key=progress_key,
                 )
+                idx += 1
                 timed_out = handle.join()
                 if timed_out:
                     lane_stats.errors += 1
@@ -510,11 +546,28 @@ def _process_dual_lane(
         finally:
             conn.close()
 
+    def _run_slow_lane() -> None:
+        try:
+            _run_lane(slow_candidates, slow_stats, "slow", slow_total)
+        finally:
+            slow_done.set()
+
+    def _run_quick_lane() -> None:
+        _run_lane(
+            quick_candidates,
+            quick_stats,
+            "quick",
+            quick_total,
+            refill=lambda conn: pending_quick_items(conn, limit=config.extraction.quick_lane_batch),
+            drain_until=slow_done,
+        )
+
     lane_threads: list[threading.Thread] = []
-    if quick_candidates:
+    if quick_candidates or slow_candidates:
+        # Start the quick lane even when it is initially empty if the slow lane
+        # has work: sessions queued during the PDF run are picked up right away.
         t = threading.Thread(
-            target=_run_lane,
-            args=(quick_candidates, quick_stats, "quick", quick_total),
+            target=_run_quick_lane,
             name="mnemonicos-extraction-quick",
             daemon=True,
         )
@@ -522,8 +575,7 @@ def _process_dual_lane(
         lane_threads.append(t)
     if slow_candidates:
         t = threading.Thread(
-            target=_run_lane,
-            args=(slow_candidates, slow_stats, "slow", slow_total),
+            target=_run_slow_lane,
             name="mnemonicos-extraction-slow",
             daemon=True,
         )
