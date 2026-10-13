@@ -885,6 +885,44 @@ class SocketSendTest(unittest.TestCase):
             mock_run_job.assert_not_called()
             self.assertNotEqual(exit_code, 0)
 
+    def test_daemon_run_job_inline_fallback_is_labelled_and_daemon_shaped(self) -> None:
+        """When the daemon is unreachable the CLI runs the job inline, says so,
+        and prints the same result shape as a daemon reply (issue #42)."""
+        import io
+        import json as _json
+        from contextlib import redirect_stderr, redirect_stdout
+        from unittest import mock
+
+        from second_brain import cli
+        from second_brain.models import JobRunResult
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_dir = Path(tmp) / "config"
+            config_dir.mkdir()
+            config_path = config_dir / "memory.toml"
+            config_path.write_text("")
+            fake_result = JobRunResult(
+                job_name="status_report", status="ok", stats={"pending_count": 0}, review_items_created=[]
+            )
+            out, err = io.StringIO(), io.StringIO()
+            with (
+                mock.patch.object(cli, "socket_send", return_value=None),
+                mock.patch.object(cli, "run_job", return_value=fake_result) as mock_run_job,
+                redirect_stdout(out),
+                redirect_stderr(err),
+            ):
+                exit_code = cli._daemon_run_job(str(config_path), "status_report")
+
+            mock_run_job.assert_called_once()
+            self.assertEqual(exit_code, 0)
+            payload = _json.loads(out.getvalue().strip().splitlines()[-1])
+            self.assertEqual(payload["status"], "ok")
+            self.assertEqual(payload["fallback"], "inline")
+            self.assertEqual(payload["daemon"], "unreachable")
+            self.assertEqual(payload["result"]["stats"], {"pending_count": 0})
+            self.assertEqual(payload["result"]["job_name"], "status_report")
+            self.assertIn("daemon unreachable", err.getvalue())
+
 
 class TriggerPipelineTest(unittest.TestCase):
     """The intake push trigger must never run a second extraction loop beside a
