@@ -1169,6 +1169,119 @@ class ExtractionLayerTest(unittest.TestCase):
         self.assertNotIn(_socket.timeout, _TRANSIENT_ERRORS)
         self.assertNotIn(TimeoutError, _TRANSIENT_ERRORS)
 
+    def test_connection_refused_is_retried_as_transient(self) -> None:
+        """A refused connection (Ollama restarting) is retried, then raised as-is."""
+        from urllib.error import URLError
+        from urllib import request as _req
+        from second_brain.extraction import providers
+
+        req = _req.Request("http://127.0.0.1:11434/api/generate", method="GET")
+        with (
+            mock.patch.object(providers, "_RETRY_DELAYS", (0.0, 0.0)),
+            mock.patch("second_brain.extraction.providers.request.build_opener") as mock_opener,
+        ):
+            instance = mock_opener.return_value
+            instance.open.side_effect = URLError(ConnectionRefusedError(111, "refused"))
+            with self.assertRaises(URLError):
+                with providers._open_request(req, timeout_seconds=1):
+                    pass
+        # 2 delays + final attempt = 3 calls; a non-transient error would stop at 1.
+        self.assertEqual(instance.open.call_count, 3)
+
+    def test_http_5xx_is_retried_and_4xx_is_not(self) -> None:
+        """5xx from the inference endpoint is transient; 4xx is raised immediately."""
+        from urllib.error import HTTPError
+        from urllib import request as _req
+        from second_brain.extraction import providers
+
+        req = _req.Request("http://127.0.0.1:11434/api/generate", method="GET")
+
+        def _http_error(code: int) -> HTTPError:
+            return HTTPError(req.full_url, code, "boom", hdrs=None, fp=None)  # type: ignore[arg-type]
+
+        with (
+            mock.patch.object(providers, "_RETRY_DELAYS", (0.0,)),
+            mock.patch("second_brain.extraction.providers.request.build_opener") as mock_opener,
+        ):
+            instance = mock_opener.return_value
+            instance.open.side_effect = _http_error(503)
+            with self.assertRaises(HTTPError):
+                with providers._open_request(req, timeout_seconds=1):
+                    pass
+            self.assertEqual(instance.open.call_count, 2)
+
+            instance.open.reset_mock()
+            instance.open.side_effect = _http_error(400)
+            with self.assertRaises(HTTPError):
+                with providers._open_request(req, timeout_seconds=1):
+                    pass
+            self.assertEqual(instance.open.call_count, 1)
+
+    def test_subprocess_entry_first_failure_is_retryable_not_tombstoned(self) -> None:
+        """mark_processing bumps attempt_count before the subprocess runs, so a
+        first attempt reads attempt_count == 1. That must stay a plain error;
+        only a repeat failure (attempt_count >= 2) is tombstoned."""
+        from second_brain.extraction._subprocess_entry import _run
+        from second_brain.extraction.queue import mark_processing
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            config = _config(workspace)
+            connection = connect_db(config.paths.db_path)
+            try:
+                with connection:
+                    connection.execute(
+                        "INSERT INTO archive(id, type, path, ingested_at, tags) "
+                        "VALUES ('artifact/first-fail', 'doc', '/dev/null', '2026-05-21', '[]')"
+                    )
+                    connection.execute(
+                        "INSERT INTO extraction_queue(id, source_kind, archive_id, status, attempt_count) "
+                        "VALUES (81, 'artifact', 'artifact/first-fail', 'pending', 0)"
+                    )
+                    self.assertTrue(mark_processing(connection, 81))  # attempt_count -> 1
+            finally:
+                connection.close()
+
+            with mock.patch(
+                "second_brain.extraction.worker._process_item",
+                side_effect=RuntimeError("ollama refused"),
+            ):
+                self.assertEqual(_run(81, config_path=str(config.config_path)), 1)
+
+            connection = connect_db(config.paths.db_path)
+            try:
+                row = connection.execute(
+                    "SELECT status, attempt_count, last_error FROM extraction_queue WHERE id = 81"
+                ).fetchone()
+                self.assertEqual(row["status"], "error")
+                self.assertEqual(row["attempt_count"], 1)
+                self.assertNotIn("tombstoned", str(row["last_error"]))
+
+                # Simulate retry_failed_extractions + a second claim, then fail again.
+                with connection:
+                    connection.execute(
+                        "UPDATE extraction_queue SET status='pending', last_error=NULL WHERE id = 81"
+                    )
+                    self.assertTrue(mark_processing(connection, 81))  # attempt_count -> 2
+            finally:
+                connection.close()
+
+            with mock.patch(
+                "second_brain.extraction.worker._process_item",
+                side_effect=RuntimeError("ollama refused again"),
+            ):
+                self.assertEqual(_run(81, config_path=str(config.config_path)), 1)
+
+            connection = connect_db(config.paths.db_path)
+            try:
+                row = connection.execute(
+                    "SELECT status, last_error FROM extraction_queue WHERE id = 81"
+                ).fetchone()
+            finally:
+                connection.close()
+            self.assertEqual(row["status"], "error")
+            self.assertTrue(str(row["last_error"]).startswith("tombstoned:"), row["last_error"])
+
     def test_ollama_vlm_provider_passes_timeout_and_keep_alive(self) -> None:
         """OllamaVLMProvider passes timeout_seconds and keep_alive=0 to _ollama_generate."""
         from second_brain.extraction.providers import OllamaVLMProvider
