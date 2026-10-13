@@ -1066,10 +1066,15 @@ class ExtractionLayerTest(unittest.TestCase):
                 ).fetchall()
                 self.assertEqual([r["artifact_id"] for r in stored], ["fig-1", "fig-2", "fig-3"])
                 row = connection.execute(
-                    "SELECT status, visual_snippet_count FROM extraction_queue WHERE id = 90"
+                    "SELECT status, visual_snippet_count, projection_metadata_json FROM extraction_queue WHERE id = 90"
                 ).fetchone()
                 self.assertEqual(row["status"], "processed")
                 self.assertEqual(row["visual_snippet_count"], 3)
+                # Totals cover checkpointed + this-attempt snippets (Codex review P2).
+                meta = json.loads(row["projection_metadata_json"])
+                self.assertEqual(meta["vlm_artifacts_described"], 3)
+                self.assertEqual(meta["vlm_artifacts_skipped"], 0)
+                self.assertEqual(meta["vlm_artifacts_described_this_attempt"], 2)
             finally:
                 connection.close()
 
@@ -1108,6 +1113,44 @@ class ExtractionLayerTest(unittest.TestCase):
                 self.assertEqual(meta["vlm_artifacts_skipped"], 2)
             finally:
                 connection.close()
+
+    def test_ingest_session_same_second_same_session_does_not_collide(self) -> None:
+        """Two summaries for one session ingested within the same second must
+        both land (Codex review P2: archive id was second-resolution)."""
+        from datetime import datetime
+
+        from second_brain import ingest as ingest_module
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = _config(Path(tmp_dir))
+            frozen = datetime(2026, 10, 13, 12, 0, 0)
+
+            class _FrozenDatetime(datetime):
+                @classmethod
+                def now(cls, tz=None):  # type: ignore[override]
+                    return frozen
+
+            with mock.patch.object(ingest_module, "datetime", _FrozenDatetime):
+                first = ingest_session(config, bridge_id="claude", session_id="s1", content="first summary body\n")
+                second = ingest_session(config, bridge_id="claude", session_id="s1", content="second summary body\n")
+            self.assertNotEqual(first.archive_id, second.archive_id)
+            self.assertTrue(second.archive_id.startswith(first.archive_id))
+            self.assertTrue(Path(first.raw_path).exists())
+            self.assertTrue(Path(second.raw_path).exists())
+            self.assertNotEqual(Path(first.raw_path).read_text(), Path(second.raw_path).read_text())
+            connection = connect_db(config.paths.db_path)
+            try:
+                count = connection.execute(
+                    "SELECT COUNT(*) FROM archive WHERE id IN (?, ?)", (first.archive_id, second.archive_id)
+                ).fetchone()[0]
+                queued = connection.execute(
+                    "SELECT COUNT(*) FROM extraction_queue WHERE archive_id IN (?, ?)",
+                    (first.archive_id, second.archive_id),
+                ).fetchone()[0]
+            finally:
+                connection.close()
+            self.assertEqual(count, 2)
+            self.assertEqual(queued, 2)
 
     def test_dual_lane_process_respects_per_run_batch_caps(self) -> None:
         from second_brain.extraction import worker

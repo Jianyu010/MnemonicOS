@@ -36,7 +36,7 @@ HOOK_JSON=$(cat)
 if [[ -z "${STATE_FILE:-}" ]]; then
   _SESSION_ID=$(echo "$HOOK_JSON" | python3 -c \
     "import sys,json; d=json.load(sys.stdin); print(d.get('session_id',''))" 2>/dev/null) || _SESSION_ID=""
-  STATE_FILE="$(mnemo_state_file_for_session /tmp/mnemo_hook_state "$_SESSION_ID")"
+  STATE_FILE="$(mnemo_state_file_for_session "$(mnemo_state_prefix_for_bridge claude)" "$_SESSION_ID")"
   [[ ! -f "$STATE_FILE" && -f /tmp/mnemo_hook_state ]] && STATE_FILE="/tmp/mnemo_hook_state"
 fi
 # Abort if no active episode state

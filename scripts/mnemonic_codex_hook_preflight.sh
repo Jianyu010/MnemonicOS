@@ -9,6 +9,8 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/mnemonic_pending.sh
+source "$REPO_ROOT/scripts/lib/mnemonic_pending.sh"
 if [[ -f "$REPO_ROOT/config/memory.toml" ]]; then
   CONFIG="$REPO_ROOT/config/memory.toml"
 else
@@ -38,7 +40,7 @@ SESSION_ID=$(echo "$HOOK_JSON" | python3 -c \
   2>/dev/null) \
   || SESSION_ID="codex-$(python3 -c 'import uuid;print(uuid.uuid4().hex[:12])')"
 if [[ -z "$STATE_FILE" ]]; then
-  STATE_FILE="/tmp/mnemo_codex_hook_state_$(SESSION_ID="$SESSION_ID" python3 -c 'import hashlib,os; print(hashlib.sha256(os.environ["SESSION_ID"].encode()).hexdigest()[:16])' 2>/dev/null || printf 'default')"
+  STATE_FILE="$(mnemo_state_file_for_session "$(mnemo_state_prefix_for_bridge codex)" "$SESSION_ID")"
 fi
 
 TURN_ID=$(echo "$HOOK_JSON" | python3 -c \

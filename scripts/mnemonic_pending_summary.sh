@@ -5,12 +5,20 @@
 # overwrite another agent's (or another session's) not-yet-ingested summary.
 #
 # Usage:
-#   mnemonic_pending_summary.sh [--agent claude|codex|...] [--file <path>] [--print-dir]
+#   mnemonic_pending_summary.sh [--agent claude|codex|...] [--session-id <id>]
+#                               [--file <path>] [--print-dir]
 #
-#   --agent   Owner of the summary. Defaults to the `agent:` header of the
-#             content, then to $MNEMO_AGENT, then to "unknown".
-#   --file    Read the summary from <path> instead of stdin.
-#   --print-dir  Print the pending directory and exit.
+#   --agent       Owner of the summary. Defaults to the `agent:` header of the
+#                 content, then to $MNEMO_AGENT, then to "unknown".
+#   --session-id  Session that owns the summary; written as a `mnemo_session:`
+#                 header so only that session's Stop hook ingests it. Defaults
+#                 to $MNEMO_SESSION_ID, $CLAUDE_SESSION_ID / $CODEX_SESSION_ID,
+#                 or the single active hook state file for the agent. When no
+#                 session can be determined the file is left unbound and any
+#                 Stop hook of that agent may take it once no other session of
+#                 the agent is mid-turn.
+#   --file        Read the summary from <path> instead of stdin.
+#   --print-dir   Print the pending directory and exit.
 #
 # Prints the created path on stdout. Exit 0 on success, 1 on error.
 
@@ -21,14 +29,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/mnemonic_pending.sh"
 
 AGENT=""
+SESSION_ID=""
 SOURCE_FILE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --agent)     AGENT="$2"; shift 2 ;;
-    --file)      SOURCE_FILE="$2"; shift 2 ;;
-    --print-dir) mnemo_pending_dir; echo; exit 0 ;;
-    -h|--help)   sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *)           echo "Unknown option: $1" >&2; exit 1 ;;
+    --agent)      AGENT="$2"; shift 2 ;;
+    --session-id) SESSION_ID="$2"; shift 2 ;;
+    --file)       SOURCE_FILE="$2"; shift 2 ;;
+    --print-dir)  mnemo_pending_dir; echo; exit 0 ;;
+    -h|--help)    sed -n '2,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *)            echo "Unknown option: $1" >&2; exit 1 ;;
   esac
 done
 
@@ -54,4 +64,16 @@ if [[ -z "$AGENT" ]]; then
 fi
 AGENT="${AGENT:-${MNEMO_AGENT:-unknown}}"
 
-mnemo_pending_create "$AGENT" < "$TMP"
+# Respect a mnemo_session header already present in the content.
+if [[ -z "$SESSION_ID" ]]; then
+  SESSION_ID="$(mnemo_summary_session "$TMP")"
+fi
+if [[ -z "$SESSION_ID" ]]; then
+  SESSION_ID="$(mnemo_detect_session_id "$AGENT")"
+fi
+if [[ -n "$SESSION_ID" && -n "$(mnemo_summary_session "$TMP")" ]]; then
+  # Header already there; do not duplicate it.
+  mnemo_pending_create "$AGENT" "" < "$TMP"
+else
+  mnemo_pending_create "$AGENT" "$SESSION_ID" < "$TMP"
+fi

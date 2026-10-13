@@ -694,14 +694,30 @@ def _archive_session(
 ) -> tuple[str, Path, list[str], sqlite3.Connection]:
     now = datetime.now()
     timestamp = now.strftime("%Y-%m-%d-%H%M%S")
-    archive_name = f"{timestamp}-{slugify(resolved_bridge_id)}-{slugify(resolved_session_id)}"
-    archive_id = f"session/{archive_name}"
-    raw_path = config.paths.vault_root / "raw" / "sessions" / f"{archive_name}.md"
-    raw_path.parent.mkdir(parents=True, exist_ok=True)
-    raw_path.write_text(content.rstrip() + "\n")
+    base_name = f"{timestamp}-{slugify(resolved_bridge_id)}-{slugify(resolved_session_id)}"
+    sessions_dir = config.paths.vault_root / "raw" / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
 
     connection = connect_db(config.paths.db_path)
     run_migrations(connection, _migrations_dir(config))
+
+    # The archive id is second-resolution; two summaries for the same session
+    # ingested within one second (e.g. several pending files in one Stop hook
+    # run) would collide on archive.id / the raw path. Add a numeric suffix
+    # until both are free so the second one is not lost.
+    archive_name = base_name
+    suffix = 1
+    while True:
+        raw_path = sessions_dir / f"{archive_name}.md"
+        exists = raw_path.exists() or connection.execute(
+            "SELECT 1 FROM archive WHERE id = ?", (f"session/{archive_name}",)
+        ).fetchone() is not None
+        if not exists:
+            break
+        suffix += 1
+        archive_name = f"{base_name}-{suffix}"
+    archive_id = f"session/{archive_name}"
+    raw_path.write_text(content.rstrip() + "\n")
 
     text_options = _text_options(config)
     chunks = _chunk_text(

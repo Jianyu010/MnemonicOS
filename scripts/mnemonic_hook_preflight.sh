@@ -50,7 +50,7 @@ SESSION_ID=$(echo "$HOOK_JSON" | python3 -c \
 # other's episodes (issue #37). Downstream hooks derive the same path from the
 # session_id in their own stdin JSON.
 if [[ -z "$STATE_FILE" ]]; then
-  STATE_FILE="$(mnemo_state_file_for_session /tmp/mnemo_hook_state "$SESSION_ID")"
+  STATE_FILE="$(mnemo_state_file_for_session "$(mnemo_state_prefix_for_bridge claude)" "$SESSION_ID")"
 fi
 
 if command -v mnemonicos >/dev/null 2>&1; then

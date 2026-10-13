@@ -83,6 +83,10 @@ another Codex session's pending summary):
 scripts/mnemonic_pending_summary.sh --agent codex --file <draft.md>
 ```
 
+The helper binds the file to the current session automatically (from
+`$CODEX_SESSION_ID`/`$CODEX_THREAD_ID` or the single active hook state). When
+several Codex sessions run at once, pass `--session-id <thread id>` explicitly.
+
 Do NOT write `/tmp/mnemo_pending_summary.md` directly; that single path is shared
 with Claude Code and gets overwritten. The Codex Stop hook
 (`scripts/mnemonic_codex_stop_hook.sh`) ingests only files whose `agent:` header

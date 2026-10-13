@@ -76,6 +76,8 @@ Queue the summary for the Stop hook with the helper, which always creates a **ne
 cd /Users/jianyulong/ai_memory && scripts/mnemonic_pending_summary.sh --agent claude --file <draft.md>
 ```
 
+The helper binds the file to the current session automatically (from `$CLAUDE_SESSION_ID` or the single active hook state). When several Claude Code sessions run at once, pass `--session-id <session_id>` explicitly; an unbound file is only ingested once no other Claude session is mid-turn.
+
 Do NOT write `/tmp/mnemo_pending_summary.md` directly any more; that single path is shared with Codex and gets overwritten. (The Stop hook still accepts it for backward compatibility when its `agent:` header is `claude`.) The Stop hook ingests only files whose `agent:` header is `claude` and deletes each one only after it was accepted.
 
 Required header fields:

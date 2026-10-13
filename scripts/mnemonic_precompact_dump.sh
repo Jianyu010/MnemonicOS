@@ -36,6 +36,12 @@ HOOK_JSON=$(cat 2>/dev/null) || HOOK_JSON="{}"
 TRIGGER=$(echo "$HOOK_JSON" | python3 -c \
   "import sys,json; d=json.load(sys.stdin); print(d.get('trigger','auto'))" 2>/dev/null) \
   || TRIGGER="auto"
+SESSION_ID=$(echo "$HOOK_JSON" | python3 -c \
+  "import sys,json; d=json.load(sys.stdin); print(d.get('session_id',''))" 2>/dev/null) \
+  || SESSION_ID=""
+if [[ -z "${STATE_FILE:-}" ]]; then
+  STATE_FILE="$(mnemo_state_file_for_session "$(mnemo_state_prefix_for_bridge claude)" "$SESSION_ID")"
+fi
 
 TIMESTAMP=$(date +%Y-%m-%d-%H%M%S)
 COUNT=0
@@ -46,7 +52,7 @@ while IFS= read -r pending; do
   OUTFILE="$RAW_DIR/${TIMESTAMP}-claude-precompact-${TRIGGER}-${COUNT}.md"
   cp "$pending" "$OUTFILE"
   echo "MnemonicOS: precompact dump saved → $OUTFILE (trigger=$TRIGGER, from $(basename "$pending"))" >&2
-done < <(mnemo_pending_files_for_bridge "$BRIDGE_ID")
+done < <(mnemo_pending_files_for_bridge "$BRIDGE_ID" "$SESSION_ID" "$STATE_FILE")
 
 if [[ "$COUNT" -eq 0 ]]; then
   echo "MnemonicOS: precompact dump skipped (trigger=$TRIGGER, no pending summary)" >&2

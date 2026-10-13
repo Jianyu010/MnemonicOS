@@ -59,7 +59,7 @@ SESSION_ID=$(echo "$HOOK_JSON" | python3 -c \
 # otherwise use the per-session path, falling back to the legacy shared path
 # written by an older preflight hook.
 if [[ -z "${STATE_FILE:-}" ]]; then
-  STATE_FILE="$(mnemo_state_file_for_session /tmp/mnemo_hook_state "$SESSION_ID")"
+  STATE_FILE="$(mnemo_state_file_for_session "$(mnemo_state_prefix_for_bridge claude)" "$SESSION_ID")"
   if [[ ! -f "$STATE_FILE" && -f /tmp/mnemo_hook_state ]]; then
     STATE_FILE="/tmp/mnemo_hook_state"
   fi
@@ -199,7 +199,7 @@ while IFS= read -r pending; do
   else
     echo "MnemonicOS: ingestion failed for $pending — left in place for the next turn" >&2
   fi
-done < <(mnemo_pending_files_for_bridge "$BRIDGE_ID")
+done < <(mnemo_pending_files_for_bridge "$BRIDGE_ID" "$SESSION_ID" "$STATE_FILE")
 
 rm -f "$STATE_FILE"
 exit 0

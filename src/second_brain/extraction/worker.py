@@ -835,9 +835,17 @@ def _process_item(
                 )
             stored_snippets[artifact.artifact_id] = snippet
             visual_snippets.append(snippet)
-        if vlm_skipped or vlm_calls:
-            projection_metadata["vlm_artifacts_described"] = vlm_calls
-            projection_metadata["vlm_artifacts_skipped"] = vlm_skipped
+        if visual_snippets:
+            # Totals over the complete set, including snippets checkpointed by
+            # earlier attempts, not just this attempt's calls.
+            total_skipped = sum(
+                1
+                for s in visual_snippets
+                if any(w.startswith(_VLM_SKIPPED_WARNING_PREFIX) for w in s.warnings)
+            )
+            projection_metadata["vlm_artifacts_described"] = len(visual_snippets) - total_skipped
+            projection_metadata["vlm_artifacts_skipped"] = total_skipped
+            projection_metadata["vlm_artifacts_described_this_attempt"] = vlm_calls
 
         llm = build_llm_provider(config)
         retrieval_context_note_ids = _parse_memory_context_note_ids(windows)

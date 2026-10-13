@@ -43,8 +43,8 @@ SESSION_ID=$(echo "$HOOK_JSON" | python3 -c \
   "import sys,json; d=json.load(sys.stdin); print(d.get('session_id',''))" 2>/dev/null) \
   || SESSION_ID=""
 if [[ -z "$STATE_FILE" ]]; then
-  STATE_FILE="$(mnemo_state_file_for_session /tmp/mnemo_codex_hook_state "$SESSION_ID")"
-  [[ -z "$SESSION_ID" ]] && STATE_FILE="/tmp/mnemo_codex_hook_state_default"
+  STATE_FILE="$(mnemo_state_file_for_session "$(mnemo_state_prefix_for_bridge codex)" "$SESSION_ID")"
+  [[ -z "$SESSION_ID" ]] && STATE_FILE="$(mnemo_state_prefix_for_bridge codex)_default"
 fi
 TURN_ID=$(echo "$HOOK_JSON" | python3 -c \
   "import sys,json; d=json.load(sys.stdin); print(d.get('turn_id',''))" 2>/dev/null) \
@@ -149,7 +149,7 @@ while IFS= read -r pending; do
   else
     echo "MnemonicOS: ingestion failed for $pending — left in place for the next turn" >&2
   fi
-done < <(mnemo_pending_files_for_bridge "$BRIDGE_ID")
+done < <(mnemo_pending_files_for_bridge "$BRIDGE_ID" "$SESSION_ID" "$STATE_FILE")
 
 rm -f "$STATE_FILE"
 exit 0

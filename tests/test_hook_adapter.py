@@ -46,6 +46,10 @@ def _make_env(*, state_file: str, mnemo_enabled: str = "1", extra: dict | None =
     env["STATE_FILE"] = state_file
     env["MNEMO_ENABLED"] = mnemo_enabled
     env.setdefault("MNEMO_PENDING_DIR", _TEST_PENDING_DIR)
+    # Per-session state prefixes are isolated too, so real sessions on the
+    # machine never count as "other active sessions" during tests.
+    env.setdefault("MNEMO_CLAUDE_STATE_PREFIX", str(Path(_TEST_PENDING_DIR) / "claude_state"))
+    env.setdefault("MNEMO_CODEX_STATE_PREFIX", str(Path(_TEST_PENDING_DIR) / "codex_state"))
     # Ensure disable flag file path can be tested independently
     if extra:
         env.update(extra)
@@ -436,10 +440,15 @@ class TestPendingSummaryRouting(unittest.TestCase):
         self._tmp.cleanup()
 
     def _env(self, *, extra: dict | None = None) -> dict:
+        root = Path(self._tmp.name)
         merged = {
             "PATH": self._fake_path,
             "MNEMO_PENDING_DIR": str(self._pending_dir),
             "MNEMO_PENDING_LEGACY_FILE": str(self._legacy),
+            # Per-test state prefixes: a state file left by one test must never
+            # look like an active session to another.
+            "MNEMO_CLAUDE_STATE_PREFIX": str(root / "claude_state"),
+            "MNEMO_CODEX_STATE_PREFIX": str(root / "codex_state"),
         }
         if extra:
             merged.update(extra)
@@ -577,12 +586,69 @@ class TestPendingSummaryRouting(unittest.TestCase):
         self.assertEqual(len(list(self._pending_dir.glob("*.md"))), 2)
         self.assertTrue(self._legacy.exists())
 
+    def test_pending_files_are_bound_to_their_session(self) -> None:
+        """With two sessions of the same agent mid-turn, a Stop hook takes only
+        files bound to its own session; unbound files wait until no other
+        session is active (Codex review P1)."""
+        import hashlib
+
+        prefix = Path(self._env()["MNEMO_CLAUDE_STATE_PREFIX"])
+        other_state = Path(f"{prefix}_{hashlib.sha256(b'other-session').hexdigest()[:16]}")
+        other_state.write_text(json.dumps({"task_id": "task-other", "session_id": "other-session"}))
+        self._write_state(task_id="task-mine", session_id="s1", conversation_id="conv-1", episode_id="ep-1")
+
+        mine = self._pending_dir / "claude-20261013-120000-aaaaaa.md"
+        mine.write_text("mnemo_session: s1\n" + _pending_summary(agent="claude"))
+        theirs = self._pending_dir / "claude-20261013-120001-bbbbbb.md"
+        theirs.write_text("mnemo_session: other-session\n" + _pending_summary(agent="claude"))
+        unbound = self._pending_dir / "claude-20261013-120002-cccccc.md"
+        unbound.write_text(_pending_summary(agent="claude"))
+
+        result = self._run(STOP_HOOK, {"session_id": "s1"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self._calls()
+        self.assertEqual(calls.count("orchestrator finish-task"), 1)
+        self.assertIn(str(mine), calls)
+        self.assertFalse(mine.exists())
+        self.assertTrue(theirs.exists(), "another session's bound file must survive")
+        self.assertTrue(unbound.exists(), "unbound file waits while another session is active")
+
+        # Once the other session is gone, the unbound file is fair game.
+        other_state.unlink()
+        self._write_state(task_id="task-mine-2", session_id="s1", conversation_id="conv-1", episode_id="ep-2")
+        result = self._run(STOP_HOOK, {"session_id": "s1"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(unbound.exists())
+        self.assertTrue(theirs.exists())
+
+    def test_helper_binds_session_from_single_active_state_file(self) -> None:
+        import hashlib
+
+        env = self._env()
+        prefix = Path(env["MNEMO_CLAUDE_STATE_PREFIX"])
+        state = Path(f"{prefix}_{hashlib.sha256(b'only-session').hexdigest()[:16]}")
+        state.write_text(json.dumps({"task_id": "t", "session_id": "only-session"}))
+        result = subprocess.run(
+            ["bash", self.PENDING_HELPER, "--agent", "claude"], input=_pending_summary(agent="claude"),
+            capture_output=True, text=True, env=env, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        content = Path(result.stdout.strip()).read_text()
+        self.assertTrue(content.startswith("mnemo_session: only-session\n"), content[:80])
+        # Explicit flag wins over detection.
+        result = subprocess.run(
+            ["bash", self.PENDING_HELPER, "--agent", "claude", "--session-id", "explicit"],
+            input=_pending_summary(agent="claude"), capture_output=True, text=True, env=env, timeout=30,
+        )
+        self.assertTrue(Path(result.stdout.strip()).read_text().startswith("mnemo_session: explicit\n"))
+
     def test_preflight_state_file_is_per_session_by_default(self) -> None:
         import hashlib
 
         session_id = "per-session-state-test-0001"
-        expected = Path(f"/tmp/mnemo_hook_state_{hashlib.sha256(session_id.encode()).hexdigest()[:16]}")
         env = self._env()
+        prefix = env["MNEMO_CLAUDE_STATE_PREFIX"]
+        expected = Path(f"{prefix}_{hashlib.sha256(session_id.encode()).hexdigest()[:16]}")
         env.pop("STATE_FILE", None)
         try:
             result = subprocess.run(
