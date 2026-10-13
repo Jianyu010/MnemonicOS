@@ -49,3 +49,6 @@ development/
 
 # Runtime DB (local only)
 /brain/data/memory.sqlite
+
+# Local config (copy of memory.example.toml with machine-specific overrides)
+/config/memory.toml

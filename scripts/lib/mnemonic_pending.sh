@@ -171,8 +171,14 @@ mnemo_pending_create() {
   mkdir -p "$dir"
   body="$(mktemp "${TMPDIR:-/tmp}/mnemo_pending_body.XXXXXX")" || return 1
   if [[ -n "$session_id" ]]; then
-    printf 'mnemo_session: %s\n' "$session_id" > "$body"
-    cat >> "$body"
+    # Keep `agent:` as the first header line (the documented layout); put the
+    # session binding right after it, or first when there is no agent header.
+    MNEMO_SESSION_LINE="mnemo_session: $session_id" awk '
+      NR == 1 && $0 ~ /^agent:/ { print; print ENVIRON["MNEMO_SESSION_LINE"]; done = 1; next }
+      NR == 1 { print ENVIRON["MNEMO_SESSION_LINE"]; print; done = 1; next }
+      { print }
+      END { if (!done) print ENVIRON["MNEMO_SESSION_LINE"] }
+    ' > "$body"
   else
     cat > "$body"
   fi

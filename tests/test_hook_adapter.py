@@ -633,14 +633,22 @@ class TestPendingSummaryRouting(unittest.TestCase):
             capture_output=True, text=True, env=env, timeout=30,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        content = Path(result.stdout.strip()).read_text()
-        self.assertTrue(content.startswith("mnemo_session: only-session\n"), content[:80])
+        lines = Path(result.stdout.strip()).read_text().splitlines()
+        # agent: stays the first header line; the session binding follows it.
+        self.assertEqual(lines[0], "agent: claude")
+        self.assertEqual(lines[1], "mnemo_session: only-session")
         # Explicit flag wins over detection.
         result = subprocess.run(
             ["bash", self.PENDING_HELPER, "--agent", "claude", "--session-id", "explicit"],
             input=_pending_summary(agent="claude"), capture_output=True, text=True, env=env, timeout=30,
         )
-        self.assertTrue(Path(result.stdout.strip()).read_text().startswith("mnemo_session: explicit\n"))
+        self.assertEqual(Path(result.stdout.strip()).read_text().splitlines()[1], "mnemo_session: explicit")
+        # Content without an agent header gets the binding first.
+        result = subprocess.run(
+            ["bash", self.PENDING_HELPER, "--agent", "claude", "--session-id", "x"],
+            input="## Task\nno header\n", capture_output=True, text=True, env=env, timeout=30,
+        )
+        self.assertEqual(Path(result.stdout.strip()).read_text().splitlines()[0], "mnemo_session: x")
 
     def test_preflight_state_file_is_per_session_by_default(self) -> None:
         import hashlib
