@@ -135,9 +135,8 @@ wiki_health_report = "50 * * * *"
 wiki_raw_revisitation = "0 2 * * *"
 wiki_derive_passive_feedback = "*/30 * * * *"
 
-[maintenance]
-passive_feedback_enabled = true
-passive_feedback_inline_only = false
+# Maintenance settings (including passive feedback) live in the single
+# [maintenance] table further down. TOML rejects a table declared twice.
 
 [bridges.local_cli]
 session_prefix = "local-cli"

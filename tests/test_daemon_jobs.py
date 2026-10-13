@@ -273,6 +273,17 @@ class DaemonJobsTest(unittest.TestCase):
         self.assertEqual(cfg.quick_lane_batch, 5)
         self.assertEqual(cfg.slow_lane_batch, 5)
 
+    def test_example_config_loads(self) -> None:
+        """config/memory.example.toml is the fallback for every hook and the daemon.
+
+        A duplicate table (e.g. two ``[maintenance]`` sections) makes tomllib
+        reject the whole file, which silently breaks every hook that falls back
+        to it. Guard the shipped example against that regression.
+        """
+        config = load_config(ROOT / "config" / "memory.example.toml")
+        self.assertTrue(config.maintenance.passive_feedback_enabled)
+        self.assertEqual(config.maintenance.lifecycle_verified_threshold, 2)
+
     def test_extraction_config_dual_lane_toml(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
