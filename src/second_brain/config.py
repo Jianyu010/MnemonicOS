@@ -149,6 +149,10 @@ class ExtractionConfig:
     max_windows_per_batch: int = 1
     max_embedded_images: int = 100
     min_embedded_image_px: int = 64
+    # Upper bound on VLM calls per queue item. Artifacts beyond it are stored as
+    # skipped snippets so a 100-figure PDF cannot exceed max_extraction_item_seconds
+    # in the VLM phase alone (24 x 240 s default VLM timeout < 7200 s).
+    max_vlm_artifacts_per_item: int = 24
     max_extraction_item_seconds: int = 7200
     stall_timeout_seconds: int = 900
     dual_lane_enabled: bool = False
@@ -456,6 +460,7 @@ def load_config(config_path: str | Path | None = None, workspace_root: str | Pat
         max_windows_per_batch=int(extraction_data.get("max_windows_per_batch", _ed.max_windows_per_batch)),
         max_embedded_images=int(extraction_data.get("max_embedded_images", _ed.max_embedded_images)),
         min_embedded_image_px=int(extraction_data.get("min_embedded_image_px", _ed.min_embedded_image_px)),
+        max_vlm_artifacts_per_item=int(extraction_data.get("max_vlm_artifacts_per_item", _ed.max_vlm_artifacts_per_item)),
         max_extraction_item_seconds=int(extraction_data.get("max_extraction_item_seconds", _ed.max_extraction_item_seconds)),
         stall_timeout_seconds=int(extraction_data.get("stall_timeout_seconds", _ed.stall_timeout_seconds)),
         dual_lane_enabled=bool(extraction_data.get("dual_lane_enabled", _ed.dual_lane_enabled)),

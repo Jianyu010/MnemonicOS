@@ -80,6 +80,10 @@ reembed_on_summary_change_only = true
 #                                # HTTP timeout fires before the stall detector kills the process.
 # max_extraction_item_seconds = 7200  # absolute safety-net timeout (default 7200 = 2 h)
 # vlm_timeout_seconds = 240      # per-artifact VLM HTTP timeout; must be < stall_timeout_seconds (default 240)
+# max_vlm_artifacts_per_item = 24  # VLM calls per item; keep max_vlm_artifacts_per_item * vlm_timeout_seconds
+#                                  # well under max_extraction_item_seconds. Extra figures are stored as
+#                                  # skipped snippets. Snippets are checkpointed per artifact, so a killed
+#                                  # VLM pass resumes where it stopped.
 # llm_timeout_seconds = 600      # per-window LLM HTTP timeout; must be < stall_timeout_seconds (default 600)
 
 [graph]

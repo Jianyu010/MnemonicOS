@@ -85,8 +85,9 @@ def _run(item_id: int, *, config_path: str | None = None, progress_file: str | N
         _process_item(config, service, connection, item=item, dry_run=False, progress=progress, start_window=start_window)
         return 0
     except InferenceTimeoutError as exc:
-        # Always retryable — never tombstoned regardless of attempt_count.
-        # retry_failed_extractions requeues any error whose last_error starts with "timeout:".
+        # Written with the "timeout:" prefix, never "tombstoned:" here.
+        # retry_failed_extractions requeues timeout errors with exponential
+        # backoff and tombstones them only after _MAX_TIMEOUT_ATTEMPTS.
         error_text = f"timeout: inference call exceeded per-call timeout: {exc}"
         try:
             with connection:

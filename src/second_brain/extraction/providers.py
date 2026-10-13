@@ -24,7 +24,7 @@ class InferenceTimeoutError(RuntimeError):
 
     Caught by _subprocess_entry._run() before the generic handler and written as
     ``"timeout: …"`` — never ``"tombstoned: …"`` — so retry_failed_extractions
-    requeues the item regardless of attempt count.
+    requeues the item (with backoff, up to its timeout attempt cap).
     """
 
 

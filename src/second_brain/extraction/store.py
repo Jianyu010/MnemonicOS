@@ -37,6 +37,68 @@ def replace_visual_snippets(
         )
 
 
+def upsert_visual_snippet(
+    connection: sqlite3.Connection,
+    *,
+    queue_id: int,
+    snippet: VisualSnippet,
+    model_provider: str,
+    model_name: str,
+) -> None:
+    """Store one snippet as soon as the VLM returns it (per-artifact checkpoint).
+
+    A kill mid-VLM-phase keeps every snippet already stored, so the next
+    attempt only describes the remaining artifacts (issue #35).
+    """
+    connection.execute(
+        "DELETE FROM extraction_visual_snippets WHERE queue_id = ? AND artifact_id = ?",
+        (queue_id, snippet.artifact_id),
+    )
+    connection.execute(
+        """
+        INSERT INTO extraction_visual_snippets(
+            queue_id, artifact_id, marker, source_locator, snippet_json,
+            model_provider, model_name
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            queue_id,
+            snippet.artifact_id,
+            snippet.marker,
+            snippet.source_locator,
+            json.dumps(snippet.to_payload(), sort_keys=True),
+            model_provider,
+            model_name,
+        ),
+    )
+
+
+def load_visual_snippets(connection: sqlite3.Connection, *, queue_id: int) -> dict[str, VisualSnippet]:
+    """Return snippets already stored for ``queue_id`` keyed by artifact_id."""
+    rows = connection.execute(
+        "SELECT * FROM extraction_visual_snippets WHERE queue_id = ? ORDER BY id",
+        (queue_id,),
+    ).fetchall()
+    snippets: dict[str, VisualSnippet] = {}
+    for row in rows:
+        try:
+            payload = json.loads(str(row["snippet_json"] or "{}"))
+        except json.JSONDecodeError:
+            payload = {}
+        artifact_id = str(row["artifact_id"])
+        snippets[artifact_id] = VisualSnippet(
+            artifact_id=artifact_id,
+            marker=str(row["marker"] or payload.get("marker") or ""),
+            source_locator=str(row["source_locator"] or payload.get("source_locator") or ""),
+            visual_description=str(payload.get("visual_description") or ""),
+            visible_text=str(payload.get("visible_text") or ""),
+            warnings=[str(item) for item in (payload.get("warnings") or [])],
+            model_metadata={"provider": str(row["model_provider"]), "model": str(row["model_name"])},
+        )
+    return snippets
+
+
 def replace_candidates(
     connection: sqlite3.Connection,
     *,

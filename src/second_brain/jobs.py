@@ -708,6 +708,19 @@ _STALE_PROCESSING_TOMBSTONE_ATTEMPTS = 3
 # Items in 'pending' state with no error recorded (killed externally without cleanup)
 # are tombstoned after this many attempts to prevent them cycling forever.
 _MAX_PENDING_SILENT_ATTEMPTS = 10
+# Timeout errors ("timeout: ..." from a stalled subprocess or an inference call)
+# used to be requeued every run with no backoff and no cap, so a PDF that could
+# never fit the time budget burned the slow lane for two hours every hour,
+# forever (issue #35). Retries now wait 1 h, 2 h, 4 h, ... (capped at one day)
+# after the failure and stop after _MAX_TIMEOUT_ATTEMPTS attempts.
+_TIMEOUT_RETRY_BASE_MINUTES = 60
+_TIMEOUT_RETRY_MAX_MINUTES = 24 * 60
+_MAX_TIMEOUT_ATTEMPTS = 5
+
+
+def _timeout_retry_delay_minutes(attempt_count: int) -> int:
+    exponent = max(0, int(attempt_count) - 1)
+    return min(_TIMEOUT_RETRY_BASE_MINUTES * (2 ** exponent), _TIMEOUT_RETRY_MAX_MINUTES)
 
 
 def _retry_failed_extractions_job(config: AppConfig, *, dry_run: bool = False) -> JobRunResult:
@@ -716,6 +729,8 @@ def _retry_failed_extractions_job(config: AppConfig, *, dry_run: bool = False) -
     stats: dict[str, int] = {
         "retried": 0,
         "skipped_tombstoned": 0,
+        "timeout_backoff_waiting": 0,
+        "timeout_tombstoned": 0,
         "stale_processing_reset": 0,
         "stale_processing_tombstoned": 0,
         "pending_silent_tombstoned": 0,
@@ -724,15 +739,32 @@ def _retry_failed_extractions_job(config: AppConfig, *, dry_run: bool = False) -
     try:
         with connection:
             job_id = _open_job_run(connection, "retry_failed_extractions", "dry-run" if dry_run else "live")
-        rows = connection.execute(
+        error_rows = connection.execute(
             """
-            SELECT id
+            SELECT id, attempt_count, last_error,
+                   CAST((julianday('now') - julianday(finished_at)) * 1440 AS INTEGER) AS minutes_since_failure
             FROM extraction_queue
             WHERE status = 'error'
               AND (last_error IS NULL OR last_error NOT LIKE 'tombstoned:%')
             ORDER BY finished_at ASC NULLS LAST, id ASC
             """
         ).fetchall()
+        rows: list = []
+        timeout_tombstone_rows: list = []
+        for row in error_rows:
+            last_error = str(row["last_error"] or "")
+            if not last_error.startswith("timeout:"):
+                rows.append(row)
+                continue
+            attempts = int(row["attempt_count"] or 0)
+            if attempts >= _MAX_TIMEOUT_ATTEMPTS:
+                timeout_tombstone_rows.append(row)
+                continue
+            waited = row["minutes_since_failure"]
+            if waited is not None and int(waited) < _timeout_retry_delay_minutes(attempts):
+                stats["timeout_backoff_waiting"] += 1
+                continue
+            rows.append(row)
         tombstoned_count = int(
             (connection.execute(
                 "SELECT COUNT(*) FROM extraction_queue WHERE status='error' AND last_error LIKE 'tombstoned:%'"
@@ -783,6 +815,16 @@ def _retry_failed_extractions_job(config: AppConfig, *, dry_run: bool = False) -
                         (int(row["id"]),),
                     )
                     stats["retried"] += 1
+                for row in timeout_tombstone_rows:
+                    connection.execute(
+                        "UPDATE extraction_queue SET finished_at=datetime('now'), "
+                        "last_error='tombstoned: timed out on " + str(_MAX_TIMEOUT_ATTEMPTS)
+                        + " attempts — raise max_extraction_item_seconds or lower "
+                        "max_vlm_artifacts_per_item, then retry-extraction manually. Last: ' || last_error "
+                        "WHERE id=?",
+                        (int(row["id"]),),
+                    )
+                    stats["timeout_tombstoned"] += 1
                 for row in stale_rows:
                     if int(row["attempt_count"]) >= _STALE_PROCESSING_TOMBSTONE_ATTEMPTS:
                         connection.execute(
@@ -809,6 +851,7 @@ def _retry_failed_extractions_job(config: AppConfig, *, dry_run: bool = False) -
                     stats["pending_silent_tombstoned"] += 1
         else:
             stats["retried"] = len(rows)
+            stats["timeout_tombstoned"] = len(timeout_tombstone_rows)
             for row in stale_rows:
                 if int(row["attempt_count"]) >= _STALE_PROCESSING_TOMBSTONE_ATTEMPTS:
                     stats["stale_processing_tombstoned"] += 1

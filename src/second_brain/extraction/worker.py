@@ -20,7 +20,7 @@ from second_brain.ingest import _migrations_dir
 from second_brain.projection.pipeline import ProjectionService
 from second_brain.projection.pipeline_models import ProjectionOptions
 
-from .models import ExtractionProcessResult, ModelCandidate
+from .models import ExtractionProcessResult, ModelCandidate, VisualSnippet
 from .providers import build_llm_provider, build_vlm_provider, make_llm_packet
 from .queue import (
     mark_error,
@@ -34,7 +34,13 @@ from .queue import (
     source_ref_id,
     update_window_checkpoint,
 )
-from .store import append_candidates, candidate_counts, replace_candidates, replace_visual_snippets
+from .store import (
+    append_candidates,
+    candidate_counts,
+    load_visual_snippets,
+    replace_candidates,
+    upsert_visual_snippet,
+)
 from .validation import parse_candidate_bundle, parse_intra_source_relations, projection_evidence_ids, validate_candidate
 
 _log = logging.getLogger(__name__)
@@ -42,6 +48,9 @@ _log = logging.getLogger(__name__)
 # How long the quick lane waits between empty refills while the slow lane is
 # still running (dual-lane mode). Module-level so tests can shorten it.
 _QUICK_LANE_REFILL_WAIT_SECONDS = 15.0
+
+# Warning prefix on placeholder snippets for artifacts past the per-item VLM cap.
+_VLM_SKIPPED_WARNING_PREFIX = "visual_pass_skipped:"
 
 
 def _terminate_process_group(proc: subprocess.Popen, *, grace_seconds: float = 2.0) -> None:
@@ -755,7 +764,7 @@ def _process_item(
 
         is_resume = start_window > 0
 
-        # On resume: skip VLM (snippets already stored) and load prior state from DB.
+        # On resume: load prior candidate/relation state from DB.
         existing_candidate_count = 0
         existing_intra_relations: list[dict[str, Any]] = []
         if is_resume:
@@ -771,19 +780,64 @@ def _process_item(
                     existing_intra_relations = json.loads(rel_row[0])
                 except (json.JSONDecodeError, TypeError):
                     pass
-            visual_snippets: list = []
-            vlm = None
-        else:
-            vlm = build_vlm_provider(config)
-            visual_snippets = []
-            for artifact_index, artifact in enumerate(artifacts):
-                if progress is not None:
-                    progress.update({
-                        "phase": "vlm",
-                        "artifact": artifact_index,
-                        "total_artifacts": len(artifacts),
-                    })
-                visual_snippets.append(vlm.describe(artifact))
+
+        # VLM phase — checkpointed per artifact (issue #35). Snippets already in
+        # the DB (from a previous attempt that was killed mid-phase, or from the
+        # attempt whose LLM windows we are now resuming) are reused, so each
+        # artifact is described at most once across attempts. Artifacts beyond
+        # max_vlm_artifacts_per_item get a skipped placeholder so the VLM phase
+        # alone can never exceed the item time budget.
+        stored_snippets = load_visual_snippets(connection, queue_id=item.id)
+        vlm = build_vlm_provider(config)
+        vlm_cap = max(0, int(config.extraction.max_vlm_artifacts_per_item))
+        # Snippets described by earlier attempts count against the cap too.
+        described_so_far = sum(
+            1
+            for s in stored_snippets.values()
+            if not any(w.startswith(_VLM_SKIPPED_WARNING_PREFIX) for w in s.warnings)
+        )
+        vlm_calls = 0
+        vlm_skipped = 0
+        visual_snippets: list = []
+        for artifact_index, artifact in enumerate(artifacts):
+            existing = stored_snippets.get(artifact.artifact_id)
+            if existing is not None:
+                visual_snippets.append(existing)
+                continue
+            if progress is not None:
+                progress.update({
+                    "phase": "vlm",
+                    "artifact": artifact_index,
+                    "total_artifacts": len(artifacts),
+                })
+            if described_so_far >= vlm_cap:
+                snippet = VisualSnippet(
+                    artifact_id=artifact.artifact_id,
+                    marker=artifact.marker,
+                    source_locator=artifact.source_locator,
+                    visual_description="",
+                    visible_text="",
+                    warnings=[*artifact.warnings, f"{_VLM_SKIPPED_WARNING_PREFIX}max_vlm_artifacts_per_item={vlm_cap}"],
+                    model_metadata={"provider": vlm.provider_name, "model": vlm.model_name},
+                )
+                vlm_skipped += 1
+            else:
+                snippet = vlm.describe(artifact)
+                vlm_calls += 1
+                described_so_far += 1
+            with connection:
+                upsert_visual_snippet(
+                    connection,
+                    queue_id=item.id,
+                    snippet=snippet,
+                    model_provider=vlm.provider_name,
+                    model_name=vlm.model_name,
+                )
+            stored_snippets[artifact.artifact_id] = snippet
+            visual_snippets.append(snippet)
+        if vlm_skipped or vlm_calls:
+            projection_metadata["vlm_artifacts_described"] = vlm_calls
+            projection_metadata["vlm_artifacts_skipped"] = vlm_skipped
 
         llm = build_llm_provider(config)
         retrieval_context_note_ids = _parse_memory_context_note_ids(windows)
@@ -844,14 +898,7 @@ def _process_item(
         if progress is not None:
             progress["phase"] = "storing"
         with connection:
-            if not is_resume:
-                replace_visual_snippets(
-                    connection,
-                    queue_id=item.id,
-                    snippets=visual_snippets,
-                    model_provider=vlm.provider_name,
-                    model_name=vlm.model_name,
-                )
+            # Visual snippets were already checkpointed one by one above.
             if is_resume:
                 append_candidates(
                     connection,

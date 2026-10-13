@@ -615,6 +615,85 @@ class RetryExtractionRaceTest(unittest.TestCase):
         )
 
     # ------------------------------------------------------------------ #
+    # #35 — timeout retries back off and are capped                         #
+    # ------------------------------------------------------------------ #
+
+    def _insert_timeout_error_item(
+        self,
+        conn,
+        *,
+        failed_minutes_ago: float,
+        attempt_count: int,
+        archive_id: str,
+    ) -> int:
+        finished_at = datetime.now(timezone.utc) - timedelta(minutes=failed_minutes_ago)
+        conn.execute(
+            """
+            INSERT INTO extraction_queue(
+                source_kind, archive_id, status, attempt_count, queued_at, finished_at,
+                last_error, projection_metadata_json, intra_source_relations_json
+            ) VALUES ('artifact', ?, 'error', ?, datetime('now'), ?,
+                      'timeout: item exceeded limit (stall=900s, max=7200s)', '{}', '[]')
+            """,
+            (archive_id, attempt_count, finished_at.strftime("%Y-%m-%d %H:%M:%S")),
+        )
+        conn.commit()
+        return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    def test_timeout_errors_back_off_then_retry_then_tombstone(self) -> None:
+        from second_brain.jobs import _MAX_TIMEOUT_ATTEMPTS, _timeout_retry_delay_minutes
+
+        self.assertEqual(_timeout_retry_delay_minutes(1), 60)
+        self.assertEqual(_timeout_retry_delay_minutes(2), 120)
+        self.assertEqual(_timeout_retry_delay_minutes(3), 240)
+        self.assertEqual(_timeout_retry_delay_minutes(20), 24 * 60)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = self._prepare_workspace(Path(tmp_dir))
+            conn = connect_db(config.paths.db_path)
+            # Failed 5 minutes ago on attempt 1: still inside the 60 min backoff.
+            waiting = self._insert_timeout_error_item(
+                conn, failed_minutes_ago=5, attempt_count=1, archive_id="artifact/pdf-waiting"
+            )
+            # Failed 3 hours ago on attempt 2 (backoff 120 min): due for retry.
+            due = self._insert_timeout_error_item(
+                conn, failed_minutes_ago=180, attempt_count=2, archive_id="artifact/pdf-due"
+            )
+            # Hit the attempt cap: tombstoned regardless of age.
+            capped = self._insert_timeout_error_item(
+                conn, failed_minutes_ago=10_000, attempt_count=_MAX_TIMEOUT_ATTEMPTS,
+                archive_id="artifact/pdf-capped",
+            )
+            # A plain (non-timeout) error is still retried immediately.
+            conn.execute(
+                "INSERT INTO extraction_queue(source_kind, archive_id, status, attempt_count, queued_at, finished_at, "
+                "last_error, projection_metadata_json, intra_source_relations_json) "
+                "VALUES ('session', 'session/plain', 'error', 1, datetime('now'), datetime('now'), 'boom', '{}', '[]')"
+            )
+            conn.commit()
+            plain = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            conn.close()
+
+            result = run_job(config, job_name="retry_failed_extractions", dry_run=False)
+            self.assertEqual(result.stats["retried"], 2)
+            self.assertEqual(result.stats["timeout_backoff_waiting"], 1)
+            self.assertEqual(result.stats["timeout_tombstoned"], 1)
+
+            conn = connect_db(config.paths.db_path)
+            rows = {
+                int(r["id"]): (str(r["status"]), str(r["last_error"] or ""))
+                for r in conn.execute("SELECT id, status, last_error FROM extraction_queue")
+            }
+            conn.close()
+            self.assertEqual(rows[waiting][0], "error")
+            self.assertTrue(rows[waiting][1].startswith("timeout:"))
+            self.assertEqual(rows[due][0], "pending")
+            self.assertEqual(rows[plain][0], "pending")
+            self.assertEqual(rows[capped][0], "error")
+            self.assertTrue(rows[capped][1].startswith("tombstoned: timed out on"), rows[capped][1])
+            self.assertIn("timeout: item exceeded limit", rows[capped][1])
+
+    # ------------------------------------------------------------------ #
     # B5 — retry_failed_extractions stale-reset behaviour                  #
     # ------------------------------------------------------------------ #
 
