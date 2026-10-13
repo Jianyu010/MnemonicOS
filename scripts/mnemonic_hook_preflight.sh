@@ -11,6 +11,8 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/mnemonic_pending.sh
+source "$REPO_ROOT/scripts/lib/mnemonic_pending.sh"
 if [[ -f "$REPO_ROOT/config/memory.toml" ]]; then
   CONFIG="$REPO_ROOT/config/memory.toml"
 else
@@ -18,7 +20,8 @@ else
 fi
 # Test/agent isolation: explicit config path overrides repo default.
 CONFIG="${MNEMO_CONFIG:-$CONFIG}"
-STATE_FILE="${STATE_FILE:-/tmp/mnemo_hook_state}"
+# STATE_FILE is resolved per session below (issue #37); an explicit env wins.
+STATE_FILE="${STATE_FILE:-}"
 
 # --- MnemonicOS enable/disable switch ---
 MNEMO_ENABLED="${MNEMO_ENABLED:-1}"
@@ -43,18 +46,43 @@ SESSION_ID=$(echo "$HOOK_JSON" | python3 -c \
   2>/dev/null) \
   || SESSION_ID="session-$(python3 -c 'import uuid;print(uuid.uuid4().hex[:12])')"
 
+# One state file per Claude Code session so concurrent sessions never end each
+# other's episodes (issue #37). Downstream hooks derive the same path from the
+# session_id in their own stdin JSON.
+if [[ -z "$STATE_FILE" ]]; then
+  STATE_FILE="$(mnemo_state_file_for_session /tmp/mnemo_hook_state "$SESSION_ID")"
+fi
+
 if command -v mnemonicos >/dev/null 2>&1; then
   CLI=(mnemonicos --config "$CONFIG")
 else
   CLI=(env PYTHONPATH="$REPO_ROOT/src" python3 -m second_brain --config "$CONFIG")
 fi
 
-CAPTURE=$("${CLI[@]}" capture begin-episode \
+# Run a CLI call, capturing stdout; on failure report ONE line to stderr so a
+# broken config or dead daemon is visible instead of silently disabling memory
+# (issue #32). Never changes the hook's exit status.
+cli_or_warn() {
+  local label="$1"; shift
+  local err rc out
+  err=$(mktemp /tmp/mnemo_preflight_err.XXXXXX)
+  out=$("$@" 2>"$err")
+  rc=$?
+  if [[ $rc -ne 0 ]]; then
+    echo "MnemonicOS: $label failed (exit $rc): $(tail -n 1 "$err" 2>/dev/null | cut -c1-300)" >&2
+    out=""
+  fi
+  rm -f "$err"
+  printf '%s' "$out"
+  return 0
+}
+
+CAPTURE=$(cli_or_warn "capture begin-episode" "${CLI[@]}" capture begin-episode \
   --bridge-id claude \
   --conversation-id "$SESSION_ID" \
   --cwd "$PWD" \
   --agent-runtime claude-code \
-  --json 2>/dev/null) || CAPTURE=""
+  --json)
 
 CONVERSATION_ID=$(echo "$CAPTURE" | python3 -c \
   "import sys,json; d=json.load(sys.stdin); print(d.get('conversation_id',''))" 2>/dev/null) \
@@ -83,7 +111,7 @@ BEGIN_ARGS=(orchestrator begin-task "$PROMPT" \
 if [[ "$MNEMO_AUTO_RETRY" != "0" ]]; then
   BEGIN_ARGS+=(--auto-retry)
 fi
-RESULT=$("${CLI[@]}" "${BEGIN_ARGS[@]}" 2>/dev/null) || RESULT=""
+RESULT=$(cli_or_warn "orchestrator begin-task" "${CLI[@]}" "${BEGIN_ARGS[@]}")
 
 TASK_ID=$(echo "$RESULT" | python3 -c \
   "import sys,json; d=json.load(sys.stdin); print(d.get('task_id',''))" 2>/dev/null) \

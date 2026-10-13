@@ -58,7 +58,19 @@ Also callable directly if the Stop hook is unavailable.
 
 **When:** Claude Code `Stop` hook — fires after Claude finishes each response.
 
-**What it does:** Checks `stop_hook_active` (exits 0 immediately if true), scrapes the session transcript for `assistant_message` events, ends the active episode, and ingests `/tmp/mnemo_pending_summary.md` via `orchestrator finish-task`. Falls back to `mnemonic_postflight.sh` if orchestrator state is unavailable.
+**What it does:** Checks `stop_hook_active` (exits 0 immediately if true), scrapes the session transcript for `assistant_message` events, ends the active episode, and ingests every claude-owned pending summary (files under `/tmp/mnemo_pending/` with `agent: claude`, plus the legacy `/tmp/mnemo_pending_summary.md`) via `orchestrator finish-task`. Falls back to `mnemonic_postflight.sh` when no `task_id` is available. Deletes a summary only after it was accepted; other agents' summaries are left untouched.
+
+---
+
+### `mnemonic_pending_summary.sh`
+
+**When:** Called by the agent (per the `mnemonicos-bridge` skill) to queue a writeback summary.
+
+**What it does:** Writes stdin or `--file` to a **new** file `/tmp/mnemo_pending/<agent>-<timestamp>-<rand>.md` (never overwrites), taking the agent from `--agent` or the summary's `agent:` header. Prints the created path. The pending directory can be moved with `MNEMO_PENDING_DIR`.
+
+```bash
+scripts/mnemonic_pending_summary.sh --agent claude --file /path/to/draft.md
+```
 
 ---
 

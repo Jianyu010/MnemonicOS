@@ -4,11 +4,20 @@
 # Completes the raw capture episode started by mnemonic_codex_hook_preflight.sh.
 # Uses Codex's Stop hook payload directly; it does not scrape Claude logs.
 #
+# Then ingests every pending summary owned by the codex bridge: new-style files
+# under $MNEMO_PENDING_DIR (default /tmp/mnemo_pending) plus the legacy
+# /tmp/mnemo_pending_summary.md when its `agent:` header is "codex" (or absent).
+# Claude-owned summaries are left for the Claude Stop hook (issue #37). A file
+# is deleted only after the CLI accepted it; without a task_id it goes in via
+# the legacy postflight path instead of being left behind or dropped.
+#
 # Exit: always 0 — never block turn completion.
 
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/mnemonic_pending.sh
+source "$REPO_ROOT/scripts/lib/mnemonic_pending.sh"
 if [[ -f "$REPO_ROOT/config/memory.toml" ]]; then
   CONFIG="$REPO_ROOT/config/memory.toml"
 else
@@ -17,7 +26,7 @@ fi
 # Test/agent isolation: explicit config path overrides repo default.
 CONFIG="${MNEMO_CONFIG:-$CONFIG}"
 STATE_FILE="${STATE_FILE:-}"
-PENDING="/tmp/mnemo_pending_summary.md"
+BRIDGE_ID="codex"
 
 MNEMO_ENABLED="${MNEMO_ENABLED:-1}"
 DISABLE_FLAG="$REPO_ROOT/config/mnemo_disabled"
@@ -34,7 +43,8 @@ SESSION_ID=$(echo "$HOOK_JSON" | python3 -c \
   "import sys,json; d=json.load(sys.stdin); print(d.get('session_id',''))" 2>/dev/null) \
   || SESSION_ID=""
 if [[ -z "$STATE_FILE" ]]; then
-  STATE_FILE="/tmp/mnemo_codex_hook_state_$(SESSION_ID="$SESSION_ID" python3 -c 'import hashlib,os; print(hashlib.sha256(os.environ.get("SESSION_ID","").encode()).hexdigest()[:16])' 2>/dev/null || printf 'default')"
+  STATE_FILE="$(mnemo_state_file_for_session /tmp/mnemo_codex_hook_state "$SESSION_ID")"
+  [[ -z "$SESSION_ID" ]] && STATE_FILE="/tmp/mnemo_codex_hook_state_default"
 fi
 TURN_ID=$(echo "$HOOK_JSON" | python3 -c \
   "import sys,json; d=json.load(sys.stdin); print(d.get('turn_id',''))" 2>/dev/null) \
@@ -49,38 +59,11 @@ else
   CLI=(env PYTHONPATH="$REPO_ROOT/src" python3 -m second_brain --config "$CONFIG")
 fi
 
-TASK_ID=""
-CONVERSATION_ID=""
-EPISODE_ID=""
-if [[ -f "$STATE_FILE" ]]; then
-  TASK_ID=$(python3 - "$STATE_FILE" <<'PY' 2>/dev/null || true
-import json, sys
-try:
-    print(json.load(open(sys.argv[1], encoding="utf-8")).get("task_id", ""))
-except Exception:
-    print("")
-PY
-)
-  CONVERSATION_ID=$(python3 - "$STATE_FILE" <<'PY' 2>/dev/null || true
-import json, sys
-try:
-    print(json.load(open(sys.argv[1], encoding="utf-8")).get("conversation_id", ""))
-except Exception:
-    print("")
-PY
-)
-  EPISODE_ID=$(python3 - "$STATE_FILE" <<'PY' 2>/dev/null || true
-import json, sys
-try:
-    print(json.load(open(sys.argv[1], encoding="utf-8")).get("episode_id", ""))
-except Exception:
-    print("")
-PY
-)
-fi
-TASK_ID=$(echo "$TASK_ID" | tr -d '\n')
-CONVERSATION_ID=$(echo "$CONVERSATION_ID" | tr -d '\n')
-EPISODE_ID=$(echo "$EPISODE_ID" | tr -d '\n')
+TASK_ID="$(mnemo_state_field "$STATE_FILE" task_id | tr -d '\n')"
+CONVERSATION_ID="$(mnemo_state_field "$STATE_FILE" conversation_id | tr -d '\n')"
+EPISODE_ID="$(mnemo_state_field "$STATE_FILE" episode_id | tr -d '\n')"
+STATE_SESSION_ID="$(mnemo_state_field "$STATE_FILE" session_id | tr -d '\n')"
+[[ -z "$SESSION_ID" ]] && SESSION_ID="$STATE_SESSION_ID"
 
 if [[ -n "$CONVERSATION_ID" && -n "$EPISODE_ID" ]]; then
   if [[ -n "$LAST_ASSISTANT" ]]; then
@@ -103,7 +86,7 @@ with open(target, "w", encoding="utf-8") as handle:
 PY
     if [[ -s "$PAYLOAD_FILE" ]]; then
       "${CLI[@]}" capture append-event \
-        --bridge-id codex \
+        --bridge-id "$BRIDGE_ID" \
         --conversation-id "$CONVERSATION_ID" \
         --episode-id "$EPISODE_ID" \
         --type assistant_message \
@@ -114,7 +97,7 @@ PY
   fi
 
   "${CLI[@]}" capture end-episode \
-    --bridge-id codex \
+    --bridge-id "$BRIDGE_ID" \
     --conversation-id "$CONVERSATION_ID" \
     --episode-id "$EPISODE_ID" \
     --status success \
@@ -123,17 +106,50 @@ PY
 
 fi
 
-if [[ -f "$PENDING" && -s "$PENDING" && -n "$TASK_ID" && -n "$SESSION_ID" ]]; then
-  "${CLI[@]}" orchestrator finish-task \
-    --bridge-id codex \
-    --session-id "$SESSION_ID" \
-    --task-id "$TASK_ID" \
-    --status success \
-    --outcome-type general \
-    --summary-file "$PENDING" \
-    >/dev/null 2>&1 || true
-  rm -f "$PENDING"
-fi
+# --- Ingest every pending summary owned by this bridge ---------------------
+ingest_pending_file() {
+  local pending="$1" log rc agent session_date slug
+  log=$(mktemp /tmp/mnemo_codex_stop_ingest.XXXXXX.log)
+  if [[ -n "$TASK_ID" && -n "$SESSION_ID" ]]; then
+    "${CLI[@]}" orchestrator finish-task \
+      --bridge-id "$BRIDGE_ID" \
+      --session-id "$SESSION_ID" \
+      --task-id "$TASK_ID" \
+      --status success \
+      --outcome-type general \
+      --summary-file "$pending" \
+      >"$log" 2>&1
+    rc=$?
+  else
+    agent="$(mnemo_summary_agent "$pending")"
+    [[ -z "$agent" ]] && agent="$BRIDGE_ID"
+    session_date="$(mnemo_summary_session_date "$pending")"
+    slug="${BRIDGE_ID}-${SESSION_ID:-nosession}-$(date +%Y-%m-%d-%H%M%S)"
+    [[ -n "$session_date" ]] && slug="${BRIDGE_ID}-${session_date}-$(date +%H%M%S)"
+    echo "MnemonicOS: legacy postflight $agent/$slug file=$(basename "$pending") (no task_id)" >&2
+    MNEMO_CONFIG="$CONFIG" "$REPO_ROOT/scripts/mnemonic_postflight.sh" \
+      --agent "$agent" \
+      --slug "$slug" \
+      --summary-file "$pending" \
+      --tag "auto-stop-hook" \
+      >"$log" 2>&1
+    rc=$?
+  fi
+  if [[ "$rc" -ne 0 ]]; then
+    sed 's/^/[mnemo] /' "$log" >&2
+  fi
+  rm -f "$log"
+  return "$rc"
+}
+
+while IFS= read -r pending; do
+  [[ -z "$pending" ]] && continue
+  if ingest_pending_file "$pending"; then
+    rm -f "$pending"
+  else
+    echo "MnemonicOS: ingestion failed for $pending — left in place for the next turn" >&2
+  fi
+done < <(mnemo_pending_files_for_bridge "$BRIDGE_ID")
 
 rm -f "$STATE_FILE"
 exit 0

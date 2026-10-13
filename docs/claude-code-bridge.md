@@ -84,9 +84,13 @@ episodes within one conversation form a thread.
 
 ### State File
 
-The bridge keeps a small JSON file at `/tmp/mnemo_hook_state` to pass
-`conversation_id` and `episode_id` from the preflight hook to every downstream
-hook in the same turn. The Stop hook reads it and then deletes it.
+The bridge keeps a small JSON file per Claude Code session at
+`/tmp/mnemo_hook_state_<sha256(session_id)[:16]>` to pass `conversation_id` and
+`episode_id` from the preflight hook to every downstream hook in the same turn.
+Every hook derives the same path from the `session_id` in its own stdin JSON, so
+two concurrent sessions never end each other's episodes. The Stop hook reads it
+and then deletes it. (A legacy shared `/tmp/mnemo_hook_state` is still read as a
+fallback. Set `STATE_FILE` explicitly to override, e.g. in tests.)
 
 ```json
 {
@@ -564,10 +568,16 @@ exit 0
    the current session and extracts all `assistant` entries timestamped after the
    episode started. Emits each as an `assistant_message` event.
 2. **Ends episode** — calls `capture end-episode --status success`.
-3. **Ingests pending summary** — if `/tmp/mnemo_pending_summary.md` exists
-   (written by Claude during the turn), calls `orchestrator finish-task` to
-   record the outcome and trigger writeback.
-4. **Cleans up** — removes state file and pending summary.
+3. **Ingests pending summaries** — every file under `/tmp/mnemo_pending/`
+   (written by `scripts/mnemonic_pending_summary.sh` during the turn) whose
+   `agent:` header is `claude`, plus the legacy `/tmp/mnemo_pending_summary.md`
+   when its header is `claude` or missing. With orchestrator state it calls
+   `orchestrator finish-task`; without a `task_id` (begin-task failed, hook
+   timed out) it falls back to `mnemonic_postflight.sh` so the summary is still
+   archived. Files owned by other agents (e.g. `agent: codex`) are left alone.
+4. **Cleans up** — deletes each summary only after the CLI accepted it, then
+   removes the state file. A summary whose ingestion failed stays in place and
+   is retried on the next turn.
 
 Why scrape the transcript rather than capturing assistant text in a PostToolUse
 hook? Claude Code does not expose an `AssistantResponse` hook. The transcript
@@ -646,18 +656,21 @@ mnemonicos capture end-episode --bridge-id claude \
   --conversation-id "$CONVERSATION_ID" --episode-id "$EPISODE_ID" \
   --status success --json >/dev/null
 
-# Ingest pending summary (if Claude wrote one)
-if [[ -f /tmp/mnemo_pending_summary.md ]]; then
-  mnemonicos orchestrator finish-task \
-    --bridge-id claude \
-    --session-id "$SESSION_ID" \
-    --task-id "$TASK_ID" \
-    --status success \
-    --outcome-type general \
-    --summary-file /tmp/mnemo_pending_summary.md
-fi
+# Ingest every claude-owned pending summary (see scripts/lib/mnemonic_pending.sh)
+source scripts/lib/mnemonic_pending.sh
+while IFS= read -r pending; do
+  if [[ -n "$TASK_ID" ]]; then
+    mnemonicos orchestrator finish-task \
+      --bridge-id claude --session-id "$SESSION_ID" --task-id "$TASK_ID" \
+      --status success --outcome-type general --summary-file "$pending" \
+      && rm -f "$pending"
+  else
+    scripts/mnemonic_postflight.sh --agent claude --slug "claude-$(date +%Y-%m-%d-%H%M%S)" \
+      --summary-file "$pending" && rm -f "$pending"
+  fi
+done < <(mnemo_pending_files_for_bridge claude)
 
-rm -f /tmp/mnemo_hook_state /tmp/mnemo_pending_summary.md /tmp/mnemo_payloads.jsonl
+rm -f "$STATE_FILE" /tmp/mnemo_payloads.jsonl
 exit 0
 ```
 
@@ -670,8 +683,9 @@ the conversation context (context window near limit). It does **not** open or
 close episodes — it only safeguards the pending summary.
 
 What it does:
-- If `/tmp/mnemo_pending_summary.md` exists and is non-empty, copies it to
-  `brain/raw/sessions/<timestamp>-claude-precompact-<trigger>.md`
+- Copies every claude-owned pending summary (files under `/tmp/mnemo_pending/`
+  with `agent: claude`, plus the legacy `/tmp/mnemo_pending_summary.md`) to
+  `brain/raw/sessions/<timestamp>-claude-precompact-<trigger>-<n>.md`
 - If no pending summary exists, exits silently
 
 The `trigger` field comes from the PreCompact hook's stdin JSON (`"trigger":
@@ -690,8 +704,11 @@ TRIGGER=$(echo "$HOOK_JSON" | python3 -c "import sys,json; print(json.load(sys.s
 TIMESTAMP=$(date +%Y-%m-%d-%H%M%S)
 OUTFILE="brain/raw/sessions/${TIMESTAMP}-claude-precompact-${TRIGGER}.md"
 mkdir -p brain/raw/sessions
-[[ -f /tmp/mnemo_pending_summary.md && -s /tmp/mnemo_pending_summary.md ]] && \
-  cp /tmp/mnemo_pending_summary.md "$OUTFILE"
+source scripts/lib/mnemonic_pending.sh
+n=0
+while IFS= read -r pending; do
+  n=$((n + 1)); cp "$pending" "${OUTFILE%.md}-$n.md"
+done < <(mnemo_pending_files_for_bridge claude)
 exit 0
 ```
 
@@ -751,7 +768,7 @@ UserPromptSubmit hook fires
   ├─ capture append-event user_message
   ├─ orchestrator begin-task        → retrieval, returns context_markdown + task_id
   ├─ capture append-event retrieval_packet
-  ├─ write /tmp/mnemo_hook_state    → persists IDs for downstream hooks
+  ├─ write /tmp/mnemo_hook_state_<session hash> → persists IDs for downstream hooks
   └─ print {"context": "..."}       → prepended to Claude's prompt
         │
         ▼
@@ -778,8 +795,10 @@ Stop hook fires
   ├─ scrape ~/.claude/projects/.../SESSION_ID.jsonl for assistant entries
   ├─ capture append-event assistant_message  (for each entry)
   ├─ capture end-episode --status success
-  ├─ orchestrator finish-task --summary-file /tmp/mnemo_pending_summary.md
-  └─ rm /tmp/mnemo_hook_state /tmp/mnemo_pending_summary.md
+  ├─ for each claude-owned file in /tmp/mnemo_pending/ (+ legacy path):
+  │    orchestrator finish-task --summary-file <file>   (or postflight when no task_id)
+  │    rm <file> only if accepted
+  └─ rm /tmp/mnemo_hook_state_<session hash>
 ```
 
 ---
