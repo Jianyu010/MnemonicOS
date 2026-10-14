@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # install_codex_skill.sh — copy the repo-local MnemonicOS skill into the user's Codex skill directory
+#
+# Source: codex_skills/mnemonicos-bridge/ (the Codex variant of the Claude Code
+# skill under .claude/skills/mnemonicos-bridge/). Target: $CODEX_HOME/skills/.
 
 set -euo pipefail
 
@@ -12,8 +15,8 @@ SOURCE_DIR="$REPO_ROOT/codex_skills/mnemonicos-bridge"
 CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
 TARGET_DIR="$CODEX_HOME_DIR/skills/mnemonicos-bridge"
 
-if [[ ! -d "$SOURCE_DIR" ]]; then
-  echo "Error: skill source not found at $SOURCE_DIR" >&2
+if [[ ! -f "$SOURCE_DIR/SKILL.md" ]]; then
+  echo "Error: skill source not found at $SOURCE_DIR/SKILL.md" >&2
   exit 1
 fi
 

@@ -1774,11 +1774,33 @@ def _daemon_run_job(config_path: str, job_name: str) -> int:
         config.daemon.socket_path, {"cmd": "run-job", "job": job_name}, timeout=900.0
     )
     if response is None:
+        # Daemon unreachable: run inline, but say so and keep the daemon's
+        # reply shape so callers parsing result.stats keep working (issue #42).
         result = run_job(config, job_name=job_name, dry_run=False)
-        print(json.dumps({"status": "ok", "job": result.job_name, "result": result.stats}, sort_keys=True))
+        print(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "job": result.job_name,
+                    "daemon": "unreachable",
+                    "fallback": "inline",
+                    "result": {
+                        "job_name": result.job_name,
+                        "status": result.status,
+                        "stats": result.stats,
+                        "review_items_created": result.review_items_created,
+                    },
+                },
+                sort_keys=True,
+            )
+        )
+        print(
+            f"warning: daemon unreachable at {config.daemon.socket_path}; ran {job_name} inline",
+            file=sys.stderr,
+        )
         return 0
     print(json.dumps(response, sort_keys=True))
-    return 0 if response.get("status") in {"ok", "busy"} else 1
+    return 0 if response.get("status") in {"ok", "busy", "started"} else 1
 
 
 def _run_job(config_path: str, job_name: str, dry_run: bool) -> int:

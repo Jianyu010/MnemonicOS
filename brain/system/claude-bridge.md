@@ -104,7 +104,8 @@ the correct call.
 - `session_id`: stable across all turns in one Claude Code session. Comes from
   Claude Code's hook stdin JSON — no storage needed.
 - `task_id`: per-turn. Generated fresh by `begin_task` at UserPromptSubmit.
-  Stored in `/tmp/mnemo_hook_state`, read and deleted by the Stop hook.
+  Stored in `/tmp/mnemo_hook_state_<sha256(session_id)[:16]>` (one per
+  session), read and deleted by the Stop hook.
 
 This means per-turn writeback works naturally: turn 1's summary is ingested
 before turn 2 begins. The next turn's retrieval can find the previous turn's
@@ -114,8 +115,13 @@ writeback within the same `session_id`.
 
 ## Writeback Policy
 
-Claude writes `/tmp/mnemo_pending_summary.md` after each meaningful turn, not
-at session end. The Stop hook ingests it via `finish_task`.
+Claude queues a summary with `scripts/mnemonic_pending_summary.sh --agent claude`
+after each meaningful turn, not at session end. The helper always creates a new
+file under `/tmp/mnemo_pending/`, so Claude and Codex sessions never overwrite
+each other. The Stop hook ingests every claude-owned file via `finish_task` (or
+`mnemonic_postflight.sh` when no task_id exists) and deletes each one only after
+it was accepted. The legacy `/tmp/mnemo_pending_summary.md` is still read when
+its `agent:` header is `claude`.
 
 What counts as a meaningful turn:
 

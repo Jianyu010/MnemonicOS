@@ -202,6 +202,24 @@ Ask the daemon to run a job immediately (outside its normal schedule).
 { "cmd": "run-job", "job": "embed_backfill" }
 ```
 
+Add `"wait": false` to start the job on a scheduler thread and get an immediate
+acknowledgement instead of waiting for completion. This is what the intake
+push trigger (`pipeline.trigger_pipeline`) sends, so an `ingest-artifact` call
+never blocks on a multi-hour extraction and never falls back to running
+extraction inline while the daemon is busy:
+
+```json
+{ "cmd": "run-job", "job": "process_extraction_queue", "wait": false }
+```
+
+**Response (started, `wait: false` only):**
+```json
+{ "status": "started", "job": "process_extraction_queue" }
+```
+
+Each socket connection is served on its own thread, so `status` and `shutdown`
+keep working while a synchronous `run-job` is still executing.
+
 **Response (success):**
 ```json
 {

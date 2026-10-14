@@ -32,6 +32,8 @@ if [[ -f "$REPO_ROOT/config/memory.toml" ]]; then
 else
   CONFIG="$REPO_ROOT/config/memory.example.toml"
 fi
+# Test/agent isolation: explicit config path overrides repo default.
+CONFIG="${MNEMO_CONFIG:-$CONFIG}"
 
 env PYTHONPATH="$REPO_ROOT/src" python3 - "$CONFIG" "$SUMMARY_FILE" "$MODE" "$EMIT_JSON" <<'PYEOF'
 import json

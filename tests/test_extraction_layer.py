@@ -945,6 +945,213 @@ class ExtractionLayerTest(unittest.TestCase):
             finally:
                 connection.close()
 
+    def _multi_artifact_service(self, artifact_ids: list[str]):
+        from datetime import datetime, timedelta
+        from second_brain.projection.pipeline_models import (
+            ArtifactMarker,
+            ProjectionLease,
+            SourceSpan,
+            TextWindow,
+        )
+
+        class FakeService:
+            def open_projection(self, source_ref, options):
+                now = datetime.now()
+                return ProjectionLease(
+                    lease_id="lease-multi",
+                    source_ref=source_ref,
+                    duplicate_state="new",
+                    canonical_source_ref=None,
+                    opened_at=now,
+                    expires_at=now + timedelta(minutes=5),
+                    warnings=[],
+                    projection_metadata={},
+                )
+
+            def iter_text_windows(self, lease_id):
+                return [
+                    TextWindow(
+                        window_id="w1",
+                        text="A source window with enough content to extract.",
+                        source_spans=[
+                            SourceSpan(source_kind="artifact", source_locator="page 1", char_start=0, char_end=20)
+                        ],
+                        artifact_markers=[
+                            ArtifactMarker(artifact_id=aid, kind="figure", marker_text=f"[{aid}]", char_offset=0)
+                            for aid in artifact_ids
+                        ],
+                        token_estimate=10,
+                    )
+                ]
+
+            def iter_artifacts(self, lease_id):
+                return [
+                    ArtifactView(
+                        artifact_id=aid,
+                        kind="figure",
+                        mime_type="image/png",
+                        payload=b"not-real-image",
+                        source_attachment_path=None,
+                        source_locator=f"page:{index + 1}",
+                        marker=f"[{aid}]",
+                    )
+                    for index, aid in enumerate(artifact_ids)
+                ]
+
+            def close_projection(self, lease_id):
+                pass
+
+        return FakeService()
+
+    def _queue_item(self, connection, *, queue_id: int, archive_id: str):
+        from second_brain.extraction.models import ExtractionQueueItem
+
+        with connection:
+            connection.execute(
+                "INSERT INTO extraction_queue(id, source_kind, archive_id, status) VALUES (?, 'artifact', ?, 'processing')",
+                (queue_id, archive_id),
+            )
+        return ExtractionQueueItem(
+            id=queue_id, source_kind="artifact", archive_id=archive_id, conversation_id=None,
+            episode_id=None, bridge_id="test", session_id=None, task_id=None, duplicate_state=None,
+            status="processing", attempt_count=1, last_error=None,
+        )
+
+    def test_vlm_phase_checkpoints_per_artifact_and_resumes(self) -> None:
+        """A kill during the VLM phase keeps the snippets already produced; the
+        next attempt describes only the remaining artifacts (issue #35)."""
+        from second_brain.extraction import worker
+        from second_brain.extraction.models import VisualSnippet
+
+        calls: list[str] = []
+
+        class FlakyVLM:
+            provider_name = "flaky-vlm"
+            model_name = "flaky-vlm"
+
+            def __init__(self, fail_on: str | None):
+                self.fail_on = fail_on
+
+            def describe(self, artifact):
+                if artifact.artifact_id == self.fail_on:
+                    raise RuntimeError("killed mid-VLM-phase")
+                calls.append(artifact.artifact_id)
+                return VisualSnippet(
+                    artifact_id=artifact.artifact_id, marker=artifact.marker,
+                    source_locator=artifact.source_locator, visual_description=f"desc {artifact.artifact_id}",
+                )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = _config(Path(tmp_dir))
+            connection = connect_db(config.paths.db_path)
+            try:
+                item = self._queue_item(connection, queue_id=90, archive_id="artifact/vlm-resume")
+                service = self._multi_artifact_service(["fig-1", "fig-2", "fig-3"])
+
+                with mock.patch.object(worker, "build_vlm_provider", return_value=FlakyVLM(fail_on="fig-2")):
+                    with self.assertRaises(RuntimeError):
+                        worker._process_item(config, service, connection, item=item, dry_run=False)
+                stored = connection.execute(
+                    "SELECT artifact_id FROM extraction_visual_snippets WHERE queue_id = 90 ORDER BY id"
+                ).fetchall()
+                self.assertEqual([r["artifact_id"] for r in stored], ["fig-1"])
+
+                calls.clear()
+                with mock.patch.object(worker, "build_vlm_provider", return_value=FlakyVLM(fail_on=None)):
+                    result = worker._process_item(config, service, connection, item=item, dry_run=False)
+                self.assertEqual(calls, ["fig-2", "fig-3"], "fig-1 must not be described again")
+                self.assertEqual(result["visual_snippets"], 3)
+                stored = connection.execute(
+                    "SELECT artifact_id FROM extraction_visual_snippets WHERE queue_id = 90 ORDER BY artifact_id"
+                ).fetchall()
+                self.assertEqual([r["artifact_id"] for r in stored], ["fig-1", "fig-2", "fig-3"])
+                row = connection.execute(
+                    "SELECT status, visual_snippet_count, projection_metadata_json FROM extraction_queue WHERE id = 90"
+                ).fetchone()
+                self.assertEqual(row["status"], "processed")
+                self.assertEqual(row["visual_snippet_count"], 3)
+                # Totals cover checkpointed + this-attempt snippets (Codex review P2).
+                meta = json.loads(row["projection_metadata_json"])
+                self.assertEqual(meta["vlm_artifacts_described"], 3)
+                self.assertEqual(meta["vlm_artifacts_skipped"], 0)
+                self.assertEqual(meta["vlm_artifacts_described_this_attempt"], 2)
+            finally:
+                connection.close()
+
+    def test_vlm_calls_are_capped_per_item(self) -> None:
+        """Artifacts beyond max_vlm_artifacts_per_item get a skipped placeholder
+        instead of a VLM call, so the VLM phase fits the item time budget."""
+        from second_brain.extraction import worker
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = _config(Path(tmp_dir))
+            config.extraction.max_vlm_artifacts_per_item = 2
+            connection = connect_db(config.paths.db_path)
+            try:
+                item = self._queue_item(connection, queue_id=91, archive_id="artifact/vlm-cap")
+                service = self._multi_artifact_service(["fig-1", "fig-2", "fig-3", "fig-4"])
+                vlm = FixtureVLMProvider("fixture-vlm")
+                with mock.patch.object(vlm, "describe", wraps=vlm.describe) as describe:
+                    with mock.patch.object(worker, "build_vlm_provider", return_value=vlm):
+                        result = worker._process_item(config, service, connection, item=item, dry_run=False)
+                self.assertEqual(describe.call_count, 2)
+                self.assertEqual(result["visual_snippets"], 4)
+                rows = connection.execute(
+                    "SELECT artifact_id, snippet_json FROM extraction_visual_snippets WHERE queue_id = 91 ORDER BY artifact_id"
+                ).fetchall()
+                skipped = [
+                    r["artifact_id"] for r in rows
+                    if any(w.startswith("visual_pass_skipped:") for w in json.loads(r["snippet_json"])["warnings"])
+                ]
+                self.assertEqual(skipped, ["fig-3", "fig-4"])
+                meta = json.loads(
+                    connection.execute(
+                        "SELECT projection_metadata_json FROM extraction_queue WHERE id = 91"
+                    ).fetchone()[0]
+                )
+                self.assertEqual(meta["vlm_artifacts_described"], 2)
+                self.assertEqual(meta["vlm_artifacts_skipped"], 2)
+            finally:
+                connection.close()
+
+    def test_ingest_session_same_second_same_session_does_not_collide(self) -> None:
+        """Two summaries for one session ingested within the same second must
+        both land (Codex review P2: archive id was second-resolution)."""
+        from datetime import datetime
+
+        from second_brain import ingest as ingest_module
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = _config(Path(tmp_dir))
+            frozen = datetime(2026, 10, 13, 12, 0, 0)
+
+            class _FrozenDatetime(datetime):
+                @classmethod
+                def now(cls, tz=None):  # type: ignore[override]
+                    return frozen
+
+            with mock.patch.object(ingest_module, "datetime", _FrozenDatetime):
+                first = ingest_session(config, bridge_id="claude", session_id="s1", content="first summary body\n")
+                second = ingest_session(config, bridge_id="claude", session_id="s1", content="second summary body\n")
+            self.assertNotEqual(first.archive_id, second.archive_id)
+            self.assertTrue(second.archive_id.startswith(first.archive_id))
+            self.assertTrue(Path(first.raw_path).exists())
+            self.assertTrue(Path(second.raw_path).exists())
+            self.assertNotEqual(Path(first.raw_path).read_text(), Path(second.raw_path).read_text())
+            connection = connect_db(config.paths.db_path)
+            try:
+                count = connection.execute(
+                    "SELECT COUNT(*) FROM archive WHERE id IN (?, ?)", (first.archive_id, second.archive_id)
+                ).fetchone()[0]
+                queued = connection.execute(
+                    "SELECT COUNT(*) FROM extraction_queue WHERE archive_id IN (?, ?)",
+                    (first.archive_id, second.archive_id),
+                ).fetchone()[0]
+            finally:
+                connection.close()
+            self.assertEqual(count, 2)
+            self.assertEqual(queued, 2)
+
     def test_dual_lane_process_respects_per_run_batch_caps(self) -> None:
         from second_brain.extraction import worker
 
@@ -997,17 +1204,36 @@ class ExtractionLayerTest(unittest.TestCase):
             ):
                 result = process_extraction_queue(config, dry_run=False)
 
-            self.assertEqual(result.processed, 3)
-            self.assertEqual(spawn.call_count, 3)
+            # The slow lane is strictly capped at slow_lane_batch per run. The
+            # quick lane fetches quick_lane_batch at a time but keeps draining
+            # while the slow lane is busy (issue #38), so it may finish 2 or 3
+            # of the quick items depending on thread timing.
+            connection = connect_db(config.paths.db_path)
+            try:
+                processed = connection.execute(
+                    "SELECT source_kind, COUNT(*) AS n FROM extraction_queue "
+                    "WHERE status = 'processed' GROUP BY source_kind"
+                ).fetchall()
+            finally:
+                connection.close()
+            by_kind = {str(r["source_kind"]): int(r["n"]) for r in processed}
+            self.assertEqual(by_kind.get("artifact", 0), 1)
+            self.assertGreaterEqual(by_kind.get("session", 0), 2)
+            self.assertEqual(result.processed, sum(by_kind.values()))
+            self.assertEqual(spawn.call_count, result.processed)
 
             connection = connect_db(config.paths.db_path)
             try:
-                pending_count = connection.execute(
-                    "SELECT COUNT(*) AS count FROM extraction_queue WHERE status = 'pending'"
-                ).fetchone()
+                pending = connection.execute(
+                    "SELECT archive_id FROM extraction_queue WHERE status = 'pending' ORDER BY id"
+                ).fetchall()
             finally:
                 connection.close()
-            self.assertEqual(int(pending_count["count"]), 2)
+            pending_ids = [str(r["archive_id"]) for r in pending]
+            # The second PDF always waits for the next run; the third quick item
+            # is pending only if the slow lane finished before the refill.
+            self.assertIn("artifact/slow-1", pending_ids)
+            self.assertTrue(set(pending_ids) <= {"artifact/slow-1", "session/quick-2"}, pending_ids)
 
 
     def test_extraction_config_defaults_stall_timeout(self) -> None:
@@ -1147,6 +1373,92 @@ class ExtractionLayerTest(unittest.TestCase):
         self.assertEqual(result.processed, 2)
         self.assertEqual(result.errors, 1)
 
+    def test_dual_lane_quick_lane_keeps_draining_while_slow_lane_runs(self) -> None:
+        """A session queued while a PDF is in flight is claimed in the same run
+        (issue #38), instead of waiting for the PDF to finish and the next tick."""
+        import threading
+
+        from second_brain.extraction import worker
+
+        late_item_processed = threading.Event()
+        state: dict[str, object] = {}
+
+        class QuickHandle:
+            def join(self) -> bool:
+                return False
+
+        class SlowHandle:
+            """Simulates a long PDF: enqueue a new quick item mid-run, then wait
+            until the quick lane has processed it before finishing."""
+
+            def join(self) -> bool:
+                conn = connect_db(state["db_path"])
+                try:
+                    with conn:
+                        conn.execute(
+                            "INSERT INTO extraction_queue(source_kind, archive_id, status, queued_at) "
+                            "VALUES ('session', 'session/late-arrival', 'pending', datetime('now'))"
+                        )
+                finally:
+                    conn.close()
+                state["late_processed_in_time"] = late_item_processed.wait(10.0)
+                return False
+
+        def fake_spawn(*, progress_key, **kw):
+            return SlowHandle() if progress_key == "slow" else QuickHandle()
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            config = _config(workspace)
+            config.extraction.dual_lane_enabled = True
+            config.extraction.quick_lane_batch = 5
+            config.extraction.slow_lane_batch = 1
+            state["db_path"] = config.paths.db_path
+
+            connection = connect_db(config.paths.db_path)
+            try:
+                with connection:
+                    connection.execute(
+                        "INSERT INTO archive(id, type, path, ingested_at, tags, source_format) "
+                        "VALUES ('artifact/pdf-heavy', 'doc', '/dev/null', '2026-05-20 08:00:00', '[]', 'pdf')"
+                    )
+                    connection.execute(
+                        "INSERT INTO extraction_queue(source_kind, archive_id, status, queued_at) "
+                        "VALUES ('artifact', 'artifact/pdf-heavy', 'pending', '2026-05-20 08:00:00')"
+                    )
+                    connection.execute(
+                        "INSERT INTO extraction_queue(source_kind, archive_id, status, queued_at) "
+                        "VALUES ('session', 'session/early', 'pending', '2026-05-20 08:01:00')"
+                    )
+            finally:
+                connection.close()
+
+            def accumulate(conn, stats, queue_id):
+                stats.processed += 1
+                row = conn.execute(
+                    "SELECT archive_id FROM extraction_queue WHERE id=?", (queue_id,)
+                ).fetchone()
+                with conn:
+                    conn.execute(
+                        "UPDATE extraction_queue SET status='processed', finished_at=datetime('now') WHERE id=?",
+                        (queue_id,),
+                    )
+                if row and row["archive_id"] == "session/late-arrival":
+                    late_item_processed.set()
+
+            with (
+                mock.patch.object(worker, "_QUICK_LANE_REFILL_WAIT_SECONDS", 0.05),
+                mock.patch.object(worker, "_spawn_item_subprocess", side_effect=fake_spawn),
+                mock.patch.object(worker, "_accumulate_subprocess_result", side_effect=accumulate),
+                mock.patch.object(worker, "mark_error"),
+            ):
+                result = process_extraction_queue(config, dry_run=False)
+
+        self.assertTrue(state.get("late_processed_in_time"), "late quick item was not drained during the slow run")
+        # early session + late session + the PDF
+        self.assertEqual(result.processed, 3)
+        self.assertEqual(result.errors, 0)
+
 
     def test_inference_timeout_error_raised_on_socket_timeout(self) -> None:
         """_open_request converts socket.timeout into InferenceTimeoutError."""
@@ -1168,6 +1480,119 @@ class ExtractionLayerTest(unittest.TestCase):
         from second_brain.extraction.providers import _TRANSIENT_ERRORS
         self.assertNotIn(_socket.timeout, _TRANSIENT_ERRORS)
         self.assertNotIn(TimeoutError, _TRANSIENT_ERRORS)
+
+    def test_connection_refused_is_retried_as_transient(self) -> None:
+        """A refused connection (Ollama restarting) is retried, then raised as-is."""
+        from urllib.error import URLError
+        from urllib import request as _req
+        from second_brain.extraction import providers
+
+        req = _req.Request("http://127.0.0.1:11434/api/generate", method="GET")
+        with (
+            mock.patch.object(providers, "_RETRY_DELAYS", (0.0, 0.0)),
+            mock.patch("second_brain.extraction.providers.request.build_opener") as mock_opener,
+        ):
+            instance = mock_opener.return_value
+            instance.open.side_effect = URLError(ConnectionRefusedError(111, "refused"))
+            with self.assertRaises(URLError):
+                with providers._open_request(req, timeout_seconds=1):
+                    pass
+        # 2 delays + final attempt = 3 calls; a non-transient error would stop at 1.
+        self.assertEqual(instance.open.call_count, 3)
+
+    def test_http_5xx_is_retried_and_4xx_is_not(self) -> None:
+        """5xx from the inference endpoint is transient; 4xx is raised immediately."""
+        from urllib.error import HTTPError
+        from urllib import request as _req
+        from second_brain.extraction import providers
+
+        req = _req.Request("http://127.0.0.1:11434/api/generate", method="GET")
+
+        def _http_error(code: int) -> HTTPError:
+            return HTTPError(req.full_url, code, "boom", hdrs=None, fp=None)  # type: ignore[arg-type]
+
+        with (
+            mock.patch.object(providers, "_RETRY_DELAYS", (0.0,)),
+            mock.patch("second_brain.extraction.providers.request.build_opener") as mock_opener,
+        ):
+            instance = mock_opener.return_value
+            instance.open.side_effect = _http_error(503)
+            with self.assertRaises(HTTPError):
+                with providers._open_request(req, timeout_seconds=1):
+                    pass
+            self.assertEqual(instance.open.call_count, 2)
+
+            instance.open.reset_mock()
+            instance.open.side_effect = _http_error(400)
+            with self.assertRaises(HTTPError):
+                with providers._open_request(req, timeout_seconds=1):
+                    pass
+            self.assertEqual(instance.open.call_count, 1)
+
+    def test_subprocess_entry_first_failure_is_retryable_not_tombstoned(self) -> None:
+        """mark_processing bumps attempt_count before the subprocess runs, so a
+        first attempt reads attempt_count == 1. That must stay a plain error;
+        only a repeat failure (attempt_count >= 2) is tombstoned."""
+        from second_brain.extraction._subprocess_entry import _run
+        from second_brain.extraction.queue import mark_processing
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            config = _config(workspace)
+            connection = connect_db(config.paths.db_path)
+            try:
+                with connection:
+                    connection.execute(
+                        "INSERT INTO archive(id, type, path, ingested_at, tags) "
+                        "VALUES ('artifact/first-fail', 'doc', '/dev/null', '2026-05-21', '[]')"
+                    )
+                    connection.execute(
+                        "INSERT INTO extraction_queue(id, source_kind, archive_id, status, attempt_count) "
+                        "VALUES (81, 'artifact', 'artifact/first-fail', 'pending', 0)"
+                    )
+                    self.assertTrue(mark_processing(connection, 81))  # attempt_count -> 1
+            finally:
+                connection.close()
+
+            with mock.patch(
+                "second_brain.extraction.worker._process_item",
+                side_effect=RuntimeError("ollama refused"),
+            ):
+                self.assertEqual(_run(81, config_path=str(config.config_path)), 1)
+
+            connection = connect_db(config.paths.db_path)
+            try:
+                row = connection.execute(
+                    "SELECT status, attempt_count, last_error FROM extraction_queue WHERE id = 81"
+                ).fetchone()
+                self.assertEqual(row["status"], "error")
+                self.assertEqual(row["attempt_count"], 1)
+                self.assertNotIn("tombstoned", str(row["last_error"]))
+
+                # Simulate retry_failed_extractions + a second claim, then fail again.
+                with connection:
+                    connection.execute(
+                        "UPDATE extraction_queue SET status='pending', last_error=NULL WHERE id = 81"
+                    )
+                    self.assertTrue(mark_processing(connection, 81))  # attempt_count -> 2
+            finally:
+                connection.close()
+
+            with mock.patch(
+                "second_brain.extraction.worker._process_item",
+                side_effect=RuntimeError("ollama refused again"),
+            ):
+                self.assertEqual(_run(81, config_path=str(config.config_path)), 1)
+
+            connection = connect_db(config.paths.db_path)
+            try:
+                row = connection.execute(
+                    "SELECT status, last_error FROM extraction_queue WHERE id = 81"
+                ).fetchone()
+            finally:
+                connection.close()
+            self.assertEqual(row["status"], "error")
+            self.assertTrue(str(row["last_error"]).startswith("tombstoned:"), row["last_error"])
 
     def test_ollama_vlm_provider_passes_timeout_and_keep_alive(self) -> None:
         """OllamaVLMProvider passes timeout_seconds and keep_alive=0 to _ollama_generate."""

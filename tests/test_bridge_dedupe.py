@@ -129,6 +129,53 @@ class BridgeDedupeTest(unittest.TestCase):
             self.assertEqual(decision.decision, "update_existing")
             self.assertEqual(decision.targets, ["concept/cann-npu"])
 
+    def test_sentinel_update_target_ids_none_is_not_a_target(self) -> None:
+        """`update_target_ids: none` is the documented empty value; it must not
+        become an explicit update target (issue #41)."""
+        from second_brain.bridge import candidate_queries_from_summary, split_id_list
+
+        self.assertEqual(split_id_list("none"), [])
+        self.assertEqual(split_id_list("None, n/a, -"), [])
+        self.assertEqual(split_id_list("concept/a, none, concept/b"), ["concept/a", "concept/b"])
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            config_path = self._prepare_workspace(workspace)
+            config = load_config(config_path, workspace)
+            connection = connect_db(config.paths.db_path)
+            run_migrations(connection, ROOT / "migrations")
+            summary = parse_summary(
+                textwrap.dedent(
+                    """
+                    agent: claude
+                    session_date: 2026-10-13
+                    task_kind: debugging
+                    mnemos_retrieval_state: insufficient_no_hit
+                    existing_note_candidates: none
+                    writeback_intent: new
+                    update_target_ids: none
+
+                    ## Task
+                    Brand new subject nobody has written about
+
+                    ## Reusable Takeaways
+                    - fresh learning
+                    """
+                ).strip()
+            )
+            self.assertNotIn("none", candidate_queries_from_summary(summary))
+            decision = decide_upsert(
+                connection,
+                config,
+                summary=summary,
+                note_type="incident",
+                title="Brand new subject nobody has written about",
+                summary_text="fresh learning",
+            )
+            connection.close()
+            self.assertEqual(decision.decision, "new_note")
+            self.assertEqual(decision.targets, [])
+
     def test_infer_chain_context_supports_explicit_inferred_and_no_chain_modes(self) -> None:
         explicit = parse_summary(
             textwrap.dedent(

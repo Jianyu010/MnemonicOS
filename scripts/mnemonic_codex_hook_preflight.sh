@@ -9,6 +9,8 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/mnemonic_pending.sh
+source "$REPO_ROOT/scripts/lib/mnemonic_pending.sh"
 if [[ -f "$REPO_ROOT/config/memory.toml" ]]; then
   CONFIG="$REPO_ROOT/config/memory.toml"
 else
@@ -38,7 +40,7 @@ SESSION_ID=$(echo "$HOOK_JSON" | python3 -c \
   2>/dev/null) \
   || SESSION_ID="codex-$(python3 -c 'import uuid;print(uuid.uuid4().hex[:12])')"
 if [[ -z "$STATE_FILE" ]]; then
-  STATE_FILE="/tmp/mnemo_codex_hook_state_$(SESSION_ID="$SESSION_ID" python3 -c 'import hashlib,os; print(hashlib.sha256(os.environ["SESSION_ID"].encode()).hexdigest()[:16])' 2>/dev/null || printf 'default')"
+  STATE_FILE="$(mnemo_state_file_for_session "$(mnemo_state_prefix_for_bridge codex)" "$SESSION_ID")"
 fi
 
 TURN_ID=$(echo "$HOOK_JSON" | python3 -c \
@@ -57,7 +59,25 @@ else
   CLI=(env PYTHONPATH="$REPO_ROOT/src" python3 -m second_brain --config "$CONFIG")
 fi
 
-CAPTURE=$("${CLI[@]}" capture begin-episode \
+# Run a CLI call, capturing stdout; on failure report ONE line to stderr so a
+# broken config or dead daemon is visible instead of silently disabling memory
+# (issue #32). Never changes the hook's exit status.
+cli_or_warn() {
+  local label="$1"; shift
+  local err rc out
+  err=$(mktemp /tmp/mnemo_codex_preflight_err.XXXXXX)
+  out=$("$@" 2>"$err")
+  rc=$?
+  if [[ $rc -ne 0 ]]; then
+    echo "MnemonicOS: $label failed (exit $rc): $(tail -n 1 "$err" 2>/dev/null | cut -c1-300)" >&2
+    out=""
+  fi
+  rm -f "$err"
+  printf '%s' "$out"
+  return 0
+}
+
+CAPTURE=$(cli_or_warn "capture begin-episode" "${CLI[@]}" capture begin-episode \
   --bridge-id codex \
   --conversation-id "$SESSION_ID" \
   --cwd "${CWD_FROM_HOOK:-$PWD}" \
@@ -65,7 +85,7 @@ CAPTURE=$("${CLI[@]}" capture begin-episode \
   --agent-runtime codex \
   --platform-thread-id "$SESSION_ID" \
   --metadata-json "$(HOOK_JSON="$HOOK_JSON" python3 -c 'import json,os; d=json.loads(os.environ.get("HOOK_JSON","{}")); print(json.dumps({"turn_id": d.get("turn_id"), "hook_event": "UserPromptSubmit"}))' 2>/dev/null || printf '{}')" \
-  --json 2>/dev/null) || CAPTURE=""
+  --json)
 
 CONVERSATION_ID=$(echo "$CAPTURE" | python3 -c \
   "import sys,json; d=json.load(sys.stdin); print(d.get('conversation_id',''))" 2>/dev/null) \
@@ -94,7 +114,7 @@ BEGIN_ARGS=(orchestrator begin-task "$PROMPT" \
 if [[ "$MNEMO_AUTO_RETRY" != "0" ]]; then
   BEGIN_ARGS+=(--auto-retry)
 fi
-RESULT=$("${CLI[@]}" "${BEGIN_ARGS[@]}" 2>/dev/null) || RESULT=""
+RESULT=$(cli_or_warn "orchestrator begin-task" "${CLI[@]}" "${BEGIN_ARGS[@]}")
 
 TASK_ID=$(echo "$RESULT" | python3 -c \
   "import sys,json; d=json.load(sys.stdin); print(d.get('task_id',''))" 2>/dev/null) \

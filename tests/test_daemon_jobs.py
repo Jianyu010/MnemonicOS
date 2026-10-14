@@ -137,6 +137,89 @@ class DaemonJobsTest(unittest.TestCase):
                 job_lock.release()
             self.assertEqual(busy["status"], "busy")
 
+    def test_run_job_wait_false_starts_job_and_returns_immediately(self) -> None:
+        import threading
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = self._prepare_workspace(Path(tmp_dir))
+            daemon = Daemon(config)
+            release = threading.Event()
+            entered = threading.Event()
+            real_run = daemon.registry.run
+
+            def _blocking_run(cfg, job_name, progress=None, process_registry=None):
+                entered.set()
+                release.wait(5.0)
+                return real_run(cfg, job_name, progress=progress, process_registry=process_registry)
+
+            daemon.registry.run = _blocking_run  # type: ignore[method-assign]
+            try:
+                started = daemon.socket_server._handle_request(
+                    {"cmd": "run-job", "job": "status_report", "wait": False}
+                )
+                self.assertEqual(started["status"], "started")
+                self.assertTrue(entered.wait(5.0))
+                # While the job runs, status is still answered and a second
+                # start request reports busy instead of spawning a duplicate.
+                status = daemon.socket_server._handle_request({"cmd": "status"})
+                self.assertEqual(status["status"], "ok")
+                self.assertIn("status_report", status["service"]["running_jobs"])
+                busy = daemon.socket_server._handle_request(
+                    {"cmd": "run-job", "job": "status_report", "wait": False}
+                )
+                self.assertEqual(busy["status"], "busy")
+            finally:
+                release.set()
+            daemon.scheduler.join_running_jobs(timeout=5.0)
+            self.assertEqual(daemon.scheduler.status()["running_jobs"], [])
+
+    def test_socket_server_answers_status_while_sync_job_runs(self) -> None:
+        """A synchronous run-job must not block the listener (B1 follow-up)."""
+        import threading
+
+        from second_brain.daemon_status import socket_send
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = self._prepare_workspace(Path(tmp_dir))
+            daemon = Daemon(config)
+            release = threading.Event()
+            entered = threading.Event()
+            real_run = daemon.registry.run
+
+            def _blocking_run(cfg, job_name, progress=None, process_registry=None):
+                entered.set()
+                release.wait(10.0)
+                return real_run(cfg, job_name, progress=progress, process_registry=process_registry)
+
+            daemon.registry.run = _blocking_run  # type: ignore[method-assign]
+            server_thread = threading.Thread(target=daemon.socket_server.serve, daemon=True)
+            server_thread.start()
+            sock_path = config.daemon.socket_path
+            for _ in range(100):
+                if sock_path.exists():
+                    break
+                threading.Event().wait(0.05)
+            sync_reply: dict = {}
+
+            def _sync_caller() -> None:
+                sync_reply.update(
+                    socket_send(sock_path, {"cmd": "run-job", "job": "status_report"}, timeout=10.0) or {}
+                )
+
+            caller = threading.Thread(target=_sync_caller, daemon=True)
+            caller.start()
+            try:
+                self.assertTrue(entered.wait(5.0))
+                status = socket_send(sock_path, {"cmd": "status"}, timeout=2.0)
+                self.assertIsNotNone(status, "listener blocked by the synchronous run-job")
+                self.assertEqual(status.get("status"), "ok")
+            finally:
+                release.set()
+                caller.join(timeout=10.0)
+                daemon.shutdown_event.set()
+                server_thread.join(timeout=5.0)
+            self.assertEqual(sync_reply.get("status"), "ok")
+
     def test_process_registry_terminates_registered_process_group(self) -> None:
         from second_brain.daemon_processes import DaemonProcessRegistry
         import os
@@ -272,6 +355,17 @@ class DaemonJobsTest(unittest.TestCase):
         self.assertFalse(cfg.dual_lane_enabled)
         self.assertEqual(cfg.quick_lane_batch, 5)
         self.assertEqual(cfg.slow_lane_batch, 5)
+
+    def test_example_config_loads(self) -> None:
+        """config/memory.example.toml is the fallback for every hook and the daemon.
+
+        A duplicate table (e.g. two ``[maintenance]`` sections) makes tomllib
+        reject the whole file, which silently breaks every hook that falls back
+        to it. Guard the shipped example against that regression.
+        """
+        config = load_config(ROOT / "config" / "memory.example.toml")
+        self.assertTrue(config.maintenance.passive_feedback_enabled)
+        self.assertEqual(config.maintenance.lifecycle_verified_threshold, 2)
 
     def test_extraction_config_dual_lane_toml(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -521,6 +615,85 @@ class RetryExtractionRaceTest(unittest.TestCase):
         )
 
     # ------------------------------------------------------------------ #
+    # #35 — timeout retries back off and are capped                         #
+    # ------------------------------------------------------------------ #
+
+    def _insert_timeout_error_item(
+        self,
+        conn,
+        *,
+        failed_minutes_ago: float,
+        attempt_count: int,
+        archive_id: str,
+    ) -> int:
+        finished_at = datetime.now(timezone.utc) - timedelta(minutes=failed_minutes_ago)
+        conn.execute(
+            """
+            INSERT INTO extraction_queue(
+                source_kind, archive_id, status, attempt_count, queued_at, finished_at,
+                last_error, projection_metadata_json, intra_source_relations_json
+            ) VALUES ('artifact', ?, 'error', ?, datetime('now'), ?,
+                      'timeout: item exceeded limit (stall=900s, max=7200s)', '{}', '[]')
+            """,
+            (archive_id, attempt_count, finished_at.strftime("%Y-%m-%d %H:%M:%S")),
+        )
+        conn.commit()
+        return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    def test_timeout_errors_back_off_then_retry_then_tombstone(self) -> None:
+        from second_brain.jobs import _MAX_TIMEOUT_ATTEMPTS, _timeout_retry_delay_minutes
+
+        self.assertEqual(_timeout_retry_delay_minutes(1), 60)
+        self.assertEqual(_timeout_retry_delay_minutes(2), 120)
+        self.assertEqual(_timeout_retry_delay_minutes(3), 240)
+        self.assertEqual(_timeout_retry_delay_minutes(20), 24 * 60)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = self._prepare_workspace(Path(tmp_dir))
+            conn = connect_db(config.paths.db_path)
+            # Failed 5 minutes ago on attempt 1: still inside the 60 min backoff.
+            waiting = self._insert_timeout_error_item(
+                conn, failed_minutes_ago=5, attempt_count=1, archive_id="artifact/pdf-waiting"
+            )
+            # Failed 3 hours ago on attempt 2 (backoff 120 min): due for retry.
+            due = self._insert_timeout_error_item(
+                conn, failed_minutes_ago=180, attempt_count=2, archive_id="artifact/pdf-due"
+            )
+            # Hit the attempt cap: tombstoned regardless of age.
+            capped = self._insert_timeout_error_item(
+                conn, failed_minutes_ago=10_000, attempt_count=_MAX_TIMEOUT_ATTEMPTS,
+                archive_id="artifact/pdf-capped",
+            )
+            # A plain (non-timeout) error is still retried immediately.
+            conn.execute(
+                "INSERT INTO extraction_queue(source_kind, archive_id, status, attempt_count, queued_at, finished_at, "
+                "last_error, projection_metadata_json, intra_source_relations_json) "
+                "VALUES ('session', 'session/plain', 'error', 1, datetime('now'), datetime('now'), 'boom', '{}', '[]')"
+            )
+            conn.commit()
+            plain = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            conn.close()
+
+            result = run_job(config, job_name="retry_failed_extractions", dry_run=False)
+            self.assertEqual(result.stats["retried"], 2)
+            self.assertEqual(result.stats["timeout_backoff_waiting"], 1)
+            self.assertEqual(result.stats["timeout_tombstoned"], 1)
+
+            conn = connect_db(config.paths.db_path)
+            rows = {
+                int(r["id"]): (str(r["status"]), str(r["last_error"] or ""))
+                for r in conn.execute("SELECT id, status, last_error FROM extraction_queue")
+            }
+            conn.close()
+            self.assertEqual(rows[waiting][0], "error")
+            self.assertTrue(rows[waiting][1].startswith("timeout:"))
+            self.assertEqual(rows[due][0], "pending")
+            self.assertEqual(rows[plain][0], "pending")
+            self.assertEqual(rows[capped][0], "error")
+            self.assertTrue(rows[capped][1].startswith("tombstoned: timed out on"), rows[capped][1])
+            self.assertIn("timeout: item exceeded limit", rows[capped][1])
+
+    # ------------------------------------------------------------------ #
     # B5 — retry_failed_extractions stale-reset behaviour                  #
     # ------------------------------------------------------------------ #
 
@@ -711,6 +884,92 @@ class SocketSendTest(unittest.TestCase):
 
             mock_run_job.assert_not_called()
             self.assertNotEqual(exit_code, 0)
+
+    def test_daemon_run_job_inline_fallback_is_labelled_and_daemon_shaped(self) -> None:
+        """When the daemon is unreachable the CLI runs the job inline, says so,
+        and prints the same result shape as a daemon reply (issue #42)."""
+        import io
+        import json as _json
+        from contextlib import redirect_stderr, redirect_stdout
+        from unittest import mock
+
+        from second_brain import cli
+        from second_brain.models import JobRunResult
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_dir = Path(tmp) / "config"
+            config_dir.mkdir()
+            config_path = config_dir / "memory.toml"
+            config_path.write_text("")
+            fake_result = JobRunResult(
+                job_name="status_report", status="ok", stats={"pending_count": 0}, review_items_created=[]
+            )
+            out, err = io.StringIO(), io.StringIO()
+            with (
+                mock.patch.object(cli, "socket_send", return_value=None),
+                mock.patch.object(cli, "run_job", return_value=fake_result) as mock_run_job,
+                redirect_stdout(out),
+                redirect_stderr(err),
+            ):
+                exit_code = cli._daemon_run_job(str(config_path), "status_report")
+
+            mock_run_job.assert_called_once()
+            self.assertEqual(exit_code, 0)
+            payload = _json.loads(out.getvalue().strip().splitlines()[-1])
+            self.assertEqual(payload["status"], "ok")
+            self.assertEqual(payload["fallback"], "inline")
+            self.assertEqual(payload["daemon"], "unreachable")
+            self.assertEqual(payload["result"]["stats"], {"pending_count": 0})
+            self.assertEqual(payload["result"]["job_name"], "status_report")
+            self.assertIn("daemon unreachable", err.getvalue())
+
+
+class TriggerPipelineTest(unittest.TestCase):
+    """The intake push trigger must never run a second extraction loop beside a
+    live daemon. Only an unreachable daemon justifies the inline fallback."""
+
+    def _config(self, tmp: str):
+        config_dir = Path(tmp) / "config"
+        config_dir.mkdir()
+        config_path = config_dir / "memory.toml"
+        config_path.write_text("")
+        return load_config(config_path)
+
+    def test_delivered_replies_are_handled_without_inline_fallback(self) -> None:
+        from unittest import mock
+
+        from second_brain import pipeline
+
+        for status in ("started", "busy", "ok", "timeout"):
+            with tempfile.TemporaryDirectory() as tmp:
+                config = self._config(tmp)
+                with (
+                    mock.patch.object(pipeline, "socket_send", return_value={"status": status}) as send,
+                    mock.patch("second_brain.extraction.worker.process_extraction_queue") as extract,
+                    mock.patch("second_brain.promotion.worker.process_promotion_queue") as promote,
+                ):
+                    pipeline.trigger_pipeline(config)
+                extract.assert_not_called()
+                promote.assert_not_called()
+                jobs = [call.args[1]["job"] for call in send.call_args_list]
+                self.assertEqual(jobs, ["process_extraction_queue", "process_promotion_queue"], status)
+                self.assertTrue(all(call.args[1].get("wait") is False for call in send.call_args_list))
+
+    def test_unreachable_daemon_falls_back_inline(self) -> None:
+        from unittest import mock
+
+        from second_brain import pipeline
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+            with (
+                mock.patch.object(pipeline, "socket_send", return_value=None),
+                mock.patch("second_brain.extraction.worker.process_extraction_queue") as extract,
+                mock.patch("second_brain.promotion.worker.process_promotion_queue") as promote,
+            ):
+                pipeline.trigger_pipeline(config)
+            extract.assert_called_once()
+            promote.assert_called_once()
 
 
 if __name__ == "__main__":

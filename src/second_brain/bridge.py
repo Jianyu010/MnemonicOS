@@ -102,6 +102,22 @@ def _extract_section_items(section_text: str) -> list[str]:
     return [item for item in results if item]
 
 
+# Values the skill templates tell agents to write when a list header is empty
+# (`update_target_ids: none`). They are never note ids.
+_ID_LIST_SENTINELS = {"", "none", "n/a", "na", "null", "nil", "-", "[]"}
+
+
+def split_id_list(raw: str | None) -> list[str]:
+    """Split a comma-separated header of note ids, dropping sentinel words.
+
+    `update_target_ids: none` used to yield the target ``"none"`` and force an
+    ``update_existing`` decision against a note that does not exist (issue #41).
+    """
+    if not raw:
+        return []
+    return [part.strip() for part in str(raw).split(",") if part.strip().casefold() not in _ID_LIST_SENTINELS]
+
+
 def candidate_queries_from_summary(summary: SummaryEnvelope) -> list[str]:
     queries: list[str] = []
     task = summary.sections.get("Task")
@@ -118,10 +134,7 @@ def candidate_queries_from_summary(summary: SummaryEnvelope) -> list[str]:
         title = str(item.get("title", "")).strip()
         if title:
             queries.append(title)
-    if summary.metadata.get("update_target_ids"):
-        queries.extend(
-            [part.strip() for part in summary.metadata["update_target_ids"].split(",") if part.strip()]
-        )
+    queries.extend(split_id_list(summary.metadata.get("update_target_ids", "")))
 
     ordered: list[str] = []
     seen: set[str] = set()
@@ -331,11 +344,7 @@ def decide_upsert(
 ) -> UpsertDecision:
     explicit_intent = summary.metadata.get("writeback_intent", "").strip().casefold()
     retrieval_state = summary.metadata.get("mnemos_retrieval_state", "").strip().casefold()
-    update_targets = [
-        part.strip()
-        for part in summary.metadata.get("update_target_ids", "").split(",")
-        if part.strip()
-    ]
+    update_targets = split_id_list(summary.metadata.get("update_target_ids", ""))
     if explicit_intent == "skip":
         return UpsertDecision("skip_duplicate", update_targets, update_targets, "explicit writeback_intent=skip")
     if update_targets:

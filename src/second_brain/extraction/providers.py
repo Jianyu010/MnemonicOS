@@ -24,7 +24,7 @@ class InferenceTimeoutError(RuntimeError):
 
     Caught by _subprocess_entry._run() before the generic handler and written as
     ``"timeout: …"`` — never ``"tombstoned: …"`` — so retry_failed_extractions
-    requeues the item regardless of attempt count.
+    requeues the item (with backoff, up to its timeout attempt cap).
     """
 
 
@@ -672,7 +672,12 @@ _TRANSIENT_ERRORS = (
     BrokenPipeError,
     ConnectionResetError,
     ConnectionAbortedError,
+    # Ollama restarting / not yet listening. Without this, a refused connection
+    # surfaces as a generic error and the item is tombstoned after one retry.
+    ConnectionRefusedError,
 )
+# HTTP status codes from the inference endpoint that are worth retrying.
+_TRANSIENT_HTTP_STATUS_MIN = 500
 # Timeout errors are NOT retried — they surface as InferenceTimeoutError immediately.
 _TIMEOUT_ERRORS = (TimeoutError, socket.timeout)
 _RETRY_DELAYS = (1.0, 3.0, 8.0)
@@ -680,7 +685,7 @@ _RETRY_DELAYS = (1.0, 3.0, 8.0)
 
 def _open_request(req: request.Request, *, timeout_seconds: int | None):
     import http.client
-    from urllib.error import URLError
+    from urllib.error import HTTPError, URLError
     transient = _TRANSIENT_ERRORS + (http.client.RemoteDisconnected,)
     host = urlparse(req.full_url).hostname or ""
     use_proxy_bypass = host in {"127.0.0.1", "localhost", "::1"}
@@ -691,6 +696,16 @@ def _open_request(req: request.Request, *, timeout_seconds: int | None):
                 opener = request.build_opener(request.ProxyHandler({}))
                 return opener.open(req, timeout=timeout_seconds)
             return request.urlopen(req, timeout=timeout_seconds)
+        except HTTPError as exc:
+            # 5xx from Ollama/OpenAI-compatible servers (model loading, OOM
+            # recovery, upstream restart) is transient; 4xx is a real error.
+            if exc.code >= _TRANSIENT_HTTP_STATUS_MIN:
+                last_exc = exc
+                if delay is None:
+                    break
+                time.sleep(delay)
+                continue
+            raise
         except URLError as exc:
             if isinstance(exc.reason, _TIMEOUT_ERRORS):
                 raise InferenceTimeoutError(

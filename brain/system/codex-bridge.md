@@ -76,12 +76,17 @@ Use the `retrieval_state` / `recommendation` pair:
 ```bash
 scripts/mnemonic_should_writeback.sh \
   --mode success \
-  --summary-file /tmp/mnemo_pending_summary.md
+  --summary-file <draft.md>
 
+# With the Codex Stop hook wired: queue a NEW pending file (never overwrites a
+# Claude session's summary); the hook ingests files whose `agent:` is codex.
+scripts/mnemonic_pending_summary.sh --agent codex --file <draft.md>
+
+# Without the Stop hook: ingest directly.
 scripts/mnemonic_postflight.sh \
   --agent codex \
   --slug codex-$(date +%Y-%m-%d-%H%M%S) \
-  --summary-file /tmp/mnemo_pending_summary.md
+  --summary-file <draft.md>
 ```
 
 ---

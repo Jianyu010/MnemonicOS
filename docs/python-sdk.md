@@ -29,6 +29,7 @@ config: AppConfig = load_config(path: str | None = None)
 | `config.paths.workspace_root` | `Path` | Repo root |
 | `config.extraction.llm_timeout_seconds` | `int \| None` | LLM timeout; `None` = infinite |
 | `config.extraction.vlm_timeout_seconds` | `int \| None` | VLM timeout |
+| `config.extraction.max_vlm_artifacts_per_item` | `int` | VLM calls per queue item; extra figures get skipped snippets (default 24) |
 | `config.daemon.socket_path` | `Path` | Unix socket path |
 | `config.daemon.schedules` | `dict[str, str]` | Cron overrides per job name |
 

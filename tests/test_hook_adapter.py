@@ -33,11 +33,23 @@ CODEX_NOTIFY_BRIDGE = SCRIPTS / "codex_notify_bridge.sh"
 CODEX_NOTIFY_IMPORTER = SCRIPTS / "mnemonic_codex_notify_bridge.py"
 
 
+_TEST_PENDING_DIR = tempfile.mkdtemp(prefix="mnemo_test_pending_")
+
+
 def _make_env(*, state_file: str, mnemo_enabled: str = "1", extra: dict | None = None) -> dict:
-    """Return an env dict for subprocess with test-safe STATE_FILE."""
+    """Return an env dict for subprocess with test-safe STATE_FILE.
+
+    MNEMO_PENDING_DIR is pointed at a per-process temp dir so hook tests never
+    consume (or delete) real pending summaries under /tmp/mnemo_pending.
+    """
     env = os.environ.copy()
     env["STATE_FILE"] = state_file
     env["MNEMO_ENABLED"] = mnemo_enabled
+    env.setdefault("MNEMO_PENDING_DIR", _TEST_PENDING_DIR)
+    # Per-session state prefixes are isolated too, so real sessions on the
+    # machine never count as "other active sessions" during tests.
+    env.setdefault("MNEMO_CLAUDE_STATE_PREFIX", str(Path(_TEST_PENDING_DIR) / "claude_state"))
+    env.setdefault("MNEMO_CODEX_STATE_PREFIX", str(Path(_TEST_PENDING_DIR) / "codex_state"))
     # Ensure disable flag file path can be tested independently
     if extra:
         env.update(extra)
@@ -403,6 +415,267 @@ class TestStopHook(unittest.TestCase):
             self.assertIn("capture end-episode", calls)
             self.assertIn("orchestrator finish-task", calls)
             self.assertNotIn("capture project-episode", calls)
+
+
+class TestPendingSummaryRouting(unittest.TestCase):
+    """Pending summaries are per-file, per-agent (#37) and never silently
+    dropped (#34).
+
+    Uses a fake ``mnemonicos`` that logs every call and an isolated pending
+    directory + legacy path, so nothing touches real /tmp state."""
+
+    PENDING_HELPER = str(SCRIPTS / "mnemonic_pending_summary.sh")
+    PRECOMPACT = str(SCRIPTS / "mnemonic_precompact_dump.sh")
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(prefix="mnemo_pending_routing_")
+        root = Path(self._tmp.name)
+        self._pending_dir = root / "pending"
+        self._pending_dir.mkdir()
+        self._legacy = root / "legacy_pending_summary.md"
+        self._state_file = str(root / "state.json")
+        self._fake_path, self._cli_log = _install_fake_mnemonicos(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _env(self, *, extra: dict | None = None) -> dict:
+        root = Path(self._tmp.name)
+        merged = {
+            "PATH": self._fake_path,
+            "MNEMO_PENDING_DIR": str(self._pending_dir),
+            "MNEMO_PENDING_LEGACY_FILE": str(self._legacy),
+            # Per-test state prefixes: a state file left by one test must never
+            # look like an active session to another.
+            "MNEMO_CLAUDE_STATE_PREFIX": str(root / "claude_state"),
+            "MNEMO_CODEX_STATE_PREFIX": str(root / "codex_state"),
+        }
+        if extra:
+            merged.update(extra)
+        return _make_env(state_file=self._state_file, extra=merged)
+
+    def _write_state(self, **fields: str) -> None:
+        Path(self._state_file).write_text(json.dumps(fields))
+
+    def _calls(self) -> str:
+        return self._cli_log.read_text() if self._cli_log.exists() else ""
+
+    def _run(self, script: str, stdin: dict, *, env: dict | None = None) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["bash", script], input=json.dumps(stdin), capture_output=True, text=True,
+            env=env or self._env(), timeout=30,
+        )
+
+    def test_helper_creates_new_files_and_never_overwrites(self) -> None:
+        env = self._env()
+        paths = []
+        for _ in range(2):
+            result = subprocess.run(
+                ["bash", self.PENDING_HELPER], input=_pending_summary(agent="codex"),
+                capture_output=True, text=True, env=env, timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            paths.append(Path(result.stdout.strip()))
+        self.assertNotEqual(paths[0], paths[1])
+        for path in paths:
+            self.assertTrue(path.exists())
+            self.assertEqual(path.parent, self._pending_dir)
+            self.assertTrue(path.name.startswith("codex-"), path.name)  # agent taken from header
+        override = subprocess.run(
+            ["bash", self.PENDING_HELPER, "--agent", "claude"], input="no header here\n",
+            capture_output=True, text=True, env=env, timeout=30,
+        )
+        self.assertEqual(override.returncode, 0, override.stderr)
+        self.assertTrue(Path(override.stdout.strip()).name.startswith("claude-"))
+        empty = subprocess.run(
+            ["bash", self.PENDING_HELPER], input="", capture_output=True, text=True, env=env, timeout=30,
+        )
+        self.assertNotEqual(empty.returncode, 0)
+
+    def test_stop_hook_falls_back_to_postflight_when_task_id_missing(self) -> None:
+        """Capture state without a task_id (begin-task failed) must still ingest
+        the summary instead of deleting it (#34)."""
+        self._write_state(task_id="", session_id="s1", conversation_id="conv-1", episode_id="ep-1")
+        self._legacy.write_text(_pending_summary(agent="claude"))
+        result = self._run(STOP_HOOK, {"session_id": "s1"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self._calls()
+        self.assertIn("capture end-episode", calls)
+        self.assertIn("ingest-session", calls, "legacy postflight ingestion must run")
+        self.assertIn("--bridge-id claude", calls)
+        self.assertFalse(self._legacy.exists(), "accepted summary is removed")
+
+    def test_stop_hook_keeps_summary_when_cli_rejects_it(self) -> None:
+        bin_dir = Path(self._tmp.name) / "failbin"
+        bin_dir.mkdir()
+        fake = bin_dir / "mnemonicos"
+        fake.write_text("#!/usr/bin/env bash\ncase \"$*\" in *finish-task*) echo 'boom' >&2; exit 1 ;; *) echo '{}' ;; esac\n")
+        fake.chmod(0o755)
+        self._write_state(task_id="task-1", session_id="s1", conversation_id="conv-1", episode_id="ep-1")
+        pending = self._pending_dir / "claude-20261013-120000-abc123.md"
+        pending.write_text(_pending_summary(agent="claude"))
+        env = self._env(extra={"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"})
+        result = self._run(STOP_HOOK, {"session_id": "s1"}, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(pending.exists(), "a rejected summary must be left for the next turn")
+        self.assertIn("ingestion failed", result.stderr)
+
+    def test_claude_stop_hook_ingests_only_claude_owned_files(self) -> None:
+        self._write_state(task_id="task-1", session_id="s1", conversation_id="conv-1", episode_id="ep-1")
+        mine = self._pending_dir / "claude-20261013-120000-aaaaaa.md"
+        mine.write_text(_pending_summary(agent="claude"))
+        codex_prefixed = self._pending_dir / "codex-20261013-120001-bbbbbb.md"
+        codex_prefixed.write_text(_pending_summary(agent="codex"))
+        codex_by_header = self._pending_dir / "unknown-20261013-120002-cccccc.md"
+        codex_by_header.write_text(_pending_summary(agent="codex"))
+        self._legacy.write_text(_pending_summary(agent="codex"))
+
+        result = self._run(STOP_HOOK, {"session_id": "s1"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self._calls()
+        self.assertEqual(calls.count("orchestrator finish-task"), 1)
+        self.assertIn(str(mine), calls)
+        self.assertFalse(mine.exists())
+        for other in (codex_prefixed, codex_by_header, self._legacy):
+            self.assertTrue(other.exists(), f"{other.name} belongs to codex and must survive")
+        self.assertFalse(os.path.exists(self._state_file))
+
+    def test_codex_stop_hook_ingests_only_codex_owned_files(self) -> None:
+        self._write_state(task_id="task-c", session_id="codex-s1", conversation_id="codex-s1", episode_id="ep-c")
+        mine = self._pending_dir / "codex-20261013-120000-dddddd.md"
+        mine.write_text(_pending_summary(agent="codex"))
+        claude_file = self._pending_dir / "claude-20261013-120001-eeeeee.md"
+        claude_file.write_text(_pending_summary(agent="claude"))
+        self._legacy.write_text(_pending_summary(agent="claude"))
+
+        result = self._run(CODEX_STOP_HOOK, {"session_id": "codex-s1", "turn_id": "t1"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self._calls()
+        self.assertEqual(calls.count("orchestrator finish-task"), 1)
+        self.assertIn("--bridge-id codex", calls)
+        self.assertIn(str(mine), calls)
+        self.assertFalse(mine.exists())
+        self.assertTrue(claude_file.exists())
+        self.assertTrue(self._legacy.exists(), "legacy file with agent: claude is not codex's")
+
+    def test_codex_stop_hook_without_task_id_uses_postflight(self) -> None:
+        self._write_state(task_id="", session_id="codex-s2", conversation_id="codex-s2", episode_id="ep-c2")
+        mine = self._pending_dir / "codex-20261013-130000-ffffff.md"
+        mine.write_text(_pending_summary(agent="codex"))
+        result = self._run(CODEX_STOP_HOOK, {"session_id": "codex-s2"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("ingest-session", self._calls())
+        self.assertFalse(mine.exists())
+
+    def test_precompact_dumps_only_claude_pending_files(self) -> None:
+        workspace = Path(self._tmp.name) / "ws"
+        (workspace / "config").mkdir(parents=True)
+        config_path = workspace / "config" / "memory.toml"
+        config_path.write_text("")
+        (self._pending_dir / "claude-20261013-120000-111111.md").write_text(_pending_summary(agent="claude"))
+        (self._pending_dir / "codex-20261013-120000-222222.md").write_text(_pending_summary(agent="codex"))
+        self._legacy.write_text(_pending_summary(agent="claude"))
+        env = self._env(extra={"MNEMO_CONFIG": str(config_path)})
+        result = self._run(self.PRECOMPACT, {"trigger": "auto"}, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        dumps = sorted((workspace / "brain" / "raw" / "sessions").glob("*-claude-precompact-auto-*.md"))
+        self.assertEqual(len(dumps), 2, result.stderr)
+        for dump in dumps:
+            self.assertIn("agent: claude", dump.read_text())
+        # Dump is a copy; pending files are untouched for the Stop hook.
+        self.assertEqual(len(list(self._pending_dir.glob("*.md"))), 2)
+        self.assertTrue(self._legacy.exists())
+
+    def test_pending_files_are_bound_to_their_session(self) -> None:
+        """With two sessions of the same agent mid-turn, a Stop hook takes only
+        files bound to its own session; unbound files wait until no other
+        session is active (Codex review P1)."""
+        import hashlib
+
+        prefix = Path(self._env()["MNEMO_CLAUDE_STATE_PREFIX"])
+        other_state = Path(f"{prefix}_{hashlib.sha256(b'other-session').hexdigest()[:16]}")
+        other_state.write_text(json.dumps({"task_id": "task-other", "session_id": "other-session"}))
+        self._write_state(task_id="task-mine", session_id="s1", conversation_id="conv-1", episode_id="ep-1")
+
+        mine = self._pending_dir / "claude-20261013-120000-aaaaaa.md"
+        mine.write_text("mnemo_session: s1\n" + _pending_summary(agent="claude"))
+        theirs = self._pending_dir / "claude-20261013-120001-bbbbbb.md"
+        theirs.write_text("mnemo_session: other-session\n" + _pending_summary(agent="claude"))
+        unbound = self._pending_dir / "claude-20261013-120002-cccccc.md"
+        unbound.write_text(_pending_summary(agent="claude"))
+
+        result = self._run(STOP_HOOK, {"session_id": "s1"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self._calls()
+        self.assertEqual(calls.count("orchestrator finish-task"), 1)
+        self.assertIn(str(mine), calls)
+        self.assertFalse(mine.exists())
+        self.assertTrue(theirs.exists(), "another session's bound file must survive")
+        self.assertTrue(unbound.exists(), "unbound file waits while another session is active")
+
+        # Once the other session is gone, the unbound file is fair game.
+        other_state.unlink()
+        self._write_state(task_id="task-mine-2", session_id="s1", conversation_id="conv-1", episode_id="ep-2")
+        result = self._run(STOP_HOOK, {"session_id": "s1"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(unbound.exists())
+        self.assertTrue(theirs.exists())
+
+    def test_helper_binds_session_from_single_active_state_file(self) -> None:
+        import hashlib
+
+        env = self._env()
+        prefix = Path(env["MNEMO_CLAUDE_STATE_PREFIX"])
+        state = Path(f"{prefix}_{hashlib.sha256(b'only-session').hexdigest()[:16]}")
+        state.write_text(json.dumps({"task_id": "t", "session_id": "only-session"}))
+        result = subprocess.run(
+            ["bash", self.PENDING_HELPER, "--agent", "claude"], input=_pending_summary(agent="claude"),
+            capture_output=True, text=True, env=env, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = Path(result.stdout.strip()).read_text().splitlines()
+        # agent: stays the first header line; the session binding follows it.
+        self.assertEqual(lines[0], "agent: claude")
+        self.assertEqual(lines[1], "mnemo_session: only-session")
+        # Explicit flag wins over detection.
+        result = subprocess.run(
+            ["bash", self.PENDING_HELPER, "--agent", "claude", "--session-id", "explicit"],
+            input=_pending_summary(agent="claude"), capture_output=True, text=True, env=env, timeout=30,
+        )
+        self.assertEqual(Path(result.stdout.strip()).read_text().splitlines()[1], "mnemo_session: explicit")
+        # Content without an agent header gets the binding first.
+        result = subprocess.run(
+            ["bash", self.PENDING_HELPER, "--agent", "claude", "--session-id", "x"],
+            input="## Task\nno header\n", capture_output=True, text=True, env=env, timeout=30,
+        )
+        self.assertEqual(Path(result.stdout.strip()).read_text().splitlines()[0], "mnemo_session: x")
+
+    def test_preflight_state_file_is_per_session_by_default(self) -> None:
+        import hashlib
+
+        session_id = "per-session-state-test-0001"
+        env = self._env()
+        prefix = env["MNEMO_CLAUDE_STATE_PREFIX"]
+        expected = Path(f"{prefix}_{hashlib.sha256(session_id.encode()).hexdigest()[:16]}")
+        env.pop("STATE_FILE", None)
+        try:
+            result = subprocess.run(
+                ["bash", PREFLIGHT], input=_hook_json(prompt="implement per-session state", session_id=session_id),
+                capture_output=True, text=True, env=env, timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(expected.exists(), "preflight must write a per-session state file")
+            self.assertEqual(json.loads(expected.read_text())["session_id"], session_id)
+            # The Stop hook for the same session finds and removes it.
+            stop = subprocess.run(
+                ["bash", STOP_HOOK], input=json.dumps({"session_id": session_id}),
+                capture_output=True, text=True, env=env, timeout=30,
+            )
+            self.assertEqual(stop.returncode, 0, stop.stderr)
+            self.assertFalse(expected.exists())
+        finally:
+            if expected.exists():
+                expected.unlink()
 
 
 class TestHookRoundTrip(unittest.TestCase):

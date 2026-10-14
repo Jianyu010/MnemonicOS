@@ -18,7 +18,9 @@ if [[ -f "$REPO_ROOT/config/memory.toml" ]]; then
 else
   CONFIG="$REPO_ROOT/config/memory.example.toml"
 fi
-STATE_FILE="${STATE_FILE:-/tmp/mnemo_hook_state}"
+# shellcheck source=lib/mnemonic_pending.sh
+source "$REPO_ROOT/scripts/lib/mnemonic_pending.sh"
+CONFIG="${MNEMO_CONFIG:-$CONFIG}"
 
 MNEMO_ENABLED="${MNEMO_ENABLED:-1}"
 DISABLE_FLAG="$REPO_ROOT/config/mnemo_disabled"
@@ -26,9 +28,17 @@ if [[ "$MNEMO_ENABLED" == "0" || -f "$DISABLE_FLAG" ]]; then
   exit 0
 fi
 
-[[ -f "$STATE_FILE" ]] || exit 0
-
 HOOK_JSON=$(cat)
+
+# Per-session hook state (issue #37); explicit STATE_FILE wins, legacy shared
+# path is the fallback for a preflight hook that predates per-session state.
+if [[ -z "${STATE_FILE:-}" ]]; then
+  _SESSION_ID=$(echo "$HOOK_JSON" | python3 -c \
+    "import sys,json; d=json.load(sys.stdin); print(d.get('session_id',''))" 2>/dev/null) || _SESSION_ID=""
+  STATE_FILE="$(mnemo_state_file_for_session "$(mnemo_state_prefix_for_bridge claude)" "$_SESSION_ID")"
+  [[ ! -f "$STATE_FILE" && -f /tmp/mnemo_hook_state ]] && STATE_FILE="/tmp/mnemo_hook_state"
+fi
+[[ -f "$STATE_FILE" ]] || exit 0
 
 PAYLOADS_FILE=$(mktemp /tmp/mnemo_tool_failure_payloads.XXXXXX.json)
 

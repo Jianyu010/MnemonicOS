@@ -41,6 +41,8 @@ if [[ -f "$REPO_ROOT/config/memory.toml" ]]; then
 else
   CONFIG="$REPO_ROOT/config/memory.example.toml"
 fi
+# Test/agent isolation: explicit config path overrides repo default.
+CONFIG="${MNEMO_CONFIG:-$CONFIG}"
 
 # Postflight is part of hook/writeback shutdown. It should archive and enqueue,
 # leaving extraction/promotion to direct capture calls or daemon pickup.

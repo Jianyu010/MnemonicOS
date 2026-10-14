@@ -14,6 +14,10 @@ import argparse
 import sqlite3
 import sys
 
+# Number of attempts (including the current one, which mark_processing has
+# already counted) after which a non-timeout failure is tombstoned.
+_TOMBSTONE_AFTER_ATTEMPTS = 2
+
 
 class _FileProgress(dict):
     """dict subclass that flushes to a JSON file on every update."""
@@ -81,8 +85,9 @@ def _run(item_id: int, *, config_path: str | None = None, progress_file: str | N
         _process_item(config, service, connection, item=item, dry_run=False, progress=progress, start_window=start_window)
         return 0
     except InferenceTimeoutError as exc:
-        # Always retryable — never tombstoned regardless of attempt_count.
-        # retry_failed_extractions requeues any error whose last_error starts with "timeout:".
+        # Written with the "timeout:" prefix, never "tombstoned:" here.
+        # retry_failed_extractions requeues timeout errors with exponential
+        # backoff and tombstones them only after _MAX_TIMEOUT_ATTEMPTS.
         error_text = f"timeout: inference call exceeded per-call timeout: {exc}"
         try:
             with connection:
@@ -93,8 +98,12 @@ def _run(item_id: int, *, config_path: str | None = None, progress_file: str | N
         return 1
     except Exception as exc:
         error_text = str(exc)
-        if item.attempt_count >= 1:
-            error_text = f"tombstoned: failed after retry (attempt {item.attempt_count + 1}): {error_text}"
+        # The parent's mark_processing already bumped attempt_count for THIS run,
+        # so a first attempt reads as attempt_count == 1. Only tombstone when at
+        # least one earlier attempt also failed (attempt_count >= 2); a first
+        # failure stays a plain retryable error for retry_failed_extractions.
+        if item.attempt_count >= _TOMBSTONE_AFTER_ATTEMPTS:
+            error_text = f"tombstoned: failed after retry (attempt {item.attempt_count}): {error_text}"
         try:
             with connection:
                 mark_error(connection, queue_id=item_id, error=error_text)

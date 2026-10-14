@@ -117,6 +117,24 @@ class Scheduler:
             self.tick()
             self.shutdown_event.wait(30.0)
 
+    def start_job(self, job_name: str) -> dict[str, Any]:
+        """Start a job on its own thread and return immediately.
+
+        Used by the socket ``run-job`` command with ``wait: false`` (the push
+        trigger fired by every intake path). The caller never blocks on job
+        completion, and the socket thread stays free to answer ``status`` and
+        ``shutdown`` while a long extraction run is in flight.
+        """
+        if job_name not in self.registry.job_names():
+            return {"status": "error", "error": f"unknown job: {job_name}"}
+        job_lock = self._get_job_lock(job_name)
+        if not job_lock.acquire(blocking=False):
+            with self._state_lock:
+                running = list(self._running.keys())
+            return {"status": "busy", "running_job": job_name, "running_jobs": running}
+        self._spawn_job(job_name, job_lock)
+        return {"status": "started", "job": job_name}
+
     def run_job_now(self, job_name: str) -> dict[str, Any]:
         """Trigger a job immediately.  Runs synchronously in the calling thread."""
         if job_name not in self.registry.job_names():
@@ -226,6 +244,11 @@ class SocketServer:
             }
         if cmd == "run-job":
             job_name = str(payload.get("job", "")).strip()
+            # ``wait: false`` → start the job on a scheduler thread and reply at
+            # once with {"status": "started"}; the default keeps the historical
+            # synchronous reply (used by ``mnemonicos daemon run-job``).
+            if payload.get("wait", True) is False:
+                return self.scheduler.start_job(job_name)
             return self.scheduler.run_job_now(job_name)
         if cmd == "shutdown":
             self.shutdown_event.set()
@@ -258,23 +281,35 @@ class SocketServer:
                     break
                 self.logger.warning("socket accept() failed, continuing: %s", exc)
                 continue
-            with client:
-                try:
-                    request = b""
-                    while b"\n" not in request:
-                        chunk = client.recv(4096)
-                        if not chunk:
-                            break
-                        request += chunk
-                    payload = json.loads(request.decode("utf-8").strip() or "{}")
-                    response = self._handle_request(payload)
-                except Exception as exc:
-                    response = {"status": "error", "error": str(exc)}
-                try:
-                    client.sendall((json.dumps(response, sort_keys=True) + "\n").encode("utf-8"))
-                except OSError:
-                    pass
+            # One thread per connection: a synchronous ``run-job`` (which can
+            # take hours for a PDF) must not stop the listener from answering
+            # ``status`` or ``shutdown``. Previously the request was handled
+            # inline here and the daemon looked dead for the whole run.
+            threading.Thread(
+                target=self._serve_client,
+                args=(client,),
+                name="mnemonicos-socket-client",
+                daemon=True,
+            ).start()
         self.close()
+
+    def _serve_client(self, client: socket.socket) -> None:
+        with client:
+            try:
+                request = b""
+                while b"\n" not in request:
+                    chunk = client.recv(4096)
+                    if not chunk:
+                        break
+                    request += chunk
+                payload = json.loads(request.decode("utf-8").strip() or "{}")
+                response = self._handle_request(payload)
+            except Exception as exc:
+                response = {"status": "error", "error": str(exc)}
+            try:
+                client.sendall((json.dumps(response, sort_keys=True) + "\n").encode("utf-8"))
+            except OSError:
+                pass
 
     def close(self) -> None:
         if self.server_socket is not None:
